@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { getConfig, setPromptText } from './config';
 import { orchestrator, OrchestratorProgressInfo } from './orchestrator';
-import { scanPlanFolder, normalizePath, PhaseFile } from './planScanner';
+import { scanPlanFolder, sortPhaseFiles, getPhasesFrom, normalizePath, PhaseFile } from './planScanner';
 import { getDefaultBrainDir, getTranscriptPath, findLatestConversation, transcriptWatcher } from './transcriptWatcher';
 
 let mainStatusBarItem: vscode.StatusBarItem;
@@ -13,9 +13,37 @@ let elapsedTimer: NodeJS.Timeout | null = null;
 let lastProgressInfo: OrchestratorProgressInfo | undefined = undefined;
 let completionResetTimeout: NodeJS.Timeout | null = null;
 
+export function getMainStatusBarItem(): vscode.StatusBarItem {
+  return mainStatusBarItem;
+}
+
+export function getCurrentPlanFolder(): string | undefined {
+  return currentPlanFolder;
+}
+
+export function setCurrentPlanFolder(folder: string | undefined): void {
+  currentPlanFolder = folder;
+}
+
+export function getRunStartTime(): number {
+  return runStartTime;
+}
+
+export function setRunStartTime(time: number): void {
+  runStartTime = time;
+}
+
 export interface PlanFolderItem extends vscode.QuickPickItem {
   type: 'active' | 'workspace' | 'recent' | 'browse' | 'manual';
   folderPath?: string;
+}
+
+export interface PlanActionQuickPickItem extends vscode.QuickPickItem {
+  action: 'runAll' | 'resumeUnfinished' | 'runFrom' | 'customSelect';
+}
+
+export interface PhaseQuickPickItem extends vscode.QuickPickItem {
+  phase: PhaseFile;
 }
 
 /**
@@ -432,25 +460,17 @@ export async function promptAndStartAutoPlan(context: vscode.ExtensionContext): 
     return;
   }
 
-  const folderName = path.basename(folderPath);
-  const confirmationMsg = `Auto-Plan: Found ${phases.length} phases in "${folderName}". Ready to start?`;
-  const choice = await vscode.window.showInformationMessage(
-    confirmationMsg,
-    { modal: false },
-    '▶️ Start Auto-Run',
-    '⚙️ Settings',
-    'Cancel'
-  );
+  showPlanActionMenu(context, folderPath, phases);
+}
 
-  if (choice === '⚙️ Settings') {
-    await vscode.commands.executeCommand('workbench.action.openSettings', 'autoplan');
-    return;
-  }
-
-  if (choice !== '▶️ Start Auto-Run') {
-    return;
-  }
-
+/**
+ * Dispatches a list of phases to the orchestrator for execution and updates recents.
+ */
+export async function executePhases(
+  context: vscode.ExtensionContext,
+  folderPath: string,
+  phases: PhaseFile[]
+): Promise<void> {
   // Persist selected folder path
   await context.workspaceState.update('lastPlanFolder', folderPath);
   const existingRecents = context.globalState.get<string[]>('recentPlanFolders', []);
@@ -463,8 +483,251 @@ export async function promptAndStartAutoPlan(context: vscode.ExtensionContext): 
   currentPlanFolder = folderPath;
   runStartTime = Date.now();
 
+  const folderName = path.basename(folderPath);
   vscode.window.showInformationMessage(`Auto-Plan: Starting execution of ${phases.length} phases in "${folderName}"...`);
-  await orchestrator.startFolder(folderPath);
+  await orchestrator.startPhases(phases);
+}
+
+/**
+ * Step 1 Action Menu: Displays high-level execution modes for the selected plan folder.
+ */
+export function showPlanActionMenu(
+  context: vscode.ExtensionContext,
+  folderPath: string,
+  phases: PhaseFile[]
+): vscode.QuickPick<PlanActionQuickPickItem> {
+  const folderName = path.basename(folderPath);
+  const totalCount = phases.length;
+  const pendingCount = phases.filter(p => !p.isCompleted).length;
+
+  const quickPick = vscode.window.createQuickPick<PlanActionQuickPickItem>();
+  quickPick.title = `Auto-Plan: ${folderName}`;
+  quickPick.placeholder = 'Select execution action';
+  quickPick.step = 1;
+  quickPick.totalSteps = 2;
+
+  const items: PlanActionQuickPickItem[] = [
+    {
+      label: `▶️ Run All (${totalCount} phases)`,
+      description: 'Execute all phases sequentially',
+      action: 'runAll'
+    },
+    {
+      label: `⏩ Resume Unfinished (${pendingCount} phases)`,
+      description: 'Execute pending phases only',
+      detail: pendingCount === 0 ? `(All ${totalCount} phases completed)` : undefined,
+      action: 'resumeUnfinished'
+    },
+    {
+      label: `🎯 Run from Phase... to End`,
+      description: 'Choose starting phase and execute through end',
+      action: 'runFrom'
+    },
+    {
+      label: `☑️ Custom Select Phases...`,
+      description: 'Select specific phases to run',
+      action: 'customSelect'
+    }
+  ];
+
+  quickPick.items = items;
+
+  const disposables: vscode.Disposable[] = [];
+
+  disposables.push(
+    quickPick.onDidAccept(async () => {
+      const selected = quickPick.selectedItems[0];
+      if (!selected) return;
+
+      quickPick.hide();
+
+      if (selected.action === 'runAll') {
+        await executePhases(context, folderPath, phases);
+      } else if (selected.action === 'resumeUnfinished') {
+        if (pendingCount === 0) {
+          vscode.window.showInformationMessage('Auto-Plan: All phases in this plan are already completed.');
+          return;
+        }
+        const pendingPhases = phases.filter(p => !p.isCompleted);
+        await executePhases(context, folderPath, pendingPhases);
+      } else if (selected.action === 'runFrom') {
+        showRunFromPhaseMenu(context, folderPath, phases);
+      } else if (selected.action === 'customSelect') {
+        showCustomSelectPhasesMenu(context, folderPath, phases);
+      }
+    })
+  );
+
+  disposables.push(
+    quickPick.onDidHide(() => {
+      disposables.forEach(d => d.dispose());
+      quickPick.dispose();
+    })
+  );
+
+  quickPick.show();
+  return quickPick;
+}
+
+/**
+ * Single-selection QuickPick menu allowing user to pick a starting phase to run through to the end.
+ */
+export function showRunFromPhaseMenu(
+  context: vscode.ExtensionContext,
+  folderPath: string,
+  phases: PhaseFile[]
+): vscode.QuickPick<PhaseQuickPickItem> {
+  const quickPick = vscode.window.createQuickPick<PhaseQuickPickItem>();
+  quickPick.title = 'Auto-Plan: Run from Phase... to End';
+  quickPick.placeholder = 'Select starting phase to run through to end';
+  quickPick.step = 2;
+  quickPick.totalSteps = 2;
+  quickPick.canSelectMany = false;
+  quickPick.buttons = [vscode.QuickInputButtons.Back];
+
+  quickPick.items = phases.map(phase => ({
+    label: phase.isCompleted ? `$(check) ${phase.fileName}` : `$(circle-outline) ${phase.fileName}`,
+    detail: phase.isCompleted ? '[Completed]' : '[Pending]',
+    phase
+  }));
+
+  const disposables: vscode.Disposable[] = [];
+
+  disposables.push(
+    quickPick.onDidTriggerButton(async (button) => {
+      if (button === vscode.QuickInputButtons.Back) {
+        quickPick.hide();
+        showPlanActionMenu(context, folderPath, phases);
+      }
+    })
+  );
+
+  disposables.push(
+    quickPick.onDidAccept(async () => {
+      const selected = quickPick.selectedItems[0];
+      if (!selected) return;
+
+      quickPick.hide();
+      const sliced = getPhasesFrom(phases, selected.phase.fileName);
+      await executePhases(context, folderPath, sliced);
+    })
+  );
+
+  disposables.push(
+    quickPick.onDidHide(() => {
+      disposables.forEach(d => d.dispose());
+      quickPick.dispose();
+    })
+  );
+
+  quickPick.show();
+  return quickPick;
+}
+
+/**
+ * Step 2 Multi-Select QuickPick: Interactive phase picker with Select All/Deselect All/Back buttons.
+ */
+export function showCustomSelectPhasesMenu(
+  context: vscode.ExtensionContext,
+  folderPath: string,
+  phases: PhaseFile[]
+): vscode.QuickPick<PhaseQuickPickItem> {
+  const quickPick = vscode.window.createQuickPick<PhaseQuickPickItem>();
+  quickPick.title = 'Auto-Plan: Select Phases';
+  quickPick.placeholder = 'Select one or more phases to execute';
+  quickPick.step = 2;
+  quickPick.totalSteps = 2;
+  quickPick.canSelectMany = true;
+
+  const selectAllButton: vscode.QuickInputButton = {
+    iconPath: new vscode.ThemeIcon('check-all'),
+    tooltip: 'Select All'
+  };
+
+  const deselectAllButton: vscode.QuickInputButton = {
+    iconPath: new vscode.ThemeIcon('clear-all'),
+    tooltip: 'Deselect All'
+  };
+
+  const runBelowButton: vscode.QuickInputButton = {
+    iconPath: new vscode.ThemeIcon('run-below'),
+    tooltip: 'Run from this phase to end'
+  };
+
+  quickPick.buttons = [
+    vscode.QuickInputButtons.Back,
+    selectAllButton,
+    deselectAllButton
+  ];
+
+  quickPick.items = phases.map(phase => ({
+    label: phase.isCompleted ? `$(check) ${phase.fileName}` : `$(circle-outline) ${phase.fileName}`,
+    detail: phase.isCompleted ? '[Completed]' : '[Pending]',
+    buttons: [runBelowButton],
+    phase
+  }));
+
+  // Smart Pre-selection: vscode.window.createQuickPick ignores picked: true,
+  // so set selectedItems programmatically after assigning items.
+  quickPick.selectedItems = quickPick.items.filter(item => !item.phase.isCompleted);
+
+  const disposables: vscode.Disposable[] = [];
+
+  disposables.push(
+    quickPick.onDidTriggerButton((button) => {
+      if (button === vscode.QuickInputButtons.Back) {
+        quickPick.hide();
+        showPlanActionMenu(context, folderPath, phases);
+      } else if (
+        button.tooltip === 'Select All' ||
+        (button.iconPath && (button.iconPath as any).id === 'check-all')
+      ) {
+        quickPick.selectedItems = [...quickPick.items];
+      } else if (
+        button.tooltip === 'Deselect All' ||
+        (button.iconPath && (button.iconPath as any).id === 'clear-all')
+      ) {
+        quickPick.selectedItems = [];
+      }
+    })
+  );
+
+  disposables.push(
+    quickPick.onDidTriggerItemButton(async (e) => {
+      if (
+        e.button.tooltip === 'Run from this phase to end' ||
+        (e.button.iconPath && (e.button.iconPath as any).id === 'run-below')
+      ) {
+        quickPick.hide();
+        const sliced = getPhasesFrom(phases, e.item.phase.fileName);
+        await executePhases(context, folderPath, sliced);
+      }
+    })
+  );
+
+  disposables.push(
+    quickPick.onDidAccept(async () => {
+      if (quickPick.selectedItems.length === 0) {
+        vscode.window.showWarningMessage('Auto-Plan: Please select at least one phase to execute.');
+        return;
+      }
+
+      const selectedPhases = quickPick.selectedItems.map(item => item.phase);
+      const sortedPhases = sortPhaseFiles(selectedPhases);
+      quickPick.hide();
+      await executePhases(context, folderPath, sortedPhases);
+    })
+  );
+
+  disposables.push(
+    quickPick.onDidHide(() => {
+      disposables.forEach(d => d.dispose());
+      quickPick.dispose();
+    })
+  );
+
+  quickPick.show();
+  return quickPick;
 }
 
 /**

@@ -15,6 +15,10 @@ export interface PhaseFile {
   relativePath: string;
   /** 1-based execution index */
   index: number;
+  /** Phase status parsed from header */
+  status: 'Completed' | 'Pending';
+  /** Whether the phase is marked as completed */
+  isCompleted: boolean;
 }
 
 export interface ScanOptions {
@@ -83,11 +87,137 @@ export function normalizePath(filePath: string): string {
 }
 
 /**
+ * Completion signature regex matching varied emojis, markdown checkboxes, and casing.
+ * e.g. Status: ✅ Completed, Status: 🟢 Completed, Status: ✔ Completed, Status: [x] Completed, Status: Completed, Status: Done
+ */
+const PHASE_COMPLETED_SIGNATURE = /^\s*status:\s*(?:\[[xX]\]|[^\w\s]+)?\s*(completed|done)\b/i;
+
+/**
+ * Detects completion status of a phase markdown file by inspecting its header section (first 30 lines).
+ *
+ * @param filePath Target markdown file path.
+ * @returns 'Completed' if completion header is found; otherwise 'Pending'.
+ */
+export function detectPhaseStatus(filePath: string): 'Completed' | 'Pending' {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return 'Pending';
+    }
+    const content = fs.readFileSync(filePath, 'utf8');
+    const headerLines = content.split(/\r?\n/).slice(0, 30);
+
+    for (const line of headerLines) {
+      if (PHASE_COMPLETED_SIGNATURE.test(line)) {
+        return 'Completed';
+      }
+    }
+    return 'Pending';
+  } catch {
+    return 'Pending';
+  }
+}
+
+/**
+ * Reliably sorts phase files using natural numeric collation based on filename and numeric index.
+ *
+ * @param phases Array of PhaseFile objects to sort.
+ * @returns A new sorted array of PhaseFile objects.
+ */
+export function sortPhaseFiles(phases: PhaseFile[]): PhaseFile[] {
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+  return [...phases].sort((a, b) => {
+    const nameCmp = collator.compare(a.fileName, b.fileName);
+    if (nameCmp !== 0) {
+      return nameCmp;
+    }
+    return (a.index || 0) - (b.index || 0);
+  });
+}
+
+/**
+ * Slices and returns all phases starting from a selected phase through to the end of the sequence.
+ *
+ * @param phases Collection of phase files.
+ * @param targetPhaseIdentifier 1-based index, filename, normalized/native path, or phase prefix identifier.
+ * @returns Array slice of PhaseFile objects from the target phase onwards.
+ * @throws Error if targetPhaseIdentifier cannot be found in the phase collection.
+ */
+export function getPhasesFrom(
+  phases: PhaseFile[],
+  targetPhaseIdentifier: string | number
+): PhaseFile[] {
+  if (phases.length === 0) {
+    throw new Error('Phase collection is empty.');
+  }
+
+  let foundIndex = -1;
+
+  if (typeof targetPhaseIdentifier === 'number') {
+    // Check 1-based index
+    foundIndex = phases.findIndex(p => p.index === targetPhaseIdentifier);
+    if (foundIndex === -1 && targetPhaseIdentifier >= 1 && targetPhaseIdentifier <= phases.length) {
+      foundIndex = targetPhaseIdentifier - 1;
+    }
+  } else if (typeof targetPhaseIdentifier === 'string') {
+    const rawTarget = targetPhaseIdentifier.trim();
+    if (!rawTarget) {
+      throw new Error('Target phase identifier cannot be empty.');
+    }
+
+    const lowerTarget = rawTarget.toLowerCase();
+    const normTarget = normalizePath(rawTarget).toLowerCase();
+
+    // 1. Exact matches (fileName, baseName, normalizedPath, nativePath, filePath)
+    foundIndex = phases.findIndex(p => {
+      const pFileName = p.fileName.toLowerCase();
+      const pBaseName = path.parse(p.fileName).name.toLowerCase();
+      const pNormPath = p.normalizedPath.toLowerCase();
+      const pNativePath = normalizePath(p.nativePath).toLowerCase();
+      const pFilePath = normalizePath(p.filePath).toLowerCase();
+
+      return (
+        pFileName === lowerTarget ||
+        pBaseName === lowerTarget ||
+        pNormPath === normTarget ||
+        pNativePath === normTarget ||
+        pFilePath === normTarget
+      );
+    });
+
+    // 2. Prefix / start matches
+    if (foundIndex === -1) {
+      foundIndex = phases.findIndex(p => {
+        const pFileName = p.fileName.toLowerCase();
+        const pBaseName = path.parse(p.fileName).name.toLowerCase();
+        return pFileName.startsWith(lowerTarget) || pBaseName.startsWith(lowerTarget);
+      });
+    }
+
+    // 3. Numeric string match (e.g., '1', '02')
+    if (foundIndex === -1 && /^\d+$/.test(rawTarget)) {
+      const num = parseInt(rawTarget, 10);
+      foundIndex = phases.findIndex(p => p.index === num);
+      if (foundIndex === -1 && num >= 1 && num <= phases.length) {
+        foundIndex = num - 1;
+      }
+    }
+  }
+
+  if (foundIndex === -1) {
+    throw new Error(
+      `Target phase identifier "${targetPhaseIdentifier}" not found in phase collection.`
+    );
+  }
+
+  return phases.slice(foundIndex);
+}
+
+/**
  * Scans a target folder and returns an ordered list of executable phase markdown files.
  *
  * @param folderPath Target directory containing phase markdown files.
  * @param options Scanning options.
- * @returns Sorted list of PhaseFile objects.
+ * @returns Sorted list of PhaseFile objects with status metadata.
  * @throws Error if folder does not exist or if no valid phase files are found.
  */
 export function scanPlanFolder(folderPath: string, options: ScanOptions = {}): PhaseFile[] {
@@ -152,13 +282,16 @@ export function scanPlanFolder(folderPath: string, options: ScanOptions = {}): P
   return finalCandidates.map((item, index) => {
     const nativeP = path.normalize(item.fullPath);
     const normP = normalizePath(nativeP);
+    const status = detectPhaseStatus(item.fullPath);
     return {
       fileName: item.fileName,
       nativePath: nativeP,
       normalizedPath: normP,
       filePath: normP,
       relativePath: normalizePath(item.relativePath),
-      index: index + 1
+      index: index + 1,
+      status,
+      isCompleted: status === 'Completed'
     };
   });
 }

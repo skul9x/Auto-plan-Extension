@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/version-1.0.1-blue.svg?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/version-1.0.2-blue.svg?style=flat-square" alt="Version"></a>
   <a href="https://code.visualstudio.com/"><img src="https://img.shields.io/badge/VS%20Code-^1.80.0-informational.svg?style=flat-square" alt="VS Code Compatibility"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.3.3-3178C6.svg?style=flat-square" alt="TypeScript"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg?style=flat-square" alt="License"></a>
@@ -28,11 +28,17 @@ Extension tự động quét thư mục plan, khởi tạo cuộc trò chuyện 
 - Sắp xếp thứ tự file thông minh theo chuẩn số học tự nhiên (**Natural Alphanumeric Sort** - đảm bảo `phase-2` luôn chạy trước `phase-10`).
 - Tự động bỏ qua các file tài liệu tổng quan (`plan.md`, `summary.md`, `overview.md`, `walkthrough.md`, `README.md`).
 
-### 2. 🎯 Smart 2-Tier QuickPick Selection
-- **Active Plan Detection**: Tự động phát hiện thư mục plan của file Markdown đang mở trong Editor.
-- **Workspace Auto-Discovery**: Quét và tự động gợi ý các thư mục con bên trong `plans/` của workspace (kèm cơ chế bộ nhớ đệm TTL 5s chống nghẽn I/O).
-- **Recent History**: Lưu lại danh sách các thư mục plan đã chạy gần đây.
-- **Native File Browser & Manual Input**: Hỗ trợ mở hộp thoại duyệt thư mục hệ điều hành hoặc gõ đường dẫn tuyệt đối trực tiếp.
+### 2. 🎯 Smart 2-Step Interactive QuickPick & Custom Phase Selection
+- **Step 1 - Smart Folder Selection**:
+  - **Active Plan Detection**: Tự động phát hiện thư mục plan của file Markdown đang mở trong Editor.
+  - **Workspace Auto-Discovery**: Quét và tự động gợi ý các thư mục con bên trong `plans/` của workspace (kèm cơ chế bộ nhớ đệm TTL 5s chống nghẽn I/O).
+  - **Recent History**: Lưu lại danh sách các thư mục plan đã chạy gần đây.
+  - **Native File Browser & Manual Input**: Hỗ trợ mở hộp thoại duyệt thư mục hệ điều hành hoặc gõ đường dẫn tuyệt đối trực tiếp.
+- **Step 2 - Smart Phase Action Menu**:
+  - ▶️ **Run all X phases**: Chạy tuần tự toàn bộ các phase từ đầu đến cuối.
+  - ⚡ **Smart Resume**: Tự động lọc và chỉ chạy các phase chưa hoàn thành (`Pending` / `In Progress`), tự động bỏ qua các phase đã `Completed` / `Done`.
+  - 🎯 **Select custom phases...**: Mở bảng chọn Interactive Multi-Select QuickPick để chủ động chọn các phase muốn chạy kèm các nút tiện ích (*Select All*, *Select Pending*, *Invert Selection*).
+  - 📍 **Run from specific phase...**: Chọn điểm bắt đầu và tự động chạy tiếp tất cả các phase nối tiếp từ vị trí đã chọn.
 
 ### 3. ⚡ Tự Động Hóa Bàn Phím Đơn Lệnh (Batch Keyboard Flow)
 - Gửi phím tắt `Ctrl + Shift + L` mở phiên New Conversation trong Antigravity IDE.
@@ -48,11 +54,11 @@ Extension tự động quét thư mục plan, khởi tạo cuộc trò chuyện 
 
 ### 5. 📊 Interactive Status Bar & Action Menu
 - Hiển thị trực quan tiến trình thời gian thực ngay dưới thanh trạng thái:  
-  `$(sync~spin) Auto-Plan: [2/5] phase-02-watcher.md`
+  `$(sync~spin) Auto-Plan: [2/5] phase-02-watcher.md` hoặc `$(sync~spin) Auto-Plan: [1/3] (Custom) phase-03-api.md`
 - Markdown Tooltip chi tiết hiển thị: Folder Name, Tiến độ phần trăm, Phase hiện tại, Trạng thái & Thời gian chạy (Elapsed Time).
 - **Running Action Menu**: Click vào Status Bar khi đang chạy để:
   - 🛑 **Stop Auto-Plan**: Hủy quy trình ngay lập tức.
-  - ⏭️ **Skip Current Phase**: Bỏ qua phase hiện tại và chuyển sang phase tiếp theo.
+  - ⏭️ **Skip Current Phase**: Bỏ qua phase hiện tại và chuyển sang phase tiếp theo trong danh sách đã chọn.
   - 📄 **Open Active Transcript Log**: Mở file `transcript.jsonl` hiện tại trong editor để xem AI đang làm gì.
 
 ### 6. 📝 Dynamic Prompt Template Engine
@@ -65,20 +71,28 @@ Extension tự động quét thư mục plan, khởi tạo cuộc trò chuyện 
 
 ```mermaid
 flowchart TD
-    A([Start: autoplan.start]) --> B[QuickPick: Chọn Plan Folder]
-    B --> C[Pre-flight Scan: Sắp xếp các Phase File]
-    C --> D[Xác nhận khởi chạy Dialog]
-    D --> E[Lấy Phase File kế tiếp]
-    E --> F[Render Prompt Template với {xxx}]
-    F --> G[Gửi phím tắt Ctrl+Shift+L mở Conversation]
-    G --> H[Dán Prompt & Gửi Enter]
-    H --> I[Transcript Watcher: Lắng nghe transcript.jsonl]
-    I --> J{Nhận từ khóa 'Done skul9x.'?}
-    J -- Chưa / Timeout? --> I
-    J -- Đạt yêu cầu --> K{Còn Phase kế tiếp?}
-    K -- Còn --> L[Delay nghỉ giữa các phase]
-    L --> E
-    K -- Hết --> M([🎉 Hoàn thành toàn bộ Plan])
+    A([Start: autoplan.start]) --> B[Step 1: Chọn Plan Folder]
+    B --> C[Smart Scanner: Quét & Phân tích Trạng thái Phase]
+    C --> D{Step 2: Chọn Chế độ Thực thi}
+    D -- Run All --> E[Tất cả các Phase]
+    D -- Smart Resume --> F[Lọc Phase Pending & In Progress]
+    D -- Select Custom --> G[Multi-Select QuickPick]
+    D -- Run From --> H[Chọn Phase bắt đầu -> Chạy tiếp]
+    E --> I[Khởi tạo Orchestrator]
+    F --> I
+    G --> I
+    H --> I
+    I --> J[Lấy Phase kế tiếp từ danh sách chọn]
+    J --> K[Render Prompt Template với {xxx}]
+    K --> L[Gửi phím tắt Ctrl+Shift+L mở Conversation]
+    L --> M[Dán Prompt & Gửi Enter]
+    M --> N[Transcript Watcher: Lắng nghe transcript.jsonl]
+    N --> O{Nhận từ khóa 'Done skul9x.'?}
+    O -- Chưa / Timeout? --> N
+    O -- Đạt yêu cầu --> P{Còn Phase trong danh sách?}
+    P -- Còn --> Q[Delay nghỉ giữa các phase]
+    Q --> J
+    P -- Hết --> R([🎉 Hoàn thành danh sách đã chọn])
 ```
 
 ---
@@ -112,21 +126,24 @@ my-project/
 ├── plans/
 │   └── 260828-0020-auth-feature/
 │       ├── plan.md                       (Bị bỏ qua - file tổng quan)
-│       ├── phase-01-database-schema.md   (Chạy lượt 1)
-│       ├── phase-02-auth-api.md          (Chạy lượt 2)
-│       ├── phase-03-frontend-ui.md       (Chạy lượt 3)
-│       └── phase-04-integration-test.md  (Chạy lượt 4)
+│       ├── phase-01-database-schema.md   (Status: ✅ Completed)
+│       ├── phase-02-auth-api.md          (Status: 🔄 In Progress)
+│       ├── phase-03-frontend-ui.md       (Status: ⬜ Pending)
+│       └── phase-04-integration-test.md  (Status: ⬜ Pending)
 ```
 
-### 2. Bắt Đầu Tự Động Hóa
+### 2. Bắt Đầu Tự Động Hóa (2-Step Flow)
 1. Nhấn `Ctrl + Shift + P` (hoặc `F1`), gõ `Auto-Plan: Start Automation` (hoặc nhấp chuột vào nút **`$(rocket) Auto-Plan`** ở Status Bar góc dưới cùng bên phải).
-2. Chọn thư mục plan bạn muốn thực thi từ danh sách:
+2. **Bước 1 - Chọn thư mục plan**:
    - ⭐ **Active Plan**: Thư mục chứa file markdown bạn đang xem.
    - 📁 **Workspace Plans**: Các thư mục con tìm thấy trong `plans/`.
    - 🕒 **Recent Plans**: Lịch sử các plan đã chạy gần đây.
    - 📂 **Browse Folder from Disk...**: Chọn thư mục bất kỳ trên máy.
-3. Hộp thoại xác nhận hiển thị: `Auto-Plan: Found 4 phases in "260828-0020-auth-feature". Ready to start?`.
-4. Nhấn **`▶️ Start Auto-Run`**.
+3. **Bước 2 - Chọn hành động thực thi**:
+   - **▶️ Run all 4 phases**: Chạy trọn vẹn từ phase 1 đến 4.
+   - **⚡ Smart Resume (3 remaining)**: Tự động phát hiện phase 1 đã xong và chỉ chạy tiếp từ phase 2 đến 4.
+   - **🎯 Select custom phases...**: Tích chọn thủ công từng phase cụ thể cần chạy trong danh sách QuickPick đa nhiệm.
+   - **📍 Run from specific phase...**: Chọn 1 phase làm mốc (ví dụ phase 3) để chạy từ phase 3 đến hết.
 
 ### 3. Kiểm Soát Khi Đang Chạy
 Khi quy trình đang chạy, nhấp vào Status Bar `$(sync~spin) Auto-Plan: [X/Y] ...` để mở menu điều khiển:

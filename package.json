@@ -1,0 +1,123 @@
+{
+  "name": "antigravity-auto-plan",
+  "displayName": "Antigravity Auto-Plan Runner",
+  "description": "Automate repeated prompts and monitor completion in Antigravity IDE",
+  "version": "1.0.1",
+  "publisher": "skul9x",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other",
+    "Automation"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:autoplan.start",
+    "onCommand:autoplan.stop",
+    "onCommand:autoplan.skipPhase",
+    "onCommand:autoplan.actionMenu",
+    "onCommand:autoplan.openTranscript",
+    "onCommand:autoplan.setPrompt"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "autoplan.start",
+        "title": "Start Automation",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.stop",
+        "title": "Stop Automation",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.skipPhase",
+        "title": "Skip Current Phase",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.actionMenu",
+        "title": "Show Running Action Menu",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.openTranscript",
+        "title": "Open Active Transcript Log",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.setPrompt",
+        "title": "Set Prompt",
+        "category": "Auto-Plan"
+      }
+    ],
+    "configuration": {
+      "title": "Antigravity Auto-Plan",
+      "properties": {
+        "autoplan.defaultPromptTemplate": {
+          "type": "string",
+          "default": "Implement the code closely following the file {xxx}\nNote, follow the requirements exactly. Do only what is asked, with no extra work. Once done, you must thoroughly test what you have just implemented using exactly one file-based test for this phase. The test must verify the core functionality of the entire phase as comprehensively as reasonably possible. Do not create or run any additional tests, test cases, or test files. After finishing, mark the phase plan file as completed. When done, say \"Done skul9x.\" to save token.",
+          "description": "Default prompt template for each phase (using {xxx}, {path}, or {file})"
+        },
+        "autoplan.promptTemplate": {
+          "type": "string",
+          "default": "Implement the code closely following the file {xxx}\nNote, follow the requirements exactly. Do only what is asked, with no extra work. Once done, you must thoroughly test what you have just implemented using exactly one file-based test for this phase. The test must verify the core functionality of the entire phase as comprehensively as reasonably possible. Do not create or run any additional tests, test cases, or test files. After finishing, mark the phase plan file as completed. When done, say \"Done skul9x.\" to save token.",
+          "description": "Mẫu prompt động cho từng phase (sử dụng {xxx}, {path}, hoặc {file})"
+        },
+        "autoplan.promptText": {
+          "type": "string",
+          "default": "Hãy trả lời tôi với câu trả lời là \"Done skul9x.\", ngoài ra không nói gì thêm",
+          "description": "Nội dung prompt sẽ tự động paste vào khung chat"
+        },
+        "autoplan.defaultPlanFolder": {
+          "type": "string",
+          "default": "",
+          "description": "Thư mục chứa các file phase plan mặc định"
+        },
+        "autoplan.repeatCount": {
+          "type": "number",
+          "default": 5,
+          "description": "Số lần lặp lại quy trình"
+        },
+        "autoplan.completionKeyword": {
+          "type": "string",
+          "default": "Done skul9x.",
+          "description": "Từ khóa nhận diện hoàn thành"
+        },
+        "autoplan.delayBetweenLoopsMs": {
+          "type": "number",
+          "default": 2000,
+          "description": "Thời gian chờ giữa các lần lặp (mili-giây)"
+        },
+        "autoplan.timeoutPerLoopMinutes": {
+          "type": "number",
+          "default": 15,
+          "description": "Giới hạn thời gian tối đa cho 1 lượt chạy (phút)"
+        },
+        "autoplan.focusDelayMs": {
+          "type": "number",
+          "default": 800,
+          "description": "Thời gian chờ sau phím tắt mở chat để focus khung chat (mili-giây)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --allow-missing-repository --no-git-tag-version",
+    "test": "node out/test/phase05_e2e_package.test.js",
+    "test:modernize": "node out/test/phase02_test_suite_modernization.test.js",
+    "test:all": "node out/test/phase02_test_suite_modernization.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.3.3"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "project": {
+    "name": "Auto-Plan_Extension",
+    "description": "Extension cho Antigravity IDE: tự động bấm Ctrl + Shift + L, dán prompt định sẵn, gửi tin nhắn, theo dõi log transcript cho tới khi Agent phản hồi 'Done skul9x.' và lặp lại 5 lần.",
+    "created_at": "2026-08-27T23:51:00+07:00",
+    "active_plan": "plans/260827-2354-antigravity-auto-plan/plan.md"
+  },
+  "tech_stack": [
+    "TypeScript",
+    "VS Code Extension API",
+    "Windows PowerShell SendKeys / Clipboard",
+    "Transcript JSONL Stream Watcher"
+  ],
+  "features": [
+    "Tự động tạo conversation mới (Ctrl + Shift + L)",
+    "Tự động paste prompt và gửi",
+    "Lắng nghe log transcript phát hiện 'Done skul9x.'",
+    "Vòng lặp tự động 5 lần với Status Bar tiến độ & nút Stop"
+  ],
+  "decisions": [
+    "Đóng gói thành VS Code Extension (.vsix) cài trực tiếp vào Antigravity IDE",
+    "Cả 5 lần gửi cùng 1 đoạn text cấu hình sẵn",
+    "Dùng Transcript File Watcher để bắt 'Done skul9x.' siêu chính xác và tức thì"
+  ]
+}

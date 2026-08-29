@@ -94,16 +94,21 @@ const PHASE_COMPLETED_SIGNATURE = /^\s*status:\s*(?:\[[xX]\]|[^\w\s]+)?\s*(compl
 
 /**
  * Detects completion status of a phase markdown file by inspecting its header section (first 30 lines).
+ * Reads only up to an initial 4KB chunk to avoid loading large files into RAM.
  *
  * @param filePath Target markdown file path.
  * @returns 'Completed' if completion header is found; otherwise 'Pending'.
  */
 export function detectPhaseStatus(filePath: string): 'Completed' | 'Pending' {
+  let fd: number | null = null;
   try {
     if (!fs.existsSync(filePath)) {
       return 'Pending';
     }
-    const content = fs.readFileSync(filePath, 'utf8');
+    fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(4096);
+    const bytesRead = fs.readSync(fd, buffer, 0, 4096, 0);
+    const content = buffer.toString('utf8', 0, bytesRead);
     const headerLines = content.split(/\r?\n/).slice(0, 30);
 
     for (const line of headerLines) {
@@ -114,9 +119,47 @@ export function detectPhaseStatus(filePath: string): 'Completed' | 'Pending' {
     return 'Pending';
   } catch {
     return 'Pending';
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
   }
 }
 
+/**
+ * Asynchronously detects completion status of a phase markdown file by inspecting its header section (first 30 lines).
+ * Reads only up to an initial 4KB chunk using bounded async I/O.
+ *
+ * @param filePath Target markdown file path.
+ * @returns Promise resolving to 'Completed' if completion header is found; otherwise 'Pending'.
+ */
+export async function detectPhaseStatusAsync(filePath: string): Promise<'Completed' | 'Pending'> {
+  let handle: fs.promises.FileHandle | null = null;
+  try {
+    handle = await fs.promises.open(filePath, 'r');
+    const buffer = Buffer.alloc(4096);
+    const { bytesRead } = await handle.read(buffer, 0, 4096, 0);
+    const content = buffer.toString('utf8', 0, bytesRead);
+    const headerLines = content.split(/\r?\n/).slice(0, 30);
+
+    for (const line of headerLines) {
+      if (PHASE_COMPLETED_SIGNATURE.test(line)) {
+        return 'Completed';
+      }
+    }
+    return 'Pending';
+  } catch {
+    return 'Pending';
+  } finally {
+    if (handle) {
+      try {
+        await handle.close();
+      } catch {}
+    }
+  }
+}
 /**
  * Reliably sorts phase files using natural numeric collation based on filename and numeric index.
  *
@@ -294,6 +337,100 @@ export function scanPlanFolder(folderPath: string, options: ScanOptions = {}): P
       isCompleted: status === 'Completed'
     };
   });
+}
+
+/**
+ * Asynchronously scans a target folder and returns an ordered list of executable phase markdown files.
+ *
+ * @param folderPath Target directory containing phase markdown files.
+ * @param options Scanning options.
+ * @returns Promise resolving to a sorted list of PhaseFile objects with status metadata.
+ * @throws Error if folder does not exist or if no valid phase files are found.
+ */
+export async function scanPlanFolderAsync(
+  folderPath: string,
+  options: ScanOptions = {}
+): Promise<PhaseFile[]> {
+  const resolvedFolder = path.resolve(folderPath);
+
+  try {
+    const stat = await fs.promises.stat(resolvedFolder);
+    if (!stat.isDirectory()) {
+      throw new Error(`Specified path is not a directory: "${resolvedFolder}"`);
+    }
+  } catch (err: any) {
+    if (err.code === 'ENOENT') {
+      throw new Error(`Plan directory does not exist: "${resolvedFolder}"`);
+    }
+    throw err;
+  }
+
+  const candidateFiles: { fileName: string; fullPath: string; relativePath: string }[] = [];
+
+  async function walk(currentDir: string, relPrefix: string = '') {
+    const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const entryRelPath = relPrefix ? path.join(relPrefix, entry.name) : entry.name;
+      const entryFullPath = path.join(currentDir, entry.name);
+
+      if (entry.isDirectory()) {
+        const dirNameLower = entry.name.toLowerCase();
+        if (BLACKLISTED_DIRS.has(dirNameLower) || dirNameLower.startsWith('.')) {
+          continue;
+        }
+        if (options.recursive) {
+          await walk(entryFullPath, entryRelPath);
+        }
+      } else if (entry.isFile()) {
+        if (!entry.name.toLowerCase().endsWith('.md')) {
+          continue;
+        }
+        if (isBlacklistedArtifact(entry.name)) {
+          continue;
+        }
+        candidateFiles.push({
+          fileName: entry.name,
+          fullPath: entryFullPath,
+          relativePath: entryRelPath
+        });
+      }
+    }
+  }
+
+  await walk(resolvedFolder);
+
+  if (candidateFiles.length === 0) {
+    throw new Error(`No executable phase markdown files found in: "${resolvedFolder}"`);
+  }
+
+  // Filter for phase-specific naming conventions if present
+  const phasePrefixed = candidateFiles.filter(item => PHASE_NAME_PATTERN.test(item.fileName));
+  const finalCandidates = phasePrefixed.length > 0 ? phasePrefixed : candidateFiles;
+
+  // Natural alphanumeric sorting
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+  finalCandidates.sort((a, b) => collator.compare(a.fileName, b.fileName));
+
+  const results = await Promise.all(
+    finalCandidates.map(async (item, index) => {
+      const nativeP = path.normalize(item.fullPath);
+      const normP = normalizePath(nativeP);
+      const status = await detectPhaseStatusAsync(item.fullPath);
+      return {
+        fileName: item.fileName,
+        nativePath: nativeP,
+        normalizedPath: normP,
+        filePath: normP,
+        relativePath: normalizePath(item.relativePath),
+        index: index + 1,
+        status,
+        isCompleted: status === 'Completed'
+      };
+    })
+  );
+
+  return results;
 }
 
 /**

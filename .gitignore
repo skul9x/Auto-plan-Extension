@@ -10,6 +10,7 @@ pids
 *.pid
 *.seed
 *.pid.lock
+.brain/
 
 # Dependency directories
 node_modules/
@@ -35,3 +36,4 @@ Desktop.ini
 .env
 .env.local
 .env.*.local
+

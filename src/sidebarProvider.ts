@@ -2,8 +2,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import { scanPlanFolder, PhaseFile, sortPhaseFiles } from './planScanner';
-import { discoverWorkspacePlanFolders, executePhases, promptAndStartAutoPlan, showBridgeDiagnosticDialog, getCurrentPlanFolder, setCurrentPlanFolder } from './extension';
+import { scanPlanFolder, scanPlanFolderAsync, PhaseFile, sortPhaseFiles } from './planScanner';
+import { discoverWorkspacePlanFolders, discoverWorkspacePlanFoldersAsync, executePhases, promptAndStartAutoPlan, showBridgeDiagnosticDialog, getCurrentPlanFolder, setCurrentPlanFolder } from './extension';
 import { orchestrator } from './orchestrator';
 import { bridgeServer } from './bridgeServer';
 
@@ -15,6 +15,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   private _phases: PhaseFile[] = [];
   private _selectedPhaseIndices: Set<number> = new Set();
   private _transcriptLogs: string[] = [];
+  private _pendingLogQueue: string[] = [];
+  private _logFlushTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -51,22 +53,25 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this.sendBridgeStatus();
   }
 
-  public refreshAndSendState() {
+  public async refreshAndSendState() {
     if (!this._activePlanPath) {
       this._activePlanPath = getCurrentPlanFolder();
     }
 
-    if (this._activePlanPath && fs.existsSync(this._activePlanPath)) {
+    if (this._activePlanPath) {
       try {
-        this._phases = scanPlanFolder(this._activePlanPath);
-        if (this._selectedPhaseIndices.size === 0 && this._phases.length > 0) {
-          this._phases.forEach((p, idx) => {
-            if (!p.isCompleted) {
-              this._selectedPhaseIndices.add(idx);
+        const stat = await fs.promises.stat(this._activePlanPath);
+        if (stat.isDirectory()) {
+          this._phases = await scanPlanFolderAsync(this._activePlanPath);
+          if (this._selectedPhaseIndices.size === 0 && this._phases.length > 0) {
+            this._phases.forEach((p, idx) => {
+              if (!p.isCompleted) {
+                this._selectedPhaseIndices.add(idx);
+              }
+            });
+            if (this._selectedPhaseIndices.size === 0) {
+              this._phases.forEach((_, idx) => this._selectedPhaseIndices.add(idx));
             }
-          });
-          if (this._selectedPhaseIndices.size === 0) {
-            this._phases.forEach((_, idx) => this._selectedPhaseIndices.add(idx));
           }
         }
       } catch {
@@ -76,7 +81,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     let plans: { folderPath: string; relName: string; phaseCount: number }[] = [];
     try {
-      plans = discoverWorkspacePlanFolders();
+      plans = await discoverWorkspacePlanFoldersAsync();
     } catch {}
 
     const isRunning = orchestrator.isRunning();
@@ -98,8 +103,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   public updateState(state?: any) {
+    this.flushPendingLogs();
     if (!state) {
-      this.refreshAndSendState();
+      void this.refreshAndSendState();
       return;
     }
 
@@ -139,11 +145,42 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     if (this._transcriptLogs.length > 100) {
       this._transcriptLogs.shift();
     }
-    this._view?.webview.postMessage({
-      type: 'transcriptLog',
-      command: 'transcriptLog',
-      log
-    });
+    this._pendingLogQueue.push(log);
+    if (!this._logFlushTimer) {
+      this._logFlushTimer = setTimeout(() => {
+        this.flushPendingLogs();
+      }, 100);
+    }
+  }
+
+  public flushPendingLogs(): void {
+    if (this._logFlushTimer) {
+      clearTimeout(this._logFlushTimer);
+      this._logFlushTimer = null;
+    }
+    if (this._pendingLogQueue.length === 0) {
+      return;
+    }
+    const logs = [...this._pendingLogQueue];
+    this._pendingLogQueue = [];
+
+    if (logs.length === 1) {
+      this._view?.webview.postMessage({
+        type: 'transcriptLog',
+        command: 'transcriptLog',
+        log: logs[0]
+      });
+    } else {
+      this._view?.webview.postMessage({
+        type: 'transcriptLogBatch',
+        command: 'transcriptLogBatch',
+        logs
+      });
+    }
+  }
+
+  public dispose(): void {
+    this.flushPendingLogs();
   }
 
   public sendProgress(progress: { percentage: number; elapsedTime: string; currentPhaseIndex?: number; totalPhases?: number }) {
@@ -185,13 +222,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           this._activePlanPath = message.folderPath;
           setCurrentPlanFolder(message.folderPath);
           this._selectedPhaseIndices.clear();
-          this.refreshAndSendState();
+          await this.refreshAndSendState();
         } else if (this._context) {
           await promptAndStartAutoPlan(this._context);
         }
         break;
       case 'refreshPlans':
-        this.refreshAndSendState();
+        await this.refreshAndSendState();
         break;
       case 'togglePhase':
         if (typeof message.index === 'number') {

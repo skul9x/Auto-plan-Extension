@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { getConfig, setPromptText, writeConfigJson } from './config';
 import { orchestrator, OrchestratorProgressInfo } from './orchestrator';
-import { scanPlanFolder, sortPhaseFiles, getPhasesFrom, normalizePath, PhaseFile } from './planScanner';
+import { scanPlanFolder, scanPlanFolderAsync, sortPhaseFiles, getPhasesFrom, normalizePath, PhaseFile } from './planScanner';
 import { getDefaultBrainDir, getTranscriptPath, findLatestConversation, transcriptWatcher } from './transcriptWatcher';
 import { bridgeServer, BRIDGE_PROTOCOL_VERSION } from './bridgeServer';
 import { isBridgeInstalled, installBridgeScript, uninstallBridgeScript, getWorkbenchPath } from './workbenchInjector';
@@ -110,8 +110,8 @@ export function getCachedRunningTooltip(
   stateMessage: string,
   elapsedMs: number
 ): vscode.MarkdownString {
-  const elapsedSec = Math.max(0, Math.floor(elapsedMs / 1000));
-  const key = `${folderName}|${currentPhaseIndex}|${totalPhases}|${phaseFileName}|${stateMessage}|${elapsedSec}`;
+  const elapsedMin = Math.max(0, Math.floor(elapsedMs / 60000));
+  const key = `${folderName}|${currentPhaseIndex}|${totalPhases}|${phaseFileName}|${stateMessage}|${elapsedMin}`;
   if (key === lastTooltipKey && lastRenderedTooltip) {
     return lastRenderedTooltip;
   }
@@ -224,6 +224,63 @@ export function discoverWorkspacePlanFolders(forceRefresh: boolean = false): { f
 }
 
 /**
+ * Asynchronously scans active workspace folders to discover any candidate plan folders under `plans/`.
+ * Results are cached in-memory with a short TTL (5s) to avoid redundant disk I/O and event loop freezes.
+ */
+export async function discoverWorkspacePlanFoldersAsync(forceRefresh: boolean = false): Promise<{ folderPath: string; relName: string; phaseCount: number }[]> {
+  const now = Date.now();
+  if (!forceRefresh && planDiscoveryCache && now - planDiscoveryCache.timestamp < PLAN_DISCOVERY_CACHE_TTL_MS) {
+    return planDiscoveryCache.results;
+  }
+
+  const results: { folderPath: string; relName: string; phaseCount: number }[] = [];
+  const workspaceFolders = vscode.workspace.workspaceFolders || [];
+
+  for (const wf of workspaceFolders) {
+    const rootPath = wf.uri.fsPath;
+    const plansDir = path.join(rootPath, 'plans');
+
+    try {
+      const stat = await fs.promises.stat(plansDir);
+      if (stat.isDirectory()) {
+        // Check plans directory itself
+        try {
+          const rootPhases = await scanPlanFolderAsync(plansDir);
+          if (rootPhases && rootPhases.length > 0) {
+            results.push({ folderPath: plansDir, relName: 'plans', phaseCount: rootPhases.length });
+          }
+        } catch {}
+
+        // Check direct subdirectories of plans/
+        const entries = await fs.promises.readdir(plansDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory() && !entry.name.startsWith('.')) {
+            const subDir = path.join(plansDir, entry.name);
+            try {
+              const subPhases = await scanPlanFolderAsync(subDir);
+              if (subPhases && subPhases.length > 0) {
+                results.push({
+                  folderPath: subDir,
+                  relName: `plans/${entry.name}`,
+                  phaseCount: subPhases.length
+                });
+              }
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+  }
+
+  planDiscoveryCache = {
+    timestamp: now,
+    results
+  };
+
+  return results;
+}
+
+/**
  * Returns recent plan folders from global and workspace state.
  */
 export function getRecentPlanFolders(context: vscode.ExtensionContext): string[] {
@@ -323,32 +380,43 @@ export function buildFolderQuickPickItems(context: vscode.ExtensionContext): Pla
   return items;
 }
 
+export function setMainStatusBarItem(item: vscode.StatusBarItem): void {
+  mainStatusBarItem = item;
+}
+
+export function updateTooltipFromInfo(info: OrchestratorProgressInfo): void {
+  const currentIdx =
+    info.currentPhaseIndex !== undefined
+      ? info.currentPhaseIndex
+      : info.currentIteration
+      ? info.currentIteration - 1
+      : 0;
+  const total = info.totalPhases || info.totalIterations || 1;
+  const displayPhase = info.currentPhase?.fileName || '';
+  const folderName = currentPlanFolder ? path.basename(currentPlanFolder) : 'Active Plan';
+  const elapsedMs = runStartTime > 0 ? Date.now() - runStartTime : 0;
+  const statusMsg = info.message || 'Waiting for Agent completion...';
+
+  if (mainStatusBarItem) {
+    mainStatusBarItem.tooltip = getCachedRunningTooltip(
+      folderName,
+      currentIdx,
+      total,
+      displayPhase || 'Initializing...',
+      statusMsg,
+      elapsedMs
+    );
+  }
+}
+
 function startElapsedTimer(info: OrchestratorProgressInfo) {
   lastProgressInfo = info;
   if (!elapsedTimer) {
     elapsedTimer = setInterval(() => {
       if (orchestrator.isRunning() && lastProgressInfo) {
-        const currentIdx =
-          lastProgressInfo.currentPhaseIndex !== undefined
-            ? lastProgressInfo.currentPhaseIndex
-            : lastProgressInfo.currentIteration
-            ? lastProgressInfo.currentIteration - 1
-            : 0;
-        const total = lastProgressInfo.totalPhases || lastProgressInfo.totalIterations || 1;
-        const displayPhase = lastProgressInfo.currentPhase?.fileName || '';
-        const folderName = currentPlanFolder ? path.basename(currentPlanFolder) : 'Active Plan';
-        const elapsedMs = runStartTime > 0 ? Date.now() - runStartTime : 0;
-        const statusMsg = lastProgressInfo.message || 'Waiting for Agent completion...';
-        mainStatusBarItem.tooltip = getCachedRunningTooltip(
-          folderName,
-          currentIdx,
-          total,
-          displayPhase || 'Initializing...',
-          statusMsg,
-          elapsedMs
-        );
+        updateTooltipFromInfo(lastProgressInfo);
       }
-    }, 1000);
+    }, 60000);
   }
 }
 
@@ -368,10 +436,12 @@ export function updateStatusBar(info?: OrchestratorProgressInfo): void {
   if (!info || info.state === 'idle' || info.state === 'stopped' || info.state === 'completed' || info.state === 'error') {
     stopElapsedTimer();
     clearTooltipCache();
-    mainStatusBarItem.text = '$(rocket) Auto-Plan';
-    mainStatusBarItem.tooltip = 'Auto-Plan: Click to select plan folder and run';
-    mainStatusBarItem.command = 'autoplan.start';
-    mainStatusBarItem.show();
+    if (mainStatusBarItem) {
+      mainStatusBarItem.text = '$(rocket) Auto-Plan';
+      mainStatusBarItem.tooltip = 'Auto-Plan: Click to select plan folder and run';
+      mainStatusBarItem.command = 'autoplan.start';
+      mainStatusBarItem.show();
+    }
     return;
   }
 
@@ -385,24 +455,17 @@ export function updateStatusBar(info?: OrchestratorProgressInfo): void {
   const total = info.totalPhases || info.totalIterations || 1;
   const displayPhase = info.currentPhase?.fileName || '';
 
-  mainStatusBarItem.text = displayPhase
-    ? `$(sync~spin) Auto-Plan: [${currentIdx + 1}/${total}] ${displayPhase}`
-    : `$(sync~spin) Auto-Plan: [${currentIdx + 1}/${total}]`;
-  mainStatusBarItem.command = 'autoplan.actionMenu';
+  if (mainStatusBarItem) {
+    mainStatusBarItem.text = displayPhase
+      ? `$(sync~spin) Auto-Plan: [${currentIdx + 1}/${total}] ${displayPhase}`
+      : `$(sync~spin) Auto-Plan: [${currentIdx + 1}/${total}]`;
+    mainStatusBarItem.command = 'autoplan.actionMenu';
+  }
 
-  const folderName = currentPlanFolder ? path.basename(currentPlanFolder) : 'Active Plan';
-  const elapsedMs = runStartTime > 0 ? Date.now() - runStartTime : 0;
-  const statusMsg = info.message || 'Waiting for Agent completion...';
-
-  mainStatusBarItem.tooltip = getCachedRunningTooltip(
-    folderName,
-    currentIdx,
-    total,
-    displayPhase || 'Initializing...',
-    statusMsg,
-    elapsedMs
-  );
-  mainStatusBarItem.show();
+  updateTooltipFromInfo(info);
+  if (mainStatusBarItem) {
+    mainStatusBarItem.show();
+  }
 
   startElapsedTimer(info);
 }

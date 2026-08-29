@@ -22,6 +22,16 @@
     'Continue'
   ];
 
+  const CONTAINER_SELECTORS = [
+    '.interactive-session',
+    'div.chat-input',
+    '.chat-input-container',
+    '.monaco-dialog-box',
+    '.dialog-shadow',
+    '.notifications-toasts',
+    '.monaco-alert-dialog'
+  ];
+
   /**
    * Recursively search within root, shadow roots, and child iframes
    */
@@ -30,27 +40,58 @@
     if (!doc) return [];
 
     let results = [];
-    try {
-      if (typeof doc.querySelectorAll === 'function') {
-        const found = doc.querySelectorAll(selector);
-        results = results.concat(Array.from(found));
-      }
-    } catch (_) {}
+    const isTopLevel = (typeof document !== 'undefined' && (doc === document || doc === document.body)) ||
+      (doc && (doc.documentElement || doc.body) && !doc.parentElement);
 
-    // Traverse shadow roots
     try {
       if (typeof doc.querySelectorAll === 'function') {
-        const allNodes = doc.querySelectorAll('*');
-        for (let i = 0; i < allNodes.length; i++) {
-          const el = allNodes[i];
-          if (el.shadowRoot) {
-            results = results.concat(queryDeep(selector, el.shadowRoot));
+        let searchedScopedContainers = false;
+
+        if (isTopLevel) {
+          const containers = doc.querySelectorAll(CONTAINER_SELECTORS.join(', '));
+          if (containers && containers.length > 0) {
+            searchedScopedContainers = true;
+            for (let cIdx = 0; cIdx < containers.length; cIdx++) {
+              const container = containers[cIdx];
+              if (typeof container.matches === 'function' && container.matches(selector)) {
+                results.push(container);
+              }
+              if (typeof container.querySelectorAll === 'function') {
+                const found = container.querySelectorAll(selector);
+                results = results.concat(Array.from(found));
+              }
+              if (container.shadowRoot) {
+                results = results.concat(queryDeep(selector, container.shadowRoot));
+              }
+              if (typeof container.querySelectorAll === 'function') {
+                const innerNodes = container.querySelectorAll('*');
+                for (let i = 0; i < innerNodes.length; i++) {
+                  const el = innerNodes[i];
+                  if (el.shadowRoot) {
+                    results = results.concat(queryDeep(selector, el.shadowRoot));
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if (!searchedScopedContainers) {
+          const found = doc.querySelectorAll(selector);
+          results = results.concat(Array.from(found));
+
+          const allNodes = doc.querySelectorAll('*');
+          for (let i = 0; i < allNodes.length; i++) {
+            const el = allNodes[i];
+            if (el.shadowRoot) {
+              results = results.concat(queryDeep(selector, el.shadowRoot));
+            }
           }
         }
       }
     } catch (_) {}
 
-    return results;
+    return Array.from(new Set(results));
   }
 
   /**
@@ -351,6 +392,8 @@
     const doc = options.document || (typeof document !== 'undefined' ? document : null);
     const intervalMs = options.intervalMs || 1000;
     const onApproved = options.onApproved || null;
+    const throttleMs = options.throttleMs || 300;
+    const maxWaitMs = options.maxWaitMs || 500;
 
     if (!doc) {
       return { stop: () => {} };
@@ -393,6 +436,52 @@
     // 1. Initial immediate scan
     scanAndApprove();
 
+    // Throttled scan helper with 300ms debounce quiet period and 500ms maxWait
+    let throttleTimer = null;
+    let maxWaitTimer = null;
+    let firstCallTime = 0;
+
+    function executeScan() {
+      if (throttleTimer) {
+        clearTimeout(throttleTimer);
+        throttleTimer = null;
+      }
+      if (maxWaitTimer) {
+        clearTimeout(maxWaitTimer);
+        maxWaitTimer = null;
+      }
+      firstCallTime = 0;
+      scanAndApprove();
+    }
+
+    function throttledScan() {
+      if (isStopped) return;
+      const now = Date.now();
+      if (!firstCallTime) {
+        firstCallTime = now;
+      }
+
+      if (now - firstCallTime >= maxWaitMs) {
+        executeScan();
+        return;
+      }
+
+      if (throttleTimer) {
+        clearTimeout(throttleTimer);
+      }
+
+      const remainingWait = Math.min(throttleMs, maxWaitMs - (now - firstCallTime));
+      throttleTimer = setTimeout(() => {
+        executeScan();
+      }, remainingWait);
+
+      if (!maxWaitTimer) {
+        maxWaitTimer = setTimeout(() => {
+          executeScan();
+        }, maxWaitMs - (now - firstCallTime));
+      }
+    }
+
     // 2. MutationObserver
     let observer = null;
     const win = options.window || (typeof window !== 'undefined' ? window : null);
@@ -401,7 +490,7 @@
     if (MutationObserverClass) {
       try {
         observer = new MutationObserverClass(() => {
-          scanAndApprove();
+          throttledScan();
         });
         const targetNode = doc.body || doc.documentElement || doc;
         if (targetNode && typeof observer.observe === 'function') {
@@ -423,6 +512,14 @@
       scanNow: () => scanAndApprove(),
       stop: () => {
         isStopped = true;
+        if (throttleTimer) {
+          clearTimeout(throttleTimer);
+          throttleTimer = null;
+        }
+        if (maxWaitTimer) {
+          clearTimeout(maxWaitTimer);
+          maxWaitTimer = null;
+        }
         if (observer && typeof observer.disconnect === 'function') {
           observer.disconnect();
         }
@@ -645,6 +742,7 @@
     DEFAULT_PORT_START,
     DEFAULT_PORT_END,
     DEFAULT_APPROVAL_PATTERNS,
+    CONTAINER_SELECTORS,
     queryDeep,
     findChatInput,
     findSendButton,

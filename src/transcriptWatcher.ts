@@ -10,6 +10,7 @@ export interface WatcherOptions {
   keyword?: string;
   timeoutMs?: number;
   pollIntervalMs?: number;
+  relaxedPollIntervalMs?: number;
   settleQuietPeriodMs?: number;
 }
 
@@ -353,6 +354,7 @@ export function isValidCompletionStep(step: any, keyword: string): boolean {
 export class TranscriptWatcher extends EventEmitter {
   private options: Required<WatcherOptions>;
   private isWatching: boolean = false;
+  public activePollIntervalMs: number = 300;
   private activeTimer: NodeJS.Timeout | null = null;
   private pollInterval: NodeJS.Timeout | null = null;
   private fsWatcher: fs.FSWatcher | null = null;
@@ -386,8 +388,14 @@ export class TranscriptWatcher extends EventEmitter {
       keyword: options?.keyword || DEFAULT_CONFIG.completionKeyword,
       timeoutMs: options?.timeoutMs || DEFAULT_CONFIG.timeoutPerLoopMinutes * 60 * 1000,
       pollIntervalMs: options?.pollIntervalMs || 300,
+      relaxedPollIntervalMs: options?.relaxedPollIntervalMs || 1200,
       settleQuietPeriodMs: options?.settleQuietPeriodMs ?? 1500
     };
+    this.activePollIntervalMs = this.options.pollIntervalMs;
+  }
+
+  public getActivePollIntervalMs(): number {
+    return this.activePollIntervalMs;
   }
 
   /**
@@ -496,6 +504,7 @@ export class TranscriptWatcher extends EventEmitter {
       };
 
       // Native fs.watch on brain directory for instant detection
+      let brainWatcherSuccess = false;
       try {
         if (fs.existsSync(this.options.brainDir)) {
           this.brainFsWatcher = fs.watch(this.options.brainDir, (eventType) => {
@@ -503,13 +512,25 @@ export class TranscriptWatcher extends EventEmitter {
               check();
             }
           });
+          this.brainFsWatcher.on('error', () => {
+            this.activePollIntervalMs = this.options.pollIntervalMs;
+            if (this.convPollTimer) {
+              clearInterval(this.convPollTimer);
+              this.convPollTimer = setInterval(check, this.activePollIntervalMs);
+            }
+          });
+          brainWatcherSuccess = true;
         }
       } catch (e) {
-        // Fallback to polling
+        brainWatcherSuccess = false;
       }
 
-      // Fast polling interval backup
-      this.convPollTimer = setInterval(check, actualPollIntervalMs);
+      // Adaptive polling interval backup (relaxed when fsWatcher is active)
+      this.activePollIntervalMs = brainWatcherSuccess
+        ? (this.options.relaxedPollIntervalMs || 1200)
+        : (actualPollIntervalMs || this.options.pollIntervalMs);
+
+      this.convPollTimer = setInterval(check, this.activePollIntervalMs);
 
       // Initial check immediately
       check();
@@ -627,6 +648,7 @@ export class TranscriptWatcher extends EventEmitter {
       };
 
       // Native fs.watch on directory or file if possible
+      let watcherSuccess = false;
       try {
         const watchTarget = fs.existsSync(filePath) ? filePath : path.dirname(filePath);
         if (fs.existsSync(watchTarget)) {
@@ -635,13 +657,25 @@ export class TranscriptWatcher extends EventEmitter {
               checkFileAndProcess();
             }
           });
+          this.fsWatcher.on('error', () => {
+            this.activePollIntervalMs = this.options.pollIntervalMs;
+            if (this.pollInterval) {
+              clearInterval(this.pollInterval);
+              this.pollInterval = setInterval(checkFileAndProcess, this.activePollIntervalMs);
+            }
+          });
+          watcherSuccess = true;
         }
       } catch (e) {
-        // Fallback to polling
+        watcherSuccess = false;
       }
 
-      // Fast polling interval backup
-      this.pollInterval = setInterval(checkFileAndProcess, this.options.pollIntervalMs);
+      // Adaptive polling interval backup (relaxed when fsWatcher is active)
+      this.activePollIntervalMs = watcherSuccess
+        ? (this.options.relaxedPollIntervalMs || 1200)
+        : this.options.pollIntervalMs;
+
+      this.pollInterval = setInterval(checkFileAndProcess, this.activePollIntervalMs);
 
       // Initial check immediately
       checkFileAndProcess();
@@ -750,6 +784,7 @@ export class TranscriptWatcher extends EventEmitter {
     this.isWatching = false;
     this.isCheckingConv = false;
     this.isCheckingFile = false;
+    this.activePollIntervalMs = this.options.pollIntervalMs;
 
     if (this.convPollTimer) {
       clearInterval(this.convPollTimer);

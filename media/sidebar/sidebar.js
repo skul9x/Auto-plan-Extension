@@ -107,6 +107,9 @@
       case 'transcriptLog':
         renderTranscriptLog(message);
         break;
+      case 'transcriptLogBatch':
+        renderTranscriptLogBatch(message);
+        break;
       case 'progress':
         renderProgress(message);
         break;
@@ -262,12 +265,41 @@
   function renderTranscriptLog(data) {
     const text = typeof data === 'string' ? data : (data.log || '');
     if (!text) return;
+    appendAndPruneLogLines([text]);
+  }
 
-    if (transcriptLog.textContent === 'Waiting for activity...') {
-      transcriptLog.textContent = '';
+  function renderTranscriptLogBatch(data) {
+    const logs = Array.isArray(data) ? data : (data.logs || []);
+    if (!logs || logs.length === 0) return;
+    appendAndPruneLogLines(logs);
+  }
+
+  function appendAndPruneLogLines(newLogLines) {
+    if (!newLogLines || newLogLines.length === 0) return;
+
+    let currentText = transcriptLog ? (transcriptLog.textContent || '') : '';
+    if (currentText === 'Waiting for activity...' || currentText === 'Feed cleared.') {
+      currentText = '';
     }
 
-    transcriptLog.textContent += text + '\n';
-    transcriptViewport.scrollTop = transcriptViewport.scrollHeight;
+    let existingLines = currentText ? currentText.split('\n') : [];
+
+    for (const item of newLogLines) {
+      if (typeof item === 'string') {
+        const splitItems = item.split('\n');
+        existingLines.push(...splitItems);
+      }
+    }
+
+    if (existingLines.length > 200) {
+      existingLines = existingLines.slice(-200);
+    }
+
+    if (transcriptLog) {
+      transcriptLog.textContent = existingLines.join('\n');
+    }
+    if (transcriptViewport) {
+      transcriptViewport.scrollTop = transcriptViewport.scrollHeight;
+    }
   }
 })();

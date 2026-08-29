@@ -1,12 +1,17 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getConfig, setPromptText } from './config';
+import { getConfig, setPromptText, writeConfigJson } from './config';
 import { orchestrator, OrchestratorProgressInfo } from './orchestrator';
 import { scanPlanFolder, sortPhaseFiles, getPhasesFrom, normalizePath, PhaseFile } from './planScanner';
 import { getDefaultBrainDir, getTranscriptPath, findLatestConversation, transcriptWatcher } from './transcriptWatcher';
+import { bridgeServer, BRIDGE_PROTOCOL_VERSION } from './bridgeServer';
+import { isBridgeInstalled, installBridgeScript, uninstallBridgeScript, getWorkbenchPath } from './workbenchInjector';
+import { SidebarProvider } from './sidebarProvider';
 
 let mainStatusBarItem: vscode.StatusBarItem;
+let bridgeStatusBarItem: vscode.StatusBarItem;
+export let sidebarProvider: SidebarProvider | undefined;
 let currentPlanFolder: string | undefined;
 let runStartTime: number = 0;
 let elapsedTimer: NodeJS.Timeout | null = null;
@@ -15,6 +20,10 @@ let completionResetTimeout: NodeJS.Timeout | null = null;
 
 export function getMainStatusBarItem(): vscode.StatusBarItem {
   return mainStatusBarItem;
+}
+
+export function getBridgeStatusBarItem(): vscode.StatusBarItem {
+  return bridgeStatusBarItem;
 }
 
 export function getCurrentPlanFolder(): string | undefined {
@@ -801,9 +810,195 @@ export async function showRunningActionMenu(): Promise<void> {
   }
 }
 
+export interface BridgeDiagnosticReport {
+  isInstalled: boolean;
+  workbenchPath: string | null;
+  serverListening: boolean;
+  serverPort: number | null;
+  activeWindowKey: string | null;
+  connectedClientsCount: number;
+  connectedClients: any[];
+  executionMode: string;
+  autoInjectWorkbench: boolean;
+  autoApprovePermissions: boolean;
+  bridgeTimeoutMs: number;
+  protocolVersion: string;
+}
+
+/**
+ * Updates the Bridge status bar item with current connectivity and installation state.
+ */
+export function updateBridgeStatusBar(): void {
+  if (!bridgeStatusBarItem) return;
+
+  const installed = isBridgeInstalled();
+  const listening = bridgeServer.isListening();
+  const port = bridgeServer.getPort();
+  const clients = bridgeServer.getConnectedClients();
+
+  if (installed && listening) {
+    if (clients.length > 0) {
+      bridgeStatusBarItem.text = '$(plug) Bridge: Connected';
+      bridgeStatusBarItem.tooltip = `Auto-Plan DOM Bridge: Active & Connected (Port: ${port}, Clients: ${clients.length})\nClick to check diagnostic status`;
+    } else {
+      bridgeStatusBarItem.text = '$(plug) Bridge: Active';
+      bridgeStatusBarItem.tooltip = `Auto-Plan DOM Bridge: Listening on port ${port} (Waiting for DOM client)\nClick to check diagnostic status`;
+    }
+    bridgeStatusBarItem.command = 'autoplan.checkBridgeStatus';
+  } else if (!installed) {
+    bridgeStatusBarItem.text = '$(alert) Bridge: Disconnected';
+    bridgeStatusBarItem.tooltip = 'Auto-Plan DOM Bridge: Not Installed in workbench.html\nClick to Install DOM Bridge';
+    bridgeStatusBarItem.command = 'autoplan.installBridge';
+  } else {
+    bridgeStatusBarItem.text = '$(alert) Bridge: Inactive';
+    bridgeStatusBarItem.tooltip = 'Auto-Plan DOM Bridge: Server not running\nClick to check diagnostic status';
+    bridgeStatusBarItem.command = 'autoplan.checkBridgeStatus';
+  }
+
+  bridgeStatusBarItem.show();
+}
+
+/**
+ * Installs the DOM Automation Bridge into workbench.html.
+ */
+export async function installBridge(): Promise<boolean> {
+  const result = installBridgeScript();
+  if (result.success) {
+    updateBridgeStatusBar();
+    const selection = await vscode.window.showInformationMessage(
+      'DOM Bridge injected successfully. Reload IDE to apply.',
+      '🔄 Reload Window',
+      'Later'
+    );
+    if (selection === '🔄 Reload Window') {
+      await vscode.commands.executeCommand('workbench.action.reloadWindow');
+    }
+    return true;
+  } else {
+    vscode.window.showErrorMessage(`Auto-Plan: Failed to install DOM Bridge: ${result.error}`);
+    return false;
+  }
+}
+
+/**
+ * Shows actionable warning notification when DOM Bridge is missing.
+ */
+export async function showBridgeMissingNotification(): Promise<string | undefined> {
+  const selection = await vscode.window.showWarningMessage(
+    'Auto-Plan DOM Bridge is not active (Focus-Free mode unavailable).',
+    '⚡ 1-Click Setup',
+    '🛠️ Open Diagnostics',
+    'Dismiss'
+  );
+  if (selection === '⚡ 1-Click Setup') {
+    await vscode.commands.executeCommand('autoplan.oneClickSetup');
+  } else if (selection === '🛠️ Open Diagnostics') {
+    await vscode.commands.executeCommand('autoplan.checkStatus');
+  }
+  return selection;
+}
+
+/**
+ * Shows actionable error notification when Linux Pre-Flight fails.
+ */
+export async function showLinuxPreflightErrorNotification(): Promise<string | undefined> {
+  const selection = await vscode.window.showErrorMessage(
+    'Linux Pre-Flight Failed: Missing DOM Bridge and xdotool.',
+    '⚡ Activate Bridge (Recommended)',
+    '📦 Install xdotool Guide'
+  );
+  if (selection === '⚡ Activate Bridge (Recommended)') {
+    await vscode.commands.executeCommand('autoplan.oneClickSetup');
+  } else if (selection === '📦 Install xdotool Guide') {
+    await vscode.window.showInformationMessage(
+      'To enable background automation on Linux without DOM Bridge, install xdotool via: sudo apt-get install xdotool'
+    );
+  }
+  return selection;
+}
+
+/**
+ * Uninstalls the DOM Automation Bridge from workbench.html.
+ */
+export async function uninstallBridge(): Promise<boolean> {
+  const result = uninstallBridgeScript();
+  if (result.success) {
+    updateBridgeStatusBar();
+    const selection = await vscode.window.showInformationMessage(
+      'Auto-Plan: DOM Automation Bridge uninstalled successfully. Please reload the window for changes to take effect.',
+      'Reload Window',
+      'Later'
+    );
+    if (selection === 'Reload Window') {
+      await vscode.commands.executeCommand('workbench.action.reloadWindow');
+    }
+    return true;
+  } else {
+    vscode.window.showErrorMessage(`Auto-Plan: Failed to uninstall DOM Bridge: ${result.error}`);
+    return false;
+  }
+}
+
+/**
+ * Runs bridge diagnostics and returns status report.
+ */
+export function runBridgeDiagnostic(): BridgeDiagnosticReport {
+  const installed = isBridgeInstalled();
+  const wbPath = getWorkbenchPath();
+  const status = bridgeServer.getStatus();
+  const config = getConfig();
+
+  return {
+    isInstalled: installed,
+    workbenchPath: wbPath,
+    serverListening: bridgeServer.isListening(),
+    serverPort: bridgeServer.getPort(),
+    activeWindowKey: bridgeServer.getActiveWindowKey(),
+    connectedClientsCount: status.connectedClients,
+    connectedClients: bridgeServer.getConnectedClients(),
+    executionMode: config.executionMode || 'auto',
+    autoInjectWorkbench: config.autoInjectWorkbench ?? true,
+    autoApprovePermissions: config.autoApprovePermissions ?? true,
+    bridgeTimeoutMs: config.bridgeTimeoutMs ?? 5000,
+    protocolVersion: status.protocolVersion || BRIDGE_PROTOCOL_VERSION
+  };
+}
+
+/**
+ * Shows interactive diagnostic modal/dialog to the user.
+ */
+export async function showBridgeDiagnosticDialog(): Promise<BridgeDiagnosticReport> {
+  const report = runBridgeDiagnostic();
+  const statusLines = [
+    `• DOM Bridge Script: ${report.isInstalled ? '✅ Installed' : '❌ Not Installed'}`,
+    `• Workbench File: ${report.workbenchPath || 'Not Detected'}`,
+    `• Bridge Server: ${report.serverListening ? `✅ Running (Port: ${report.serverPort})` : '❌ Stopped'}`,
+    `• Active Window Key: ${report.activeWindowKey || 'None'}`,
+    `• Connected DOM Clients: ${report.connectedClientsCount}`,
+    `• Transport Mode: ${report.executionMode}`,
+    `• Auto-Inject On Startup: ${report.autoInjectWorkbench ? 'Enabled' : 'Disabled'}`
+  ];
+
+  const actions = report.isInstalled
+    ? ['Reinstall Bridge', 'Uninstall Bridge', 'OK']
+    : ['Install Bridge', 'OK'];
+
+  const choice = await vscode.window.showInformationMessage(
+    `Auto-Plan DOM Bridge Diagnostics:\n${statusLines.join('\n')}`,
+    ...actions
+  );
+
+  if (choice === 'Install Bridge' || choice === 'Reinstall Bridge') {
+    await installBridge();
+  } else if (choice === 'Uninstall Bridge') {
+    await uninstallBridge();
+  }
+
+  return report;
+}
+
 export function activate(context: vscode.ExtensionContext) {
   // Create Bottom-Right Interactive Status Bar Item (Priority 100)
-  // Supports both overloaded (id, alignment, priority) and legacy (alignment, priority)
   try {
     mainStatusBarItem = (vscode.window.createStatusBarItem as any)(
       'autoplan.statusBar',
@@ -814,9 +1009,52 @@ export function activate(context: vscode.ExtensionContext) {
     mainStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   }
 
+  // Create Bridge Status Bar Item (Priority 99, adjacent to runner item)
+  try {
+    bridgeStatusBarItem = (vscode.window.createStatusBarItem as any)(
+      'autoplan.bridgeStatusBar',
+      vscode.StatusBarAlignment.Right,
+      99
+    );
+  } catch {
+    bridgeStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  }
+
+  // Instantiate and register Sidebar WebviewViewProvider
+  sidebarProvider = new SidebarProvider(context.extensionUri, context);
+  const sidebarRegistration = vscode.window.registerWebviewViewProvider(
+    SidebarProvider.viewType,
+    sidebarProvider
+  );
+
   // Setup Orchestrator event listeners
   orchestrator.on('stateChange', (info: OrchestratorProgressInfo) => {
     updateStatusBar(info);
+    sidebarProvider?.refreshAndSendState();
+  });
+
+  orchestrator.on('phaseStart', (phase: any, index: number, total: number) => {
+    const elapsedMs = runStartTime > 0 ? Date.now() - runStartTime : 0;
+    sidebarProvider?.sendProgress({
+      percentage: total > 0 ? Math.round((index / total) * 100) : 0,
+      elapsedTime: formatElapsedTime(elapsedMs),
+      currentPhaseIndex: index,
+      totalPhases: total
+    });
+    sidebarProvider?.refreshAndSendState();
+  });
+
+  orchestrator.on('phaseComplete', (phase: any, result: any, index?: number, total?: number) => {
+    const elapsedMs = runStartTime > 0 ? Date.now() - runStartTime : 0;
+    const totalCount = total || orchestrator.getPhases().length || 1;
+    const currentIdx = (index !== undefined ? index : phase.index) + 1;
+    sidebarProvider?.sendProgress({
+      percentage: Math.round((currentIdx / totalCount) * 100),
+      elapsedTime: formatElapsedTime(elapsedMs),
+      currentPhaseIndex: currentIdx,
+      totalPhases: totalCount
+    });
+    sidebarProvider?.refreshAndSendState();
   });
 
   orchestrator.on('allComplete', (total: number) => {
@@ -826,11 +1064,13 @@ export function activate(context: vscode.ExtensionContext) {
     mainStatusBarItem.command = 'autoplan.start';
     mainStatusBarItem.show();
 
+    sidebarProvider?.refreshAndSendState();
     vscode.window.showInformationMessage(`🎉 Auto-Plan: Successfully completed all ${total} phases!`);
 
     completionResetTimeout = setTimeout(() => {
       if (!orchestrator.isRunning()) {
         updateStatusBar();
+        sidebarProvider?.refreshAndSendState();
       }
     }, 4000);
   });
@@ -838,14 +1078,41 @@ export function activate(context: vscode.ExtensionContext) {
   orchestrator.on('error', (err: Error) => {
     stopElapsedTimer();
     updateStatusBar();
-    vscode.window.showErrorMessage(`Auto-Plan Error: ${err.message}`);
+    sidebarProvider?.refreshAndSendState();
+
+    const preflight = orchestrator.getLastPreflightResult();
+    if (preflight && !preflight.ready && preflight.details?.os === 'linux' && !preflight.details?.xdotoolAvailable) {
+      showLinuxPreflightErrorNotification();
+    } else {
+      vscode.window.showErrorMessage(`Auto-Plan Error: ${err.message}`);
+    }
   });
 
   orchestrator.on('stopped', () => {
     stopElapsedTimer();
     updateStatusBar();
+    sidebarProvider?.refreshAndSendState();
     vscode.window.showInformationMessage('Auto-Plan: Stopped by user.');
   });
+
+  // Setup TranscriptWatcher event listener
+  transcriptWatcher.on('logUpdate', (log: string) => {
+    sidebarProvider?.appendTranscriptLog(log);
+  });
+
+  // Start BridgeServer during extension activation
+  bridgeServer.start().catch((err: any) => {
+    console.warn('[Auto-Plan] BridgeServer failed to start on activation:', err);
+  }).finally(() => {
+    updateBridgeStatusBar();
+    sidebarProvider?.sendBridgeStatus();
+  });
+
+  // Background zero-click auto-detection & silent injection/repair of DOM Bridge script
+  if (!isBridgeInstalled()) {
+    installBridgeScript({ updateChecksums: true });
+    updateBridgeStatusBar();
+  }
 
   // Register commands
   const startCmd = vscode.commands.registerCommand('autoplan.start', () => {
@@ -889,15 +1156,48 @@ export function activate(context: vscode.ExtensionContext) {
     }
   });
 
+  const installBridgeCmd = vscode.commands.registerCommand('autoplan.installBridge', () => {
+    return installBridge();
+  });
+
+  const uninstallBridgeCmd = vscode.commands.registerCommand('autoplan.uninstallBridge', () => {
+    return uninstallBridge();
+  });
+
+  const checkBridgeStatusCmd = vscode.commands.registerCommand('autoplan.checkBridgeStatus', () => {
+    return showBridgeDiagnosticDialog();
+  });
+
+  const openSidebarCmd = vscode.commands.registerCommand('autoplan.openSidebar', async () => {
+    return vscode.commands.executeCommand('autoplan.sidebarView.focus');
+  });
+
+  const oneClickSetupCmd = vscode.commands.registerCommand('autoplan.oneClickSetup', () => {
+    return installBridge();
+  });
+
+  const checkStatusCmd = vscode.commands.registerCommand('autoplan.checkStatus', () => {
+    return showBridgeDiagnosticDialog();
+  });
+
   // Watch for configuration changes
   const configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration('autoplan') && !orchestrator.isRunning()) {
-      updateStatusBar();
+    if (e.affectsConfiguration('autoplan')) {
+      try {
+        writeConfigJson();
+      } catch {}
+      if (!orchestrator.isRunning()) {
+        updateStatusBar();
+      }
+      updateBridgeStatusBar();
+      sidebarProvider?.sendBridgeStatus();
     }
   });
 
   context.subscriptions.push(
     mainStatusBarItem,
+    bridgeStatusBarItem,
+    sidebarRegistration,
     transcriptWatcher,
     orchestrator,
     startCmd,
@@ -906,14 +1206,24 @@ export function activate(context: vscode.ExtensionContext) {
     actionMenuCmd,
     openTranscriptCmd,
     setPromptCmd,
+    installBridgeCmd,
+    uninstallBridgeCmd,
+    checkBridgeStatusCmd,
+    openSidebarCmd,
+    oneClickSetupCmd,
+    checkStatusCmd,
     configWatcher
   );
 
-  // Initialize status bar state
+  // Initialize status bar and sidecar config states
+  try {
+    writeConfigJson();
+  } catch {}
   updateStatusBar();
+  updateBridgeStatusBar();
 }
 
-export function deactivate() {
+export async function deactivate() {
   stopElapsedTimer();
   clearTooltipCache();
   clearPlanDiscoveryCache();
@@ -926,4 +1236,8 @@ export function deactivate() {
   }
   orchestrator.dispose();
   transcriptWatcher.dispose();
+  try {
+    await bridgeServer.stop();
+  } catch {}
 }
+

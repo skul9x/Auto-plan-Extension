@@ -3,6 +3,13 @@ import * as path from 'path';
 import { AutoPlanConfig, getConfig, DEFAULT_PROMPT_TEMPLATE } from './config';
 import { KeyboardManager, keyboardManager as defaultKeyboardManager } from './keyboardManager';
 import {
+  PromptDispatcher,
+  promptDispatcher as defaultPromptDispatcher,
+  DispatchResult,
+  DispatchOptions,
+  DispatchReadinessResult
+} from './promptDispatcher';
+import {
   TranscriptWatcher,
   transcriptWatcher as defaultTranscriptWatcher,
   CompletionResult,
@@ -52,6 +59,8 @@ export interface PhaseItem {
   error?: string;
   /** Completion result metadata */
   result?: CompletionResult;
+  /** Prompt dispatch result details */
+  dispatchResult?: DispatchResult;
 }
 
 export interface OrchestratorProgressInfo {
@@ -69,12 +78,14 @@ export interface OrchestratorOptions {
   configProvider?: () => AutoPlanConfig;
   keyboardManager?: KeyboardManager;
   transcriptWatcher?: TranscriptWatcher;
+  promptDispatcher?: PromptDispatcher;
   onStateChange?: (info: OrchestratorProgressInfo) => void;
   onIterationComplete?: (iteration: number, total: number, result: CompletionResult) => void;
   onPhaseStart?: (phase: PhaseItem, index: number, total: number) => void;
   onPhaseComplete?: (phase: PhaseItem, result: CompletionResult) => void;
   onAllComplete?: (total: number) => void;
   onError?: (error: Error) => void;
+  onWarning?: (message: string) => void;
   onStopped?: () => void;
   onSkipped?: (phase: PhaseItem) => void;
 }
@@ -90,10 +101,12 @@ export class Orchestrator extends EventEmitter {
   private delayReject: ((reason?: any) => void) | null = null;
   private delayTimer: NodeJS.Timeout | null = null;
   private lastConversationId: string | undefined = undefined;
+  private lastPreflightResult: DispatchReadinessResult | null = null;
 
   private configProvider: () => AutoPlanConfig;
   private keyboardManager: KeyboardManager;
   private transcriptWatcher: TranscriptWatcher;
+  private promptDispatcher: PromptDispatcher;
 
   constructor(options?: OrchestratorOptions) {
     super();
@@ -101,6 +114,14 @@ export class Orchestrator extends EventEmitter {
     this.configProvider = options?.configProvider ?? getConfig;
     this.keyboardManager = options?.keyboardManager ?? defaultKeyboardManager;
     this.transcriptWatcher = options?.transcriptWatcher ?? defaultTranscriptWatcher;
+    this.promptDispatcher =
+      options?.promptDispatcher ??
+      (options?.keyboardManager
+        ? new PromptDispatcher({
+            keyboardManager: options.keyboardManager,
+            configProvider: options?.configProvider ?? getConfig
+          })
+        : defaultPromptDispatcher);
 
     if (options?.onStateChange) {
       this.on('stateChange', options.onStateChange);
@@ -120,12 +141,23 @@ export class Orchestrator extends EventEmitter {
     if (options?.onError) {
       this.on('error', options.onError);
     }
+    if (options?.onWarning) {
+      this.on('warning', options.onWarning);
+    }
     if (options?.onStopped) {
       this.on('stopped', options.onStopped);
     }
     if (options?.onSkipped) {
       this.on('skipped', options.onSkipped);
     }
+  }
+
+  public getPromptDispatcher(): PromptDispatcher {
+    return this.promptDispatcher;
+  }
+
+  public getLastPreflightResult(): DispatchReadinessResult | null {
+    return this.lastPreflightResult;
   }
 
   /**
@@ -138,6 +170,7 @@ export class Orchestrator extends EventEmitter {
     this.removeAllListeners('phaseComplete');
     this.removeAllListeners('allComplete');
     this.removeAllListeners('error');
+    this.removeAllListeners('warning');
     this.removeAllListeners('stopped');
     this.removeAllListeners('skipped');
   }
@@ -250,6 +283,20 @@ export class Orchestrator extends EventEmitter {
       throw new Error('phaseFiles array must not be empty');
     }
 
+    // Pre-flight health guard check (< 100ms fail-fast)
+    const readiness = this.promptDispatcher.validateDispatchReadiness();
+    this.lastPreflightResult = readiness;
+    if (!readiness.ready) {
+      const errorMsg = readiness.errorMessage || 'Pre-flight check failed: No usable prompt transport available.';
+      this.setState('error', errorMsg);
+      this.emit('error', new Error(errorMsg));
+      return false;
+    }
+
+    if (readiness.warningMessage && readiness.requiresForegroundFocus) {
+      this.emit('warning', readiness.warningMessage);
+    }
+
     this.phases = phaseFiles.map((item, idx) => {
       if (typeof item === 'string') {
         const norm = normalizePath(path.resolve(item));
@@ -336,6 +383,20 @@ export class Orchestrator extends EventEmitter {
       return false;
     }
 
+    // Pre-flight health guard check (< 100ms fail-fast)
+    const readiness = this.promptDispatcher.validateDispatchReadiness();
+    this.lastPreflightResult = readiness;
+    if (!readiness.ready) {
+      const errorMsg = readiness.errorMessage || 'Pre-flight check failed: No usable prompt transport available.';
+      this.setState('error', errorMsg);
+      this.emit('error', new Error(errorMsg));
+      return false;
+    }
+
+    if (readiness.warningMessage && readiness.requiresForegroundFocus) {
+      this.emit('warning', readiness.warningMessage);
+    }
+
     const baseConfig = this.configProvider();
     const config: AutoPlanConfig = {
       ...baseConfig,
@@ -351,6 +412,7 @@ export class Orchestrator extends EventEmitter {
       this.phases[i].status = 'Pending';
       this.phases[i].error = undefined;
       this.phases[i].result = undefined;
+      this.phases[i].dispatchResult = undefined;
     }
 
     try {
@@ -369,13 +431,22 @@ export class Orchestrator extends EventEmitter {
         // 2. Timestamp & Reset
         const phaseStartTime = Date.now();
 
-        // 3. New Conversation Trigger, Focus, Paste & Submit via Batch Flow
+        // 3. New Conversation Trigger, Focus, Paste & Submit via PromptDispatcher (3-Tier)
         this.setState('sending', `Phase ${i + 1}/${this.phases.length}: Sending prompt for ${phase.fileName}`);
         
         const template = config.promptTemplate || config.promptText || DEFAULT_PROMPT_TEMPLATE;
         const renderedPrompt = renderPromptTemplate(template, phase.filePath);
 
-        await this.keyboardManager.executeBatchPromptFlow(renderedPrompt);
+        const dispatchOptions: DispatchOptions = {
+          mode: config.executionMode,
+          timeoutMs: config.bridgeTimeoutMs,
+          keyboardOptions: {
+            focusDelayMs: config.focusDelayMs
+          }
+        };
+
+        const dispatchResult = await this.promptDispatcher.dispatchPrompt(renderedPrompt, dispatchOptions);
+        phase.dispatchResult = dispatchResult;
 
         if (this.isAborted) break;
         if (this.isSkippingCurrentPhase) {
@@ -454,7 +525,13 @@ export class Orchestrator extends EventEmitter {
         phase.conversationId = this.lastConversationId;
         phase.status = 'Completed';
         phase.endTime = Date.now();
-        phase.result = completionResult;
+        phase.result = {
+          ...completionResult,
+          metadata: {
+            ...completionResult.parsed,
+            dispatch: dispatchResult
+          }
+        };
 
         this.emit('phaseComplete', phase, completionResult, i, this.phases.length);
         this.emit('iterationComplete', i + 1, this.phases.length, completionResult);
@@ -502,6 +579,20 @@ export class Orchestrator extends EventEmitter {
       return false;
     }
 
+    // Pre-flight health guard check (< 100ms fail-fast)
+    const readiness = this.promptDispatcher.validateDispatchReadiness();
+    this.lastPreflightResult = readiness;
+    if (!readiness.ready) {
+      const errorMsg = readiness.errorMessage || 'Pre-flight check failed: No usable prompt transport available.';
+      this.setState('error', errorMsg);
+      this.emit('error', new Error(errorMsg));
+      return false;
+    }
+
+    if (readiness.warningMessage && readiness.requiresForegroundFocus) {
+      this.emit('warning', readiness.warningMessage);
+    }
+
     const baseConfig = this.configProvider();
     const config: AutoPlanConfig = {
       ...baseConfig,
@@ -519,11 +610,19 @@ export class Orchestrator extends EventEmitter {
 
         this.currentIteration = i;
 
-        // Step 1: Sending prompt
+        // Step 1: Sending prompt via PromptDispatcher
         this.setState('sending', 'Sending Prompt...');
         const timestampBeforeSend = Date.now();
 
-        await this.keyboardManager.executePromptFlow(config.promptText);
+        const dispatchOptions: DispatchOptions = {
+          mode: config.executionMode,
+          timeoutMs: config.bridgeTimeoutMs,
+          keyboardOptions: {
+            focusDelayMs: config.focusDelayMs
+          }
+        };
+
+        await this.promptDispatcher.dispatchPrompt(config.promptText, dispatchOptions);
 
         if (this.isAborted) break;
 

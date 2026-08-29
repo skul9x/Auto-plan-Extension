@@ -1,0 +1,508 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import * as crypto from 'crypto';
+import { execSync } from 'child_process';
+
+/**
+ * Unique HTML comment markers for bridge script injection
+ */
+export const TAG_START = '<!-- AUTO-PLAN-BRIDGE-START -->';
+export const TAG_END = '<!-- AUTO-PLAN-BRIDGE-END -->';
+export const BACKUP_SUFFIX = '.autoplan.bak';
+export const DEFAULT_BRIDGE_SCRIPT_NAME = 'autoplan-dom-bridge.js';
+
+export interface InjectorOptions {
+  workbenchPath?: string;
+  customAppRoot?: string;
+  scriptFileName?: string;
+  timestamp?: number | string;
+  forceBackup?: boolean;
+  updateChecksums?: boolean;
+}
+
+export interface InjectionResult {
+  success: boolean;
+  path?: string;
+  error?: string;
+}
+
+export interface UninstallationResult {
+  success: boolean;
+  path?: string;
+  error?: string;
+}
+
+/**
+ * Escapes regex special characters in a string
+ */
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Recursively search for a file within a directory up to maxDepth levels
+ */
+export function findFileRecursive(dir: string, filename: string, maxDepth: number = 6): string | null {
+  if (maxDepth < 0 || !fs.existsSync(dir)) {
+    return null;
+  }
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isFile() && entry.name === filename) {
+        return fullPath;
+      }
+      if (entry.isDirectory()) {
+        const found = findFileRecursive(fullPath, filename, maxDepth - 1);
+        if (found) {
+          return found;
+        }
+      }
+    }
+  } catch {
+    // Ignore read errors
+  }
+  return null;
+}
+
+/**
+ * Discovers the absolute path to workbench.html across Antigravity IDE, VS Code, or Cursor.
+ * Checks candidate directory structures first, falling back to bounded recursive search.
+ */
+export function getWorkbenchPath(customAppRoot?: string): string | null {
+  let appRoot = customAppRoot;
+
+  if (!appRoot) {
+    try {
+      // Try to read vscode.env.appRoot dynamically if available
+      const vscode = require('vscode');
+      if (vscode?.env?.appRoot) {
+        appRoot = vscode.env.appRoot;
+      }
+    } catch {
+      // vscode module might not be available in standalone test runner
+    }
+  }
+
+  if (!appRoot) {
+    // Fallback: check if resourcesPath or current execution dir hints at appRoot
+    if ((process as any).resourcesPath) {
+      const candidateApp = path.join((process as any).resourcesPath, 'app');
+      if (fs.existsSync(candidateApp)) {
+        appRoot = candidateApp;
+      }
+    }
+  }
+
+  if (!appRoot || !fs.existsSync(appRoot)) {
+    return null;
+  }
+
+  // Candidate paths across various VS Code and Electron layouts
+  const candidates = [
+    path.join(appRoot, 'out', 'vs', 'code', 'electron-sandbox', 'workbench', 'workbench.html'),
+    path.join(appRoot, 'out', 'vs', 'code', 'electron-browser', 'workbench', 'workbench.html'),
+    path.join(appRoot, 'out', 'vs', 'workbench', 'workbench.html'),
+    path.join(appRoot, 'out', 'vs', 'code', 'browser', 'workbench', 'workbench.html'),
+    path.join(appRoot, 'out', 'vs', 'code', 'electron-main', 'workbench', 'workbench.html'),
+    path.join(appRoot, 'out', 'workbench.html'),
+    path.join(appRoot, 'workbench.html')
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  // Fallback: Search recursively inside appRoot/out or appRoot with maxDepth 6
+  const outDir = path.join(appRoot, 'out');
+  if (fs.existsSync(outDir)) {
+    const foundInOut = findFileRecursive(outDir, 'workbench.html', 6);
+    if (foundInOut) {
+      return foundInOut;
+    }
+  }
+
+  return findFileRecursive(appRoot, 'workbench.html', 6);
+}
+
+/**
+ * Builds the Linux Polkit elevation command string using pkexec
+ */
+export function buildLinuxElevationCommand(tmpPath: string, targetPath: string): string {
+  return `pkexec bash -c "cp '${tmpPath}' '${targetPath}' && chmod 644 '${targetPath}'"`;
+}
+
+/**
+ * Builds the Windows UAC elevation command string using PowerShell Start-Process -Verb runAs
+ */
+export function buildWindowsElevationCommand(tmpPath: string, targetPath: string): string {
+  return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Start-Process powershell -Verb runAs -ArgumentList '-NoProfile -NonInteractive -Command Copy-Item -LiteralPath \\\"${tmpPath}\\\" -Destination \\\"${targetPath}\\\" -Force' -Wait"`;
+}
+
+/**
+ * Computes SHA256 checksum in base64 encoding with trailing '=' stripped
+ */
+export function computeSha256Base64(data: Buffer | string): string {
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
+  return crypto.createHash('sha256').update(buf).digest('base64').replace(/=+$/, '');
+}
+
+/**
+ * Writes content to a file, handling permissions and elevating privileges if needed
+ * via native OS authentication dialogs on Linux (pkexec), Windows (runAs), and macOS (osascript).
+ */
+export function writeFileElevated(filePath: string, content: string): void {
+  try {
+    fs.writeFileSync(filePath, content, 'utf8');
+  } catch (err: any) {
+    if (err.code !== 'EACCES' && err.code !== 'EPERM') {
+      throw err;
+    }
+
+    const tmpPath = path.join(os.tmpdir(), `autoplan-elevated-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+    fs.writeFileSync(tmpPath, content, 'utf8');
+
+    try {
+      if (process.platform === 'linux') {
+        const cmd = buildLinuxElevationCommand(tmpPath, filePath);
+        execSync(cmd, { timeout: 30000 });
+      } else if (process.platform === 'darwin') {
+        const cmd = `cp '${tmpPath}' '${filePath}' && chmod 644 '${filePath}'`;
+        execSync(`osascript -e 'do shell script "${cmd}" with administrator privileges'`, { timeout: 30000 });
+      } else if (process.platform === 'win32') {
+        const cmd = buildWindowsElevationCommand(tmpPath, filePath);
+        execSync(cmd, { timeout: 30000 });
+      } else {
+        throw err;
+      }
+    } catch (elevErr: any) {
+      throw new Error(`Elevated write failed: ${elevErr.message || elevErr}`);
+    } finally {
+      try {
+        if (fs.existsSync(tmpPath)) {
+          fs.unlinkSync(tmpPath);
+        }
+      } catch {
+        // Ignore unlink error
+      }
+    }
+  }
+}
+
+/**
+ * Checks whether the DOM bridge script is currently injected in workbench HTML or given content
+ */
+export function isBridgeInstalled(htmlContentOrFilePath?: string): boolean {
+  if (!htmlContentOrFilePath) {
+    const wbPath = getWorkbenchPath();
+    if (!wbPath) {
+      return false;
+    }
+    try {
+      if (!fs.existsSync(wbPath)) {
+        return false;
+      }
+      const content = fs.readFileSync(wbPath, 'utf8');
+      return content.includes(TAG_START) && content.includes(TAG_END);
+    } catch {
+      return false;
+    }
+  }
+
+  if (htmlContentOrFilePath.includes(TAG_START) && htmlContentOrFilePath.includes(TAG_END)) {
+    return true;
+  }
+
+  try {
+    if (fs.existsSync(htmlContentOrFilePath)) {
+      const content = fs.readFileSync(htmlContentOrFilePath, 'utf8');
+      return content.includes(TAG_START) && content.includes(TAG_END);
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
+/**
+ * Builds the HTML script tag block with timestamp query parameter
+ */
+export function buildBridgeScriptTag(timestamp?: number | string, scriptFileName: string = DEFAULT_BRIDGE_SCRIPT_NAME): string {
+  const ts = timestamp !== undefined ? timestamp : Date.now();
+  return `${TAG_START}\n\t<script src="${scriptFileName}?v=${ts}"></script>\n\t${TAG_END}`;
+}
+
+/**
+ * Suppress corruption banner script to inject or execute in DOM
+ */
+export function suppressCorruptBannerScript(): string {
+  return `(function suppressCorruptionBanner() {
+  function dismissBanner() {
+    try {
+      const toasts = document.querySelectorAll('.notification-toast, .notifications-toasts .monaco-list-row');
+      toasts.forEach(toast => {
+        const text = toast.textContent || '';
+        if (text.includes('corrupt') || text.includes('installation') || text.includes('tampered')) {
+          const closeBtn = toast.querySelector('.codicon-close, .clear-notification-action, [aria-label*="Close"], [title*="Close"]');
+          if (closeBtn && typeof (closeBtn as HTMLElement).click === 'function') {
+            (closeBtn as HTMLElement).click();
+          } else {
+            (toast as HTMLElement).style.display = 'none';
+          }
+        }
+      });
+    } catch (_) {}
+  }
+
+  dismissBanner();
+  if (typeof MutationObserver !== 'undefined') {
+    const observer = new MutationObserver(() => dismissBanner());
+    observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+  }
+})();`;
+}
+
+/**
+ * Updates product.json checksums to suppress "Your installation appears to be corrupt" warnings
+ */
+export function updateProductChecksums(workbenchPath?: string): boolean {
+  try {
+    let productJsonPath: string | null = null;
+
+    if ((process as any).resourcesPath) {
+      const candidate = path.join((process as any).resourcesPath, 'app', 'product.json');
+      if (fs.existsSync(candidate)) {
+        productJsonPath = candidate;
+      }
+    }
+
+    if (!productJsonPath) {
+      const wb = workbenchPath || getWorkbenchPath();
+      if (wb) {
+        let currentDir = path.dirname(wb);
+        for (let i = 0; i < 8; i++) {
+          const candidate = path.join(currentDir, 'product.json');
+          if (fs.existsSync(candidate)) {
+            productJsonPath = candidate;
+            break;
+          }
+          const parent = path.dirname(currentDir);
+          if (parent === currentDir) break;
+          currentDir = parent;
+        }
+      }
+    }
+
+    if (!productJsonPath || !fs.existsSync(productJsonPath)) {
+      return false;
+    }
+
+    const productContent = fs.readFileSync(productJsonPath, 'utf8');
+    const productJson = JSON.parse(productContent);
+
+    if (!productJson.checksums || typeof productJson.checksums !== 'object') {
+      return false;
+    }
+
+    const appRoot = path.dirname(productJsonPath);
+    const outDir = path.join(appRoot, 'out');
+    let updated = false;
+
+    for (const relativePath of Object.keys(productJson.checksums)) {
+      const nativeRelative = relativePath.split('/').join(path.sep);
+      let targetFile = path.join(outDir, nativeRelative);
+      if (!fs.existsSync(targetFile)) {
+        targetFile = path.join(appRoot, nativeRelative);
+      }
+
+      if (fs.existsSync(targetFile)) {
+        const fileData = fs.readFileSync(targetFile);
+        const hash = computeSha256Base64(fileData);
+        if (productJson.checksums[relativePath] !== hash) {
+          productJson.checksums[relativePath] = hash;
+          updated = true;
+        }
+      }
+    }
+
+    const wb = workbenchPath || getWorkbenchPath();
+    if (wb && fs.existsSync(wb)) {
+      const standardKey = 'vs/code/electron-sandbox/workbench/workbench.html';
+      const fileData = fs.readFileSync(wb);
+      const hash = computeSha256Base64(fileData);
+      if (productJson.checksums[standardKey] !== undefined && productJson.checksums[standardKey] !== hash) {
+        productJson.checksums[standardKey] = hash;
+        updated = true;
+      }
+    }
+
+    if (updated) {
+      writeFileElevated(productJsonPath, JSON.stringify(productJson, null, '\t'));
+      return true;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Strips any injected bridge script tags from HTML content
+ */
+export function removeBridgeTagsFromHtml(html: string): string {
+  const tagRegex = new RegExp(`\\s*${escapeRegex(TAG_START)}[\\s\\S]*?${escapeRegex(TAG_END)}\\s*`, 'g');
+  return html.replace(tagRegex, '\n');
+}
+
+/**
+ * Builds bridge script content boilerplate or loads from media file if available
+ */
+export function buildBridgeScriptContent(_context?: any): string {
+  const candidatePaths = [
+    path.resolve(__dirname, '../media/autoplan-dom-bridge.js'),
+    path.resolve(__dirname, '../../media/autoplan-dom-bridge.js'),
+    path.resolve(process.cwd(), 'media/autoplan-dom-bridge.js')
+  ];
+  for (const p of candidatePaths) {
+    if (fs.existsSync(p)) {
+      try {
+        return fs.readFileSync(p, 'utf8');
+      } catch {}
+    }
+  }
+  return `/* Auto-Plan DOM Bridge Initial Script */
+(function() {
+  console.log('[Auto-Plan] DOM Bridge script loaded.');
+})();
+`;
+}
+
+/**
+ * Installs the DOM bridge script tag into workbench.html.
+ * Idempotent: replaces previous version tag without duplicate entries.
+ * Automatically manages backup (workbench.html.autoplan.bak).
+ */
+export function installBridgeScript(options: InjectorOptions = {}): InjectionResult {
+  const wbPath = options.workbenchPath || getWorkbenchPath(options.customAppRoot);
+  if (!wbPath || !fs.existsSync(wbPath)) {
+    return {
+      success: false,
+      error: `workbench.html not found. AppRoot: ${options.customAppRoot || 'auto-detect failed'}`
+    };
+  }
+
+  try {
+    const rawContent = fs.readFileSync(wbPath, 'utf8');
+    const wbDir = path.dirname(wbPath);
+    const scriptFileName = options.scriptFileName || DEFAULT_BRIDGE_SCRIPT_NAME;
+    const scriptFilePath = path.join(wbDir, scriptFileName);
+
+    // Idempotency check: avoid redundant file writes when bridge is already injected and valid
+    if (isBridgeInstalled(rawContent) && fs.existsSync(scriptFilePath) && !options.forceBackup) {
+      return {
+        success: true,
+        path: wbPath
+      };
+    }
+
+    const backupPath = `${wbPath}${BACKUP_SUFFIX}`;
+
+    // Manage clean backup: only create if does not exist or forceBackup is set
+    if (!fs.existsSync(backupPath) || options.forceBackup) {
+      const cleanOriginalContent = removeBridgeTagsFromHtml(rawContent);
+      writeFileElevated(backupPath, cleanOriginalContent);
+    }
+
+    // Strip any existing tag to guarantee idempotency
+    const cleanContent = removeBridgeTagsFromHtml(rawContent);
+    const tagBlock = buildBridgeScriptTag(options.timestamp, scriptFileName);
+
+    let newContent: string;
+    if (cleanContent.includes('</body>')) {
+      newContent = cleanContent.replace('</body>', `\t${tagBlock}\n</body>`);
+    } else if (cleanContent.includes('</html>')) {
+      newContent = cleanContent.replace('</html>', `\t${tagBlock}\n</html>`);
+    } else {
+      newContent = `${cleanContent}\n${tagBlock}\n`;
+    }
+
+    writeFileElevated(wbPath, newContent);
+
+    // Also write/copy the DOM bridge script into workbench directory
+    const scriptContent = buildBridgeScriptContent();
+    writeFileElevated(scriptFilePath, scriptContent);
+
+    if (options.updateChecksums !== false) {
+      updateProductChecksums(wbPath);
+    }
+
+    return {
+      success: true,
+      path: wbPath
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err.message || String(err)
+    };
+  }
+}
+
+/**
+ * Uninstalls the DOM bridge script tag from workbench.html.
+ * Restores original content and cleans up tag markers and sidecar script file if present.
+ */
+export function uninstallBridgeScript(options: InjectorOptions = {}): UninstallationResult {
+  const wbPath = options.workbenchPath || getWorkbenchPath(options.customAppRoot);
+  if (!wbPath || !fs.existsSync(wbPath)) {
+    return {
+      success: false,
+      error: `workbench.html not found. AppRoot: ${options.customAppRoot || 'auto-detect failed'}`
+    };
+  }
+
+  try {
+    const backupPath = `${wbPath}${BACKUP_SUFFIX}`;
+    let restoredContent: string;
+
+    if (fs.existsSync(backupPath)) {
+      const backupRaw = fs.readFileSync(backupPath, 'utf8');
+      restoredContent = removeBridgeTagsFromHtml(backupRaw);
+    } else {
+      const currentRaw = fs.readFileSync(wbPath, 'utf8');
+      restoredContent = removeBridgeTagsFromHtml(currentRaw);
+    }
+
+    writeFileElevated(wbPath, restoredContent);
+
+    // Also remove the sidecar script file if present
+    const wbDir = path.dirname(wbPath);
+    const scriptFile = path.join(wbDir, options.scriptFileName || DEFAULT_BRIDGE_SCRIPT_NAME);
+    if (fs.existsSync(scriptFile)) {
+      try {
+        fs.unlinkSync(scriptFile);
+      } catch {
+        // Ignore unlink error
+      }
+    }
+
+    if (options.updateChecksums !== false) {
+      updateProductChecksums(wbPath);
+    }
+
+    return {
+      success: true,
+      path: wbPath
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err.message || String(err)
+    };
+  }
+}

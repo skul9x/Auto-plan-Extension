@@ -1,25 +1,56 @@
 {
+  "meta": {
+    "schema_version": "1.1.0",
+    "awf_version": "4.0.2",
+    "updated_at": "2026-08-29T11:03:00+07:00"
+  },
   "project": {
     "name": "Auto-Plan_Extension",
-    "description": "Extension cho Antigravity IDE: tự động bấm Ctrl + Shift + L, dán prompt định sẵn, gửi tin nhắn, theo dõi log transcript cho tới khi Agent phản hồi 'Done skul9x.' và lặp lại 5 lần.",
+    "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan, inject prompt focus-free qua DOM Renderer Bridge hoặc OS Keyboard Simulation, theo dõi log transcript AI sinh code và tự động chuyển tiếp phase.",
     "created_at": "2026-08-27T23:51:00+07:00",
-    "active_plan": "plans/260827-2354-antigravity-auto-plan/plan.md"
+    "active_plan": "plans/260829-1100-cross-platform-ui-sidebar/plan.md"
   },
-  "tech_stack": [
-    "TypeScript",
-    "VS Code Extension API",
-    "Windows PowerShell SendKeys / Clipboard",
-    "Transcript JSONL Stream Watcher"
-  ],
+  "tech_stack": {
+    "language": "TypeScript / JavaScript",
+    "framework": "VS Code Extension API / Electron Sandbox",
+    "dom_bridge": "HTTP Bridge Server (Node.js http), Renderer DOM Injection (workbench.html), Shadow DOM Traversal",
+    "elevation": "Linux pkexec (Polkit GUI), Windows PowerShell UAC (Start-Process -Verb runAs)",
+    "keyboard_fallback": "Windows PowerShell SendKeys (WScript.Shell), Linux xdotool",
+    "ui_components": "Activity Bar Sidebar Control Center (WebviewViewProvider), Modern Dark Glassmorphic CSS",
+    "log_watcher": "Transcript JSONL Stream Watcher (~/.gemini/antigravity-ide/brain/)"
+  },
   "features": [
-    "Tự động tạo conversation mới (Ctrl + Shift + L)",
-    "Tự động paste prompt và gửi",
-    "Lắng nghe log transcript phát hiện 'Done skul9x.'",
-    "Vòng lặp tự động 5 lần với Status Bar tiến độ & nút Stop"
+    "Quét và phân tích thư mục plans/*.md tự động",
+    "Điều phối vòng lặp Orchestrator theo từng Phase",
+    "Tier 1: Focus-Free DOM Renderer Bridge qua HTTP IPC (Port 48860-48900)",
+    "Tier 2: VS Code Native Command API fallback",
+    "Tier 3: OS Keyboard Simulation fallback (PowerShell trên Windows, xdotool trên Linux)",
+    "Cơ chế nâng quyền tự động 1-Click (Polkit trên Linux, UAC trên Windows)",
+    "Tự động cập nhật checksum product.json chống cảnh báo corrupt",
+    "Pre-flight Fail-Fast Health Guard chống treo 15 phút (< 100ms)",
+    "Sidebar Control Center (Webview View) với Progress Bar, Phase Checkboxes, Live AI Log, Controls",
+    "Lắng nghe log transcript phát hiện từ khóa hoàn thành 'Done skul9x.' và tự động chuyển Phase"
   ],
-  "decisions": [
-    "Đóng gói thành VS Code Extension (.vsix) cài trực tiếp vào Antigravity IDE",
-    "Cả 5 lần gửi cùng 1 đoạn text cấu hình sẵn",
-    "Dùng Transcript File Watcher để bắt 'Done skul9x.' siêu chính xác và tức thì"
-  ]
+  "decisions_made": [
+    "Sử dụng kiến trúc DOM Bridge tương tự zixfel nhưng mở rộng để điều phối Prompt và Phase",
+    "Hỗ trợ chuẩn 2 nền tảng: Windows và Linux (loại trừ macOS)",
+    "Xử lý phân quyền bằng pkexec trên Linux và PowerShell UAC trên Windows thay vì bắt user gõ terminal",
+    "Pre-flight check < 100ms ngắt ngay khi thiếu điều kiện kèm Actionable Notification thay vì để treo 15 phút",
+    "Xây dựng Sidebar Control Center Webview trên Activity Bar để nâng tầm UI/UX cho người dùng cuối"
+  ],
+  "knowledge_items": {
+    "reports": [
+      "1.md: So sánh cơ chế Auto-Plan vs Zixfel Auto Click & Scroll",
+      "2.md: Đánh giá khả năng hoạt động của Auto-Plan trên Linux",
+      "3.md: Báo cáo nguyên nhân lỗi v1.0.5 trên Linux và cách khắc phục",
+      "6.md: Kế hoạch kỹ thuật chi tiết nâng cấp đa nền tảng (Windows & Linux) và tối ưu UI/UX",
+      "plans/260829-1100-cross-platform-ui-sidebar/plan.md: Kế hoạch 5 Phase chi tiết với test file-based"
+    ],
+    "gotchas": [
+      "Linux /usr/share/antigravity thuộc root, cần pkexec hoặc chown để sửa workbench.html",
+      "Sửa workbench.html cần cập nhật product.json checksums để tránh corrupt warning",
+      "keyboardManager trên Linux cần xdotool nếu chạy ở Tier 3 fallback",
+      "Pre-flight check phải chạy trước khi khởi tạo timers trong orchestrator"
+    ]
+  }
 }

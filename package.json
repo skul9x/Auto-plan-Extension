@@ -2,7 +2,7 @@
   "name": "antigravity-auto-plan",
   "displayName": "Antigravity Auto-Plan Runner",
   "description": "Automate repeated prompts and monitor completion in Antigravity IDE",
-  "version": "1.0.2",
+  "version": "1.1.1",
   "publisher": "skul9x",
   "engines": {
     "vscode": "^1.80.0"
@@ -13,15 +13,40 @@
   ],
   "activationEvents": [
     "onStartupFinished",
+    "onView:autoplan.sidebarView",
     "onCommand:autoplan.start",
     "onCommand:autoplan.stop",
     "onCommand:autoplan.skipPhase",
     "onCommand:autoplan.actionMenu",
     "onCommand:autoplan.openTranscript",
-    "onCommand:autoplan.setPrompt"
+    "onCommand:autoplan.setPrompt",
+    "onCommand:autoplan.installBridge",
+    "onCommand:autoplan.uninstallBridge",
+    "onCommand:autoplan.checkBridgeStatus",
+    "onCommand:autoplan.openSidebar",
+    "onCommand:autoplan.oneClickSetup",
+    "onCommand:autoplan.checkStatus"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "autoplan-sidebar-container",
+          "title": "Auto-Plan Control Center",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "autoplan-sidebar-container": [
+        {
+          "type": "webview",
+          "id": "autoplan.sidebarView",
+          "name": "Plan Execution Dashboard"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "autoplan.start",
@@ -51,6 +76,36 @@
       {
         "command": "autoplan.setPrompt",
         "title": "Set Prompt",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.installBridge",
+        "title": "Install / Update DOM Automation Bridge",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.uninstallBridge",
+        "title": "Uninstall DOM Automation Bridge",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.checkBridgeStatus",
+        "title": "Check Bridge Status & Run Diagnostic",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.openSidebar",
+        "title": "Open Auto-Plan Control Center",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.oneClickSetup",
+        "title": "1-Click DOM Bridge Setup",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.checkStatus",
+        "title": "Check Status & Diagnostics",
         "category": "Auto-Plan"
       }
     ],
@@ -101,6 +156,37 @@
           "type": "number",
           "default": 800,
           "description": "Thời gian chờ sau phím tắt mở chat để focus khung chat (mili-giây)"
+        },
+        "autoplan.executionMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "domBridge",
+            "nativeCommand",
+            "keyboard"
+          ],
+          "default": "auto",
+          "description": "Prompt dispatch transport mode (auto, domBridge, nativeCommand, or keyboard)"
+        },
+        "autoplan.bridgeTimeoutMs": {
+          "type": "number",
+          "default": 5000,
+          "description": "Timeout in milliseconds for DOM Bridge command acknowledgment"
+        },
+        "autoplan.autoApprovePermissions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically approve execution permissions via DOM bridge"
+        },
+        "autoplan.autoInjectWorkbench": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically ensure workbench is injected with DOM bridge script on startup"
+        },
+        "autoplan.suppressFallbackWarnings": {
+          "type": "boolean",
+          "default": true,
+          "description": "Suppress warning toast popups when falling back between prompt dispatch tiers"
         }
       }
     }
@@ -110,9 +196,15 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "package": "vsce package --allow-missing-repository --no-git-tag-version",
-    "test": "node out/test/phase05_e2e_package.test.js",
+    "test": "node out/test/phase05_e2e_cross_platform_release.test.js",
+    "test:phase01": "node out/test/phase01_cross_platform_elevation_keyboard.test.js",
+    "test:phase02": "node out/test/phase02_failfast_preflight_guard.test.js",
+    "test:phase03": "node out/test/phase03_sidebar_webview_provider.test.js",
+    "test:phase04": "node out/test/phase04_actionable_notifications_integration.test.js",
+    "test:phase05": "node out/test/phase05_e2e_cross_platform_release.test.js",
+    "test:bridge": "node out/test/phase05_full_e2e_regression.test.js",
     "test:modernize": "node out/test/phase02_test_suite_modernization.test.js",
-    "test:all": "node out/test/phase02_test_suite_modernization.test.js"
+    "test:all": "node out/test/phase05_e2e_cross_platform_release.test.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

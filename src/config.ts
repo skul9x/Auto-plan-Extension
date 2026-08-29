@@ -1,4 +1,9 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import { getWorkbenchPath, writeFileElevated } from './workbenchInjector';
+
+export type ExecutionMode = 'auto' | 'domBridge' | 'nativeCommand' | 'keyboard';
 
 export interface AutoPlanConfig {
   promptText: string;
@@ -10,6 +15,11 @@ export interface AutoPlanConfig {
   timeoutPerLoopMinutes: number;
   focusDelayMs?: number;
   defaultPlanFolder?: string;
+  executionMode?: ExecutionMode;
+  bridgeTimeoutMs?: number;
+  autoApprovePermissions?: boolean;
+  autoInjectWorkbench?: boolean;
+  suppressFallbackWarnings?: boolean;
 }
 
 export const DEFAULT_PROMPT_TEMPLATE = `Implement the code closely following the file {xxx}
@@ -26,7 +36,12 @@ export const DEFAULT_CONFIG: AutoPlanConfig = {
   delayBetweenLoopsMs: 2000,
   timeoutPerLoopMinutes: 15,
   focusDelayMs: 800,
-  defaultPlanFolder: ''
+  defaultPlanFolder: '',
+  executionMode: 'auto',
+  bridgeTimeoutMs: 5000,
+  autoApprovePermissions: true,
+  autoInjectWorkbench: true,
+  suppressFallbackWarnings: true
 };
 
 export const CONFIG_SECTION = 'autoplan';
@@ -49,7 +64,12 @@ export function getConfig(): AutoPlanConfig {
     delayBetweenLoopsMs: config.get<number>('delayBetweenLoopsMs', DEFAULT_CONFIG.delayBetweenLoopsMs),
     timeoutPerLoopMinutes: config.get<number>('timeoutPerLoopMinutes', DEFAULT_CONFIG.timeoutPerLoopMinutes),
     focusDelayMs: config.get<number>('focusDelayMs', DEFAULT_CONFIG.focusDelayMs ?? 800),
-    defaultPlanFolder: config.get<string>('defaultPlanFolder', DEFAULT_CONFIG.defaultPlanFolder || '')
+    defaultPlanFolder: config.get<string>('defaultPlanFolder', DEFAULT_CONFIG.defaultPlanFolder || ''),
+    executionMode: config.get<ExecutionMode>('executionMode', DEFAULT_CONFIG.executionMode ?? 'auto'),
+    bridgeTimeoutMs: config.get<number>('bridgeTimeoutMs', DEFAULT_CONFIG.bridgeTimeoutMs ?? 5000),
+    autoApprovePermissions: config.get<boolean>('autoApprovePermissions', DEFAULT_CONFIG.autoApprovePermissions ?? true),
+    autoInjectWorkbench: config.get<boolean>('autoInjectWorkbench', DEFAULT_CONFIG.autoInjectWorkbench ?? true),
+    suppressFallbackWarnings: config.get<boolean>('suppressFallbackWarnings', DEFAULT_CONFIG.suppressFallbackWarnings ?? true)
   };
 }
 
@@ -85,3 +105,30 @@ export async function setPromptTemplate(
   await updateConfig('promptTemplate', template, target);
   await updateConfig('defaultPromptTemplate', template, target);
 }
+
+export const SIDECAR_CONFIG_FILENAME = 'ag-autoplan-config.json';
+
+/**
+ * Writes the AutoPlan configuration JSON file alongside workbench.html
+ * for the DOM Bridge sidecar script to consume.
+ */
+export function writeConfigJson(config?: AutoPlanConfig, targetDir?: string): string | null {
+  const currentConfig = config || getConfig();
+  let wbDir = targetDir;
+  if (!wbDir) {
+    const wbPath = getWorkbenchPath();
+    if (wbPath) {
+      wbDir = path.dirname(wbPath);
+    }
+  }
+
+  if (!wbDir || !fs.existsSync(wbDir)) {
+    return null;
+  }
+
+  const configPath = path.join(wbDir, SIDECAR_CONFIG_FILENAME);
+  const content = JSON.stringify(currentConfig, null, 2);
+  writeFileElevated(configPath, content);
+  return configPath;
+}
+

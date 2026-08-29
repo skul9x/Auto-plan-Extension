@@ -29,6 +29,7 @@ export interface CompletionResult {
   parsed?: any;
   timestamp?: number;
   error?: string;
+  metadata?: Record<string, any>;
 }
 
 export interface TranscriptStep {
@@ -674,6 +675,10 @@ export class TranscriptWatcher extends EventEmitter {
     conversationId: string,
     resolve: (res: CompletionResult) => void
   ): void {
+    if (line && line.trim()) {
+      this.emit('logUpdate', line.trim());
+    }
+
     // If a settle quiet-period is currently active, any new line cancels it immediately!
     if (this.settleTimer) {
       clearTimeout(this.settleTimer);

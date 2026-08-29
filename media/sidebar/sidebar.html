@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https:;">
+  <link href="${styleUri}" rel="stylesheet">
+  <title>Auto-Plan Control Center</title>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <span class="icon">🚀</span>
+        <span class="title">Auto-Plan</span>
+      </div>
+      <div id="bridgeStatusBadge" class="status-pill status-inactive" title="DOM Bridge Status">
+        <span class="pill-dot"></span>
+        <span id="bridgeStatusText" class="pill-text">Inactive</span>
+      </div>
+    </header>
+
+    <!-- Plan Selector -->
+    <section class="card plan-selector-card">
+      <div class="card-header">
+        <span class="card-title">📁 Active Plan Folder</span>
+        <button id="btnRefreshPlans" class="icon-btn" title="Refresh Plan Folders">🔄</button>
+      </div>
+      <div class="select-row">
+        <select id="planFolderSelect" class="plan-select">
+          <option value="">-- Select or Browse Plan --</option>
+        </select>
+        <button id="btnSelectFolder" class="btn btn-secondary btn-sm">Browse...</button>
+      </div>
+    </section>
+
+    <!-- Progress Overview -->
+    <section class="card progress-card">
+      <div class="card-header">
+        <span class="card-title">📊 Execution Progress</span>
+        <span id="elapsedTime" class="timer-badge">00:00</span>
+      </div>
+      <div class="progress-info">
+        <span id="progressCounter" class="progress-text">Phase 0 of 0 (0%)</span>
+      </div>
+      <div class="progress-track">
+        <div id="progressBarFill" class="progress-fill" style="width: 0%;"></div>
+      </div>
+    </section>
+
+    <!-- Phase Checklist -->
+    <section class="card checklist-card">
+      <div class="card-header">
+        <div class="toggle-all-wrapper">
+          <input type="checkbox" id="toggleAllPhases" title="Select / Deselect All">
+          <label for="toggleAllPhases" class="card-title">Select All Phases</label>
+        </div>
+        <span id="selectedCountBadge" class="badge">0 selected</span>
+      </div>
+      <div id="phaseList" class="phase-list scrollable">
+        <div class="empty-state">No plan loaded. Select a plan folder above.</div>
+      </div>
+    </section>
+
+    <!-- Main Action Bar -->
+    <section class="action-bar">
+      <button id="btnStart" class="btn btn-primary btn-block">▶️ Run Selected Phases</button>
+      <div class="control-grid">
+        <button id="btnPause" class="btn btn-secondary">⏸️ Pause</button>
+        <button id="btnSkip" class="btn btn-secondary">⏭️ Skip</button>
+        <button id="btnStop" class="btn btn-danger">⏹️ Stop</button>
+      </div>
+    </section>
+
+    <!-- Live AI Activity Feed -->
+    <section class="card feed-card">
+      <div class="card-header">
+        <span class="card-title">💬 Live AI Stream</span>
+        <button id="btnClearLog" class="icon-btn" title="Clear Feed">🧹</button>
+      </div>
+      <div id="transcriptViewport" class="feed-viewport scrollable">
+        <pre id="transcriptLog" class="feed-content">Waiting for activity...</pre>
+      </div>
+    </section>
+
+    <!-- Quick Actions Footer -->
+    <footer class="footer">
+      <button id="btnActivateBridge" class="btn btn-outline btn-xs" title="1-Click DOM Automation Bridge">⚡ DOM Bridge</button>
+      <button id="btnDiagnostics" class="btn btn-outline btn-xs" title="Run Bridge Diagnostics">🛠️ Diagnostics</button>
+      <button id="btnSettings" class="btn btn-outline btn-xs" title="Extension Settings">⚙️ Settings</button>
+    </footer>
+  </div>
+
+  <script nonce="${nonce}" src="${scriptUri}"></script>
+</body>
+</html>

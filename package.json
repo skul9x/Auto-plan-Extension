@@ -2,7 +2,7 @@
   "name": "antigravity-auto-plan",
   "displayName": "Antigravity Auto-Plan Runner",
   "description": "Automate repeated prompts and monitor completion in Antigravity IDE",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "publisher": "skul9x",
   "engines": {
     "vscode": "^1.80.0"
@@ -26,7 +26,11 @@
     "onCommand:autoplan.openSidebar",
     "onCommand:autoplan.oneClickSetup",
     "onCommand:autoplan.checkStatus",
-    "onCommand:autoplan.openSettings"
+    "onCommand:autoplan.openSettings",
+    "onCommand:autoplan.copyDebugLog",
+    "onCommand:autoplan.exportDebugLog",
+    "onCommand:autoplan.clearDebugLog",
+    "onCommand:autoplan.showOutputChannel"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -113,6 +117,30 @@
         "command": "autoplan.openSettings",
         "title": "Open Settings Panel",
         "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.copyDebugLog",
+        "title": "Copy DOM Bridge Debug Log to Clipboard",
+        "category": "Auto-Plan",
+        "icon": "$(clippy)"
+      },
+      {
+        "command": "autoplan.exportDebugLog",
+        "title": "Export DOM Bridge Diagnostic Log to File",
+        "category": "Auto-Plan",
+        "icon": "$(save)"
+      },
+      {
+        "command": "autoplan.clearDebugLog",
+        "title": "Clear DOM Bridge Log Buffer",
+        "category": "Auto-Plan",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "autoplan.showOutputChannel",
+        "title": "Show DOM Bridge Output Channel",
+        "category": "Auto-Plan",
+        "icon": "$(output)"
       }
     ],
     "configuration": {
@@ -189,6 +217,11 @@
           "type": "number",
           "default": 5000,
           "description": "Timeout in milliseconds for DOM Bridge command acknowledgment"
+        },
+        "autoplan.staleClientMs": {
+          "type": "number",
+          "default": 120000,
+          "description": "Timeout in milliseconds before an inactive DOM bridge client is marked stale"
         },
         "autoplan.autoApprovePermissions": {
           "type": "boolean",

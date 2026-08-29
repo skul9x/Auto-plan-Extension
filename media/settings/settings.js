@@ -1,4 +1,30 @@
 (function () {
+  // Safe fallbacks for Node.js test environment
+  if (typeof document === 'undefined' && typeof globalThis !== 'undefined') {
+    globalThis.document = {
+      getElementById: function () { return null; },
+      querySelectorAll: function () { return []; },
+      querySelector: function () { return null; },
+      createElement: function () {
+        return {
+          className: '',
+          classList: { add: function () {}, remove: function () {}, toggle: function () { return false; } },
+          appendChild: function () {},
+          remove: function () {}
+        };
+      },
+      createDocumentFragment: function () {
+        return { appendChild: function () {} };
+      }
+    };
+  }
+
+  if (typeof window === 'undefined' && typeof globalThis !== 'undefined') {
+    globalThis.window = {
+      addEventListener: function () {}
+    };
+  }
+
   // Acquire VS Code API with safe fallback
   const vscode = typeof acquireVsCodeApi === 'function'
     ? acquireVsCodeApi()
@@ -39,6 +65,20 @@
   const btnSetupBridge = document.getElementById('btnSetupBridge');
   const btnUninstallBridge = document.getElementById('btnUninstallBridge');
 
+  // DOM Elements - Diagnostics & Live Log Viewer
+  const btnCopyDebugLog = document.getElementById('btnCopyDebugLog');
+  const btnExportDebugLog = document.getElementById('btnExportDebugLog');
+  const btnShowOutputChannel = document.getElementById('btnShowOutputChannel');
+  const btnClearLogBuffer = document.getElementById('btnClearLogBuffer');
+  const btnToggleLogConsole = document.getElementById('btnToggleLogConsole');
+  const toggleLogIcon = document.getElementById('toggleLogIcon');
+  const logConsoleContainer = document.getElementById('logConsoleContainer');
+  const logLevelFilter = document.getElementById('logLevelFilter');
+  const logCountBadge = document.getElementById('logCountBadge');
+  const chkAutoScroll = document.getElementById('chkAutoScroll');
+  const logConsoleViewport = document.getElementById('logConsoleViewport');
+  const logConsoleOutput = document.getElementById('logConsoleOutput');
+
   // DOM Elements - Health Indicators
   const overallHealthBadge = document.getElementById('overallHealthBadge');
   const overallHealthText = document.getElementById('overallHealthText');
@@ -48,6 +88,8 @@
   const healthToolchain = document.getElementById('healthToolchain');
   const tier1StatusIndicator = document.getElementById('tier1StatusIndicator');
   const tier1ClientsIndicator = document.getElementById('tier1ClientsIndicator');
+  const tier1KeepAliveIndicator = document.getElementById('tier1KeepAliveIndicator');
+  const tier1LatencyIndicator = document.getElementById('tier1LatencyIndicator');
   const tier2StatusIndicator = document.getElementById('tier2StatusIndicator');
   const tier3StatusIndicator = document.getElementById('tier3StatusIndicator');
 
@@ -59,6 +101,8 @@
 
   let savedBaseline = '';
   let toastTimer = null;
+  let logBuffer = [];
+  const MAX_LOG_BUFFER_SIZE = 500;
 
   /**
    * Serializes current form values into a configuration object.
@@ -337,6 +381,184 @@
     });
   }
 
+  // Diagnostic Log Action buttons
+  if (btnCopyDebugLog) {
+    btnCopyDebugLog.addEventListener('click', (e) => {
+      e.preventDefault();
+      vscode.postMessage({ command: 'copyDebugLog' });
+    });
+  }
+
+  if (btnExportDebugLog) {
+    btnExportDebugLog.addEventListener('click', (e) => {
+      e.preventDefault();
+      vscode.postMessage({ command: 'exportDebugLog' });
+    });
+  }
+
+  if (btnShowOutputChannel) {
+    btnShowOutputChannel.addEventListener('click', (e) => {
+      e.preventDefault();
+      vscode.postMessage({ command: 'showOutputChannel' });
+    });
+  }
+
+  if (btnClearLogBuffer) {
+    btnClearLogBuffer.addEventListener('click', (e) => {
+      e.preventDefault();
+      logBuffer = [];
+      renderLogConsole();
+      vscode.postMessage({ command: 'clearDebugLog' });
+    });
+  }
+
+  if (btnToggleLogConsole && logConsoleContainer) {
+    btnToggleLogConsole.addEventListener('click', (e) => {
+      e.preventDefault();
+      const isCollapsed = logConsoleContainer.classList.toggle('collapsed');
+      if (toggleLogIcon) {
+        toggleLogIcon.textContent = isCollapsed ? '▶' : '▼';
+      }
+    });
+  }
+
+  if (logLevelFilter) {
+    logLevelFilter.addEventListener('change', () => {
+      renderLogConsole();
+    });
+  }
+
+  function matchesFilter(entry, filter) {
+    if (!entry) return false;
+    if (filter === 'warn-error') {
+      return entry.level === 'WARN' || entry.level === 'ERROR';
+    }
+    if (filter === 'info-plus') {
+      return entry.level === 'INFO' || entry.level === 'WARN' || entry.level === 'ERROR';
+    }
+    if (filter === 'debug') {
+      return entry.level === 'DEBUG';
+    }
+    return true; // 'all'
+  }
+
+  function formatTime(isoTime, timestamp) {
+    if (isoTime) {
+      try {
+        const d = new Date(isoTime);
+        return d.toTimeString().split(' ')[0] + '.' + String(d.getMilliseconds()).padStart(3, '0');
+      } catch {}
+    }
+    if (timestamp) {
+      try {
+        const d = new Date(timestamp);
+        return d.toTimeString().split(' ')[0] + '.' + String(d.getMilliseconds()).padStart(3, '0');
+      } catch {}
+    }
+    return '';
+  }
+
+  function createLogRow(entry) {
+    const row = document.createElement('div');
+    row.className = 'log-row';
+
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'log-time';
+    timeSpan.textContent = formatTime(entry.isoTime, entry.timestamp);
+
+    const levelSpan = document.createElement('span');
+    const levelClass = (entry.level || 'INFO').toLowerCase();
+    levelSpan.className = `badge-level badge-level-${levelClass}`;
+    levelSpan.textContent = entry.level || 'INFO';
+
+    const compSpan = document.createElement('span');
+    const compClass = (entry.component || 'SERVER').toLowerCase();
+    compSpan.className = `badge-comp badge-comp-${compClass}`;
+    compSpan.textContent = entry.component || 'SERVER';
+
+    const msgSpan = document.createElement('span');
+    msgSpan.className = 'log-message';
+    let msgText = entry.message || '';
+    if (entry.details !== undefined && entry.details !== null) {
+      try {
+        const detailsStr = typeof entry.details === 'string' ? entry.details : JSON.stringify(entry.details);
+        if (detailsStr) {
+          msgText += ` ${detailsStr}`;
+        }
+      } catch {}
+    }
+    msgSpan.textContent = msgText;
+
+    row.appendChild(timeSpan);
+    row.appendChild(levelSpan);
+    row.appendChild(compSpan);
+    row.appendChild(msgSpan);
+
+    if (entry.error) {
+      const errSpan = document.createElement('span');
+      errSpan.className = 'log-error-detail';
+      errSpan.textContent = `| Error: ${entry.error}`;
+      row.appendChild(errSpan);
+    }
+
+    return row;
+  }
+
+  function renderLogConsole() {
+    if (!logConsoleOutput) return;
+    const filter = logLevelFilter ? logLevelFilter.value : 'all';
+    const filtered = logBuffer.filter((e) => matchesFilter(e, filter));
+
+    if (logCountBadge) {
+      logCountBadge.textContent = `${filtered.length} / ${logBuffer.length} entries`;
+    }
+
+    logConsoleOutput.innerHTML = '';
+    if (filtered.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'log-empty-state';
+      empty.textContent = logBuffer.length === 0 ? 'No log entries in buffer yet.' : 'No entries match the selected filter.';
+      logConsoleOutput.appendChild(empty);
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    for (const entry of filtered) {
+      fragment.appendChild(createLogRow(entry));
+    }
+    logConsoleOutput.appendChild(fragment);
+
+    if (chkAutoScroll && chkAutoScroll.checked && logConsoleViewport) {
+      logConsoleViewport.scrollTop = logConsoleViewport.scrollHeight;
+    }
+  }
+
+  function appendSingleLogEntry(entry) {
+    if (!entry) return;
+    logBuffer.push(entry);
+    if (logBuffer.length > MAX_LOG_BUFFER_SIZE) {
+      logBuffer.shift();
+    }
+
+    const filter = logLevelFilter ? logLevelFilter.value : 'all';
+    if (matchesFilter(entry, filter) && logConsoleOutput) {
+      const empty = logConsoleOutput.querySelector('.log-empty-state');
+      if (empty) {
+        empty.remove();
+      }
+      logConsoleOutput.appendChild(createLogRow(entry));
+
+      if (chkAutoScroll && chkAutoScroll.checked && logConsoleViewport) {
+        logConsoleViewport.scrollTop = logConsoleViewport.scrollHeight;
+      }
+    }
+
+    if (logCountBadge) {
+      const filteredCount = logBuffer.filter((e) => matchesFilter(e, filter)).length;
+      logCountBadge.textContent = `${filteredCount} / ${logBuffer.length} entries`;
+    }
+  }
+
   // ==========================================================================
   // IPC Message Listener from Extension Host
   // ==========================================================================
@@ -381,6 +603,12 @@
         if (tier1ClientsIndicator && message.clients !== undefined) {
           tier1ClientsIndicator.textContent = `Clients: ${message.clients}`;
         }
+        if (tier1KeepAliveIndicator && message.workerKeepAlive) {
+          tier1KeepAliveIndicator.textContent = `Worker Keep-Alive: ${message.workerKeepAlive}`;
+        }
+        if (tier1LatencyIndicator && message.latencyMs) {
+          tier1LatencyIndicator.textContent = `Latency: ${message.latencyMs}`;
+        }
         if (tier2StatusIndicator && message.nativeCommandStatus) {
           tier2StatusIndicator.textContent = message.nativeCommandStatus;
         }
@@ -424,6 +652,20 @@
         showToast(message.error || message.message || 'An unexpected error occurred.', 'danger');
         break;
       }
+
+      case 'logBuffer': {
+        const entries = Array.isArray(message.entries) ? message.entries : [];
+        logBuffer = entries;
+        renderLogConsole();
+        break;
+      }
+
+      case 'logEntry': {
+        if (message.entry) {
+          appendSingleLogEntry(message.entry);
+        }
+        break;
+      }
     }
   });
 
@@ -435,7 +677,14 @@
       checkDirty,
       insertTagAtCursor,
       updateActiveTierCards,
-      showToast
+      showToast,
+      matchesFilter,
+      formatTime,
+      createLogRow,
+      renderLogConsole,
+      appendSingleLogEntry,
+      getLogBuffer: () => logBuffer,
+      setLogBuffer: (buf) => { logBuffer = buf; }
     };
   }
 

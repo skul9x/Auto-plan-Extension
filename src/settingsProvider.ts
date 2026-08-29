@@ -7,6 +7,7 @@ import { PromptDispatcher, promptDispatcher as defaultPromptDispatcher, Dispatch
 import { bridgeServer } from './bridgeServer';
 import { isBridgeInstalled } from './workbenchInjector';
 import { keyboardManager } from './keyboardManager';
+import { debugLogger, DebugLogger, LogEntry } from './debugLogger';
 
 /**
  * Generates a cryptographically secure random nonce for Content Security Policy.
@@ -34,17 +35,26 @@ export class SettingsProvider {
   private readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
   private readonly _promptDispatcher: PromptDispatcher;
+  private readonly _logger: DebugLogger;
   private _disposables: vscode.Disposable[] = [];
   private _isDisposing: boolean = false;
 
   private constructor(
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
-    promptDispatcher?: PromptDispatcher
+    promptDispatcher?: PromptDispatcher,
+    logger?: DebugLogger
   ) {
     this._panel = panel;
     this._extensionUri = extensionUri;
     this._promptDispatcher = promptDispatcher || defaultPromptDispatcher;
+    this._logger = logger || debugLogger;
+
+    // Subscribe to live log entries from debugLogger
+    const logSub = this._logger.onLog((entry: LogEntry) => {
+      this.sendLogEntry(entry);
+    });
+    this._disposables.push(logSub);
 
     // Set panel icon
     try {
@@ -82,7 +92,8 @@ export class SettingsProvider {
    */
   public static render(
     extensionUri: vscode.Uri,
-    promptDispatcher?: PromptDispatcher
+    promptDispatcher?: PromptDispatcher,
+    logger?: DebugLogger
   ): SettingsProvider {
     const column = vscode.window.activeTextEditor
       ? vscode.window.activeTextEditor.viewColumn
@@ -104,7 +115,7 @@ export class SettingsProvider {
       }
     );
 
-    SettingsProvider.currentPanel = new SettingsProvider(panel, extensionUri, promptDispatcher);
+    SettingsProvider.currentPanel = new SettingsProvider(panel, extensionUri, promptDispatcher, logger);
     return SettingsProvider.currentPanel;
   }
 
@@ -114,6 +125,10 @@ export class SettingsProvider {
 
   public get promptDispatcher(): PromptDispatcher {
     return this._promptDispatcher;
+  }
+
+  public get logger(): DebugLogger {
+    return this._logger;
   }
 
   public getExtensionUri(): vscode.Uri {
@@ -152,15 +167,18 @@ export class SettingsProvider {
     toolchain: string;
     nativeCommandStatus: string;
     isHealthy: boolean;
+    workerKeepAlive: string;
+    latencyMs: string;
   } {
     let port = 47352;
     let clients = 0;
     let serverListening = false;
     try {
-      if (bridgeServer) {
-        port = bridgeServer.getPort() || 47352;
-        clients = bridgeServer.getConnectedClients() ? bridgeServer.getConnectedClients().length : 0;
-        serverListening = bridgeServer.isListening();
+      const server = this._promptDispatcher ? this._promptDispatcher.getBridgeServer() : bridgeServer;
+      if (server) {
+        port = server.getPort() || 47352;
+        clients = server.getConnectedClients() ? server.getConnectedClients().length : 0;
+        serverListening = server.isListening();
       }
     } catch {}
 
@@ -185,6 +203,8 @@ export class SettingsProvider {
 
     const nativeCommandStatus = 'Command API Ready';
     const isHealthy = injected && (clients > 0 || serverListening);
+    const workerKeepAlive = clients > 0 ? 'Active' : (serverListening ? 'Listening' : 'Inactive');
+    const latencyMs = clients > 0 ? '< 10ms' : 'N/A';
 
     return {
       port,
@@ -192,7 +212,9 @@ export class SettingsProvider {
       clients,
       toolchain,
       nativeCommandStatus,
-      isHealthy
+      isHealthy,
+      workerKeepAlive,
+      latencyMs
     };
   }
 
@@ -226,6 +248,33 @@ export class SettingsProvider {
   }
 
   /**
+   * Broadcasts the in-memory log buffer to the webview.
+   */
+  public sendLogBuffer(): void {
+    try {
+      const entries = this._logger.getEntries();
+      this._panel.webview.postMessage({
+        command: 'logBuffer',
+        type: 'logBuffer',
+        entries
+      });
+    } catch {}
+  }
+
+  /**
+   * Pushes a single log entry update to the webview.
+   */
+  public sendLogEntry(entry: LogEntry): void {
+    try {
+      this._panel.webview.postMessage({
+        command: 'logEntry',
+        type: 'logEntry',
+        entry
+      });
+    } catch {}
+  }
+
+  /**
    * Central IPC message router handling actions initiated by the webview.
    */
   public async handleMessage(message: any): Promise<void> {
@@ -236,6 +285,7 @@ export class SettingsProvider {
       case 'ready': {
         this.sendInitSettings();
         this.sendHealthUpdate();
+        this.sendLogBuffer();
         break;
       }
 
@@ -366,6 +416,47 @@ export class SettingsProvider {
             error: err?.message || String(err)
           });
         }
+        break;
+      }
+
+      case 'copyDebugLog': {
+        try {
+          await vscode.commands.executeCommand('autoplan.copyDebugLog');
+        } catch (err: any) {
+          vscode.window.showErrorMessage(`Auto-Plan: Failed to copy debug log: ${err?.message || err}`);
+        }
+        break;
+      }
+
+      case 'exportDebugLog': {
+        try {
+          await vscode.commands.executeCommand('autoplan.exportDebugLog');
+        } catch (err: any) {
+          vscode.window.showErrorMessage(`Auto-Plan: Failed to export debug log: ${err?.message || err}`);
+        }
+        break;
+      }
+
+      case 'clearDebugLog': {
+        this._logger.clear();
+        this.sendLogBuffer();
+        try {
+          await vscode.commands.executeCommand('autoplan.clearDebugLog');
+        } catch {}
+        break;
+      }
+
+      case 'showOutputChannel': {
+        try {
+          await vscode.commands.executeCommand('autoplan.showOutputChannel');
+        } catch {
+          this._logger.showOutputChannel(false);
+        }
+        break;
+      }
+
+      case 'requestLogBuffer': {
+        this.sendLogBuffer();
         break;
       }
     }

@@ -5,11 +5,12 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { getWorkbenchPath } from './workbenchInjector';
+import { DebugLogger, debugLogger, LogLevel, LogComponent } from './debugLogger';
 
 export const DEFAULT_PORT_START = 48860;
 export const DEFAULT_PORT_END = 48900;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 5000;
-export const DEFAULT_STALE_CLIENT_MS = 30000;
+export const DEFAULT_STALE_CLIENT_MS = 120000;
 export const PORT_REGISTRY_FILENAME = 'ag-autoplan-ports.json';
 export const BRIDGE_SERVICE_NAME = 'autoplan-bridge-server';
 export const BRIDGE_PROTOCOL_VERSION = '2.0.0';
@@ -105,6 +106,7 @@ export interface BridgeServerOptions {
   defaultTimeoutMs?: number;
   staleClientMs?: number;
   watchdogIntervalMs?: number;
+  logger?: DebugLogger;
 }
 
 interface PendingDeferredCommand {
@@ -113,6 +115,8 @@ interface PendingDeferredCommand {
   resolve: (result: CommandAckResult) => void;
   reject: (err: Error) => void;
   timer: NodeJS.Timeout;
+  fetched?: boolean;
+  fetchedAt?: number;
 }
 
 /**
@@ -133,6 +137,7 @@ export class BridgeServer {
   private lastHeartbeatAt: number = 0;
   private customWorkbenchDir?: string;
   private customPortsRegistryPath?: string;
+  private logger: DebugLogger;
 
   private watchdogIntervalMs: number;
   private watchdogTimer: NodeJS.Timeout | null = null;
@@ -156,6 +161,25 @@ export class BridgeServer {
     this.watchdogIntervalMs = options.watchdogIntervalMs || 5000;
     this.customWorkbenchDir = options.workbenchDir;
     this.customPortsRegistryPath = options.portsRegistryPath;
+    this.logger = options.logger || debugLogger;
+    try {
+      this.logger.registerBridgeServer(this);
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  public getLogger(): DebugLogger {
+    return this.logger;
+  }
+
+  public setLogger(logger: DebugLogger): void {
+    this.logger = logger;
+    try {
+      this.logger.registerBridgeServer(this);
+    } catch {
+      // Non-fatal
+    }
   }
 
   /**
@@ -166,6 +190,13 @@ export class BridgeServer {
       return this.port;
     }
 
+    this.logger.info('SERVER', `Starting BridgeServer in port range ${this.portStart}-${this.portEnd}...`, {
+      portStart: this.portStart,
+      portEnd: this.portEnd,
+      host: this.host,
+      windowKey: this.windowKey
+    });
+
     for (let currentPort = this.portStart; currentPort <= this.portEnd; currentPort++) {
       try {
         const port = await this.tryListen(currentPort);
@@ -173,16 +204,25 @@ export class BridgeServer {
         this.serverStartedAt = Date.now();
         this.registerPortInRegistry();
         this.startWatchdog();
+        this.logger.info('SERVER', `Bound to port ${this.port} (PID: ${process.pid})`, {
+          port: this.port,
+          pid: process.pid,
+          windowKey: this.windowKey
+        });
         return port;
       } catch (err: any) {
         if (err.code === 'EADDRINUSE' || err.code === 'EACCES') {
+          this.logger.debug('SERVER', `Port ${currentPort} in use or inaccessible (${err.code}), retrying next port...`);
           continue;
         }
+        this.logger.error('SERVER', `Failed binding to port ${currentPort}: ${err.message}`, undefined, err);
         throw err;
       }
     }
 
-    throw new Error(`No available port found in range ${this.portStart}-${this.portEnd}`);
+    const err = new Error(`No available port found in range ${this.portStart}-${this.portEnd}`);
+    this.logger.error('SERVER', err.message);
+    throw err;
   }
 
   private tryListen(port: number): Promise<number> {
@@ -197,7 +237,7 @@ export class BridgeServer {
       srv.listen(port, this.host, () => {
         srv.removeAllListeners('error');
         srv.on('error', (err: any) => {
-          console.error('[Auto-Plan BridgeServer] Server error:', err);
+          this.logger.error('SERVER', `Server socket error on port ${port}: ${err.message}`, undefined, err);
         });
         this.server = srv;
         resolve(port);
@@ -209,6 +249,11 @@ export class BridgeServer {
    * Stops the server and clears all pending command promises and registry records.
    */
   public async stop(): Promise<void> {
+    const stoppingPort = this.port;
+    if (stoppingPort) {
+      this.logger.info('SERVER', `BridgeServer stopping on port ${stoppingPort}...`);
+    }
+
     // Stop watchdog timer
     this.stopWatchdog();
 
@@ -232,6 +277,8 @@ export class BridgeServer {
         });
       });
     }
+
+    this.logger.info('SERVER', `BridgeServer stopped cleanly`);
   }
 
   public startWatchdog(intervalMs?: number): void {
@@ -265,16 +312,20 @@ export class BridgeServer {
         evictedThisCycle++;
         this.totalEvictedClients++;
         this.lastEvictedWindowKey = key;
-        const transitionMsg = `[Auto-Plan Watchdog] Client ${key} evicted after ${now - client.lastSeenAt}ms inactivity (> ${this.staleClientMs}ms)`;
-        console.log(transitionMsg);
-        this.watchdogLogs.push(transitionMsg);
+        const transitionMsg = `Evicted client ${key} after ${now - client.lastSeenAt}ms inactivity (> ${this.staleClientMs}ms)`;
+        this.logger.warn('SERVER', transitionMsg, {
+          windowKey: key,
+          inactiveMs: now - client.lastSeenAt,
+          staleThresholdMs: this.staleClientMs
+        });
+        this.watchdogLogs.push(`[Auto-Plan Watchdog] ${transitionMsg}`);
         if (this.watchdogLogs.length > 50) {
           this.watchdogLogs.shift();
         }
 
         if (this.activeWindowKey === key) {
           this.activeWindowKey = null;
-          console.log(`[Auto-Plan Watchdog] Active window key reset due to client eviction.`);
+          this.logger.info('SERVER', `Active window key reset due to client eviction.`);
         }
       }
     }
@@ -335,6 +386,33 @@ export class BridgeServer {
     return this.getActiveClients();
   }
 
+  /**
+   * Fast discovery probe: waits up to timeoutMs for any active client to register or respond.
+   */
+  public async probeActiveClients(timeoutMs: number = 200): Promise<BridgeClientTelemetry[]> {
+    const existing = this.getActiveClients();
+    if (existing.length > 0) {
+      return existing;
+    }
+
+    const start = Date.now();
+    const pollInterval = 25;
+
+    while (Date.now() - start < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+      const active = this.getActiveClients();
+      if (active.length > 0) {
+        this.logger.info('SERVER', `Active client discovered during probe (${Date.now() - start}ms)`, {
+          clientsCount: active.length,
+          clients: active
+        });
+        return active;
+      }
+    }
+
+    return this.getActiveClients();
+  }
+
   private getActiveClients(): BridgeClientTelemetry[] {
     const now = Date.now();
     const active: BridgeClientTelemetry[] = [];
@@ -366,11 +444,29 @@ export class BridgeServer {
       timeoutMs
     };
 
+    this.logger.info('SERVER', `Queued command ${commandId} (type: ${command.type}, chars: ${text.length}, targetWindow: ${targetWindowKey}, timeout: ${timeoutMs}ms)`, {
+      commandId,
+      type: command.type,
+      charCount: text.length,
+      targetWindow: targetWindowKey,
+      timeoutMs
+    });
+
     return new Promise<CommandAckResult>((resolve, reject) => {
       const timer = setTimeout(() => {
+        const deferred = this.pendingCommands.get(commandId);
+        const clientFetched = Boolean(deferred?.fetched);
         this.pendingCommands.delete(commandId);
         // Also remove from queuedCommands if not yet fetched
         this.queuedCommands = this.queuedCommands.filter(c => c.id !== commandId);
+
+        this.logger.error('SERVER', `Command dispatch timed out after ${timeoutMs}ms (commandId: ${commandId}, clientFetched: ${clientFetched})`, {
+          commandId,
+          timeoutMs,
+          clientFetched,
+          targetWindow: targetWindowKey
+        });
+
         reject(new Error(`Command dispatch timed out after ${timeoutMs}ms (commandId: ${commandId})`));
       }, timeoutMs);
 
@@ -379,7 +475,8 @@ export class BridgeServer {
         startTime: Date.now(),
         resolve,
         reject,
-        timer
+        timer,
+        fetched: false
       });
 
       this.queuedCommands.push(command);
@@ -421,6 +518,8 @@ export class BridgeServer {
     // 4. Routing
     if (req.method === 'GET' && pathname === '/autoplan-status') {
       this.handleGetStatus(reqWindowKey, parsedUrl.query, res);
+    } else if (req.method === 'POST' && pathname === '/autoplan-log') {
+      this.handlePostLog(req, res, reqWindowKey);
     } else if (req.method === 'POST' && pathname === '/autoplan-ack') {
       this.handlePostAck(req, res);
     } else if (req.method === 'POST' && pathname === '/autoplan-command') {
@@ -436,6 +535,13 @@ export class BridgeServer {
   private handleGetStatus(reqWindowKey: string, query: Record<string, any>, res: http.ServerResponse): void {
     const isProbe = query.probe === '1' || query.probe === 'true';
 
+    if (isProbe) {
+      this.logger.debug('SERVER', `Client discovery probe received from window: ${reqWindowKey || 'unknown'}`, {
+        windowKey: reqWindowKey,
+        query
+      });
+    }
+
     if (reqWindowKey) {
       this.clients.set(reqWindowKey, {
         windowKey: reqWindowKey,
@@ -447,17 +553,23 @@ export class BridgeServer {
       if (!isProbe) {
         if (!this.activeWindowKey) {
           this.activeWindowKey = reqWindowKey;
+          this.logger.info('SERVER', `Active window key set to "${reqWindowKey}"`);
         } else if (this.activeWindowKey !== reqWindowKey) {
           const activeClient = this.clients.get(this.activeWindowKey);
           const isStale = !activeClient || (Date.now() - activeClient.lastSeenAt > this.staleClientMs);
           if (isStale) {
+            const prev = this.activeWindowKey;
             this.activeWindowKey = reqWindowKey;
+            this.logger.info('SERVER', `Active window key switched from stale "${prev}" to "${reqWindowKey}"`);
           }
         }
       }
     }
 
     const windowMismatch = reqWindowKey && this.activeWindowKey && reqWindowKey !== this.activeWindowKey;
+    if (windowMismatch) {
+      this.logger.warn('SERVER', `Window mismatch rejected for window "${reqWindowKey}": active owner is "${this.activeWindowKey}"`);
+    }
 
     // Filter pending commands for this window
     let commandsForClient: BridgeCommand[] = [];
@@ -471,6 +583,15 @@ export class BridgeServer {
       }
     }
 
+    for (const cmd of commandsForClient) {
+      const pending = this.pendingCommands.get(cmd.id);
+      if (pending) {
+        pending.fetched = true;
+        pending.fetchedAt = Date.now();
+      }
+      this.logger.debug('SERVER', `Command ${cmd.id} (${cmd.type}) retrieved by client ${reqWindowKey || 'unknown'}`);
+    }
+
     const responseData = {
       ...this.getStatus(),
       bindRejected: Boolean(windowMismatch),
@@ -480,6 +601,76 @@ export class BridgeServer {
 
     res.writeHead(200);
     res.end(JSON.stringify(responseData));
+  }
+
+  private handlePostLog(req: http.IncomingMessage, res: http.ServerResponse, reqWindowKey?: string): void {
+    this.readJsonBody<any>(req, (err, payload) => {
+      if (err || !payload || typeof payload !== 'object') {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Invalid JSON payload' }));
+        return;
+      }
+
+      const topWindowKey = (typeof payload.windowKey === 'string' ? payload.windowKey : reqWindowKey)?.trim() || undefined;
+      let acceptedCount = 0;
+
+      if (Array.isArray(payload.logs)) {
+        for (const raw of payload.logs) {
+          if (this.ingestSingleLogRecord(raw, topWindowKey)) {
+            acceptedCount++;
+          }
+        }
+      } else if (Array.isArray(payload)) {
+        for (const raw of payload) {
+          if (this.ingestSingleLogRecord(raw, topWindowKey)) {
+            acceptedCount++;
+          }
+        }
+      } else if (payload.message !== undefined || payload.level !== undefined || payload.error !== undefined) {
+        if (this.ingestSingleLogRecord(payload, topWindowKey)) {
+          acceptedCount++;
+        }
+      } else {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Malformed log payload structure' }));
+        return;
+      }
+
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true, accepted: acceptedCount }));
+    });
+  }
+
+  private ingestSingleLogRecord(raw: any, defaultWindowKey?: string): boolean {
+    if (!raw || typeof raw !== 'object') {
+      return false;
+    }
+    const rawLevel = typeof raw.level === 'string' ? raw.level.toUpperCase() : 'INFO';
+    const level: LogLevel = (['DEBUG', 'INFO', 'WARN', 'ERROR'].includes(rawLevel) ? rawLevel : 'INFO') as LogLevel;
+
+    const rawComponent = typeof raw.component === 'string' ? raw.component.toUpperCase() : 'CLIENT';
+    const validComponents = ['SERVER', 'CLIENT', 'DISPATCHER', 'INJECTOR', 'DOM', 'ORCHESTRATOR', 'SETTINGS'];
+    const component: LogComponent = (validComponents.includes(rawComponent) ? rawComponent : 'CLIENT') as LogComponent;
+
+    const message = raw.message !== undefined && raw.message !== null ? String(raw.message) : '';
+    if (!message && !raw.details && !raw.error) {
+      return false;
+    }
+
+    const windowKey = raw.windowKey || defaultWindowKey;
+    let details = raw.details;
+    if (windowKey) {
+      if (typeof details === 'object' && details !== null) {
+        details = { ...details, windowKey };
+      } else if (details !== undefined) {
+        details = { value: details, windowKey };
+      } else {
+        details = { windowKey };
+      }
+    }
+
+    this.logger.log(level, component, message || `[Client Event]`, details, raw.error);
+    return true;
   }
 
   private handlePostAck(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -503,10 +694,22 @@ export class BridgeServer {
         const durationMs = Date.now() - deferred.startTime;
 
         if (ack.status === 'error') {
+          this.logger.error('SERVER', `Command ${ack.commandId} execution failed in DOM client: ${ack.error || 'unknown error'}`, {
+            commandId: ack.commandId,
+            status: ack.status,
+            durationMs,
+            metadata: ack.metadata
+          }, ack.error);
           clearTimeout(deferred.timer);
           this.pendingCommands.delete(ack.commandId);
           deferred.reject(new Error(ack.error || 'DOM Bridge reported command error'));
         } else if (ack.status === 'submitClicked' || ack.status === 'completed' || ack.status === 'promptInjected') {
+          this.logger.info('SERVER', `Command ${ack.commandId} ACK received: status=${ack.status} (${durationMs}ms)`, {
+            commandId: ack.commandId,
+            status: ack.status,
+            durationMs,
+            metadata: ack.metadata
+          });
           clearTimeout(deferred.timer);
           this.pendingCommands.delete(ack.commandId);
           deferred.resolve({
@@ -553,6 +756,7 @@ export class BridgeServer {
 
   private handleGetHeartbeat(reqWindowKey: string, res: http.ServerResponse): void {
     this.lastHeartbeatAt = Date.now();
+    this.logger.debug('SERVER', `Heartbeat ping received from window: ${reqWindowKey || 'unknown'}`);
     if (reqWindowKey) {
       this.clients.set(reqWindowKey, {
         windowKey: reqWindowKey,

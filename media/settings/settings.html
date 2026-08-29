@@ -15,7 +15,7 @@
         <span class="brand-icon">⚡</span>
         <div class="brand-info">
           <h1 class="brand-title">Auto-Plan Settings</h1>
-          <span class="version-tag">v1.0.3 • Tier Automation</span>
+          <span class="version-tag">v1.3.0 • Diagnostics & Tier Automation</span>
         </div>
       </div>
       <div id="overallHealthBadge" class="health-badge status-healthy" title="Overall System Health">
@@ -82,6 +82,8 @@
                 <div class="tier-meta-row">
                   <span id="tier1StatusIndicator" class="tier-meta-item">Port: 49152</span>
                   <span id="tier1ClientsIndicator" class="tier-meta-item">Clients: 0</span>
+                  <span id="tier1KeepAliveIndicator" class="tier-meta-item">Worker Keep-Alive: Inactive</span>
+                  <span id="tier1LatencyIndicator" class="tier-meta-item">Latency: N/A</span>
                 </div>
               </div>
             </label>
@@ -330,6 +332,69 @@
               </button>
             </div>
             <span class="input-hint">The runner monitors the transcript stream for this keyword to confirm loop completion.</span>
+          </div>
+        </section>
+      </div>
+
+      <!-- Full-Width Bottom Section: DOM Bridge Diagnostics & Live Log Viewer -->
+      <div class="grid-column-full">
+        <section class="glass-card" id="sectionLogViewer">
+          <div class="card-header">
+            <div class="header-icon-title">
+              <span class="section-icon">🩺</span>
+              <div>
+                <h2 class="card-title">DOM Bridge Diagnostics & Live Log Viewer</h2>
+                <p class="card-subtitle">Export comprehensive diagnostic telemetry and inspect live bridge events in real-time.</p>
+              </div>
+            </div>
+            <div class="header-tools">
+              <button type="button" id="btnToggleLogConsole" class="btn btn-secondary btn-sm" title="Toggle Live Log Viewer Console">
+                <span id="toggleLogIcon">▼</span> Console
+              </button>
+            </div>
+          </div>
+
+          <!-- Diagnostic Action Buttons -->
+          <div class="log-actions-bar">
+            <button type="button" id="btnCopyDebugLog" class="btn btn-primary" title="Copy diagnostic report and logs to clipboard">
+              📋 Copy Full Debug Log
+            </button>
+            <button type="button" id="btnExportDebugLog" class="btn btn-secondary" title="Save diagnostic report to a text file">
+              💾 Save Log to File (.txt)
+            </button>
+            <button type="button" id="btnShowOutputChannel" class="btn btn-secondary" title="Reveal Auto-Plan DOM Bridge output channel in VS Code">
+              📺 Show Output Channel
+            </button>
+            <button type="button" id="btnClearLogBuffer" class="btn btn-outline btn-danger-outline" title="Clear in-memory ring buffer">
+              🗑️ Clear Log Buffer
+            </button>
+          </div>
+
+          <!-- Collapsible Live Log Viewer Console -->
+          <div id="logConsoleContainer" class="log-console-container">
+            <div class="log-console-toolbar">
+              <div class="log-filter-controls">
+                <label for="logLevelFilter" class="toolbar-label">Level Filter:</label>
+                <select id="logLevelFilter" class="log-filter-select">
+                  <option value="all">All</option>
+                  <option value="warn-error">Warn/Error Only</option>
+                  <option value="info-plus">Info, Warn & Error</option>
+                  <option value="debug">Debug Only</option>
+                </select>
+                <span id="logCountBadge" class="badge">0 entries</span>
+              </div>
+              <div class="log-console-options">
+                <label class="checkbox-label" for="chkAutoScroll">
+                  <input type="checkbox" id="chkAutoScroll" checked>
+                  <span>Auto-scroll</span>
+                </label>
+              </div>
+            </div>
+            <div id="logConsoleViewport" class="log-console-viewport">
+              <div id="logConsoleOutput" class="log-console-output">
+                <div class="log-empty-state">Waiting for DOM bridge activity...</div>
+              </div>
+            </div>
           </div>
         </section>
       </div>

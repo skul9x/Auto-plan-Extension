@@ -19,9 +19,13 @@ export interface AutoPlanConfig {
   allowTierFallback?: boolean;
   strictMode?: boolean;
   bridgeTimeoutMs?: number;
+  staleClientMs?: number;
   autoApprovePermissions?: boolean;
   autoInjectWorkbench?: boolean;
   suppressFallbackWarnings?: boolean;
+  enableVerboseBridgeLogs?: boolean;
+  maxLogEntries?: number;
+  autoOpenBridgeLogOnError?: boolean;
 }
 
 export const DEFAULT_PROMPT_TEMPLATE = `Implement the code closely following the file {xxx}
@@ -43,9 +47,13 @@ export const DEFAULT_CONFIG: AutoPlanConfig = {
   allowTierFallback: true,
   strictMode: false,
   bridgeTimeoutMs: 5000,
+  staleClientMs: 120000,
   autoApprovePermissions: true,
   autoInjectWorkbench: true,
-  suppressFallbackWarnings: true
+  suppressFallbackWarnings: true,
+  enableVerboseBridgeLogs: false,
+  maxLogEntries: 500,
+  autoOpenBridgeLogOnError: false
 };
 
 export const CONFIG_SECTION = 'autoplan';
@@ -79,9 +87,13 @@ export function getConfig(): AutoPlanConfig {
     allowTierFallback,
     strictMode,
     bridgeTimeoutMs: config.get<number>('bridgeTimeoutMs', DEFAULT_CONFIG.bridgeTimeoutMs ?? 5000),
+    staleClientMs: config.get<number>('staleClientMs', DEFAULT_CONFIG.staleClientMs ?? 120000),
     autoApprovePermissions: config.get<boolean>('autoApprovePermissions', DEFAULT_CONFIG.autoApprovePermissions ?? true),
     autoInjectWorkbench: config.get<boolean>('autoInjectWorkbench', DEFAULT_CONFIG.autoInjectWorkbench ?? true),
-    suppressFallbackWarnings: config.get<boolean>('suppressFallbackWarnings', DEFAULT_CONFIG.suppressFallbackWarnings ?? true)
+    suppressFallbackWarnings: config.get<boolean>('suppressFallbackWarnings', DEFAULT_CONFIG.suppressFallbackWarnings ?? true),
+    enableVerboseBridgeLogs: config.get<boolean>('enableVerboseBridgeLogs', DEFAULT_CONFIG.enableVerboseBridgeLogs ?? false),
+    maxLogEntries: config.get<number>('maxLogEntries', DEFAULT_CONFIG.maxLogEntries ?? 500),
+    autoOpenBridgeLogOnError: config.get<boolean>('autoOpenBridgeLogOnError', DEFAULT_CONFIG.autoOpenBridgeLogOnError ?? false)
   };
 }
 

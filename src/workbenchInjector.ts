@@ -402,8 +402,19 @@ export function installBridgeScript(options: InjectorOptions = {}): InjectionRes
     const scriptFileName = options.scriptFileName || DEFAULT_BRIDGE_SCRIPT_NAME;
     const scriptFilePath = path.join(wbDir, scriptFileName);
 
-    // Idempotency check: avoid redundant file writes when bridge is already injected and valid
-    if (isBridgeInstalled(rawContent) && fs.existsSync(scriptFilePath) && !options.forceBackup) {
+    const scriptContent = buildBridgeScriptContent();
+    let scriptNeedsUpdate = true;
+    if (fs.existsSync(scriptFilePath)) {
+      try {
+        const existingScript = fs.readFileSync(scriptFilePath, 'utf8');
+        scriptNeedsUpdate = existingScript !== scriptContent;
+      } catch {
+        scriptNeedsUpdate = true;
+      }
+    }
+
+    // Idempotency check: avoid redundant file writes when bridge is already injected and script is up to date
+    if (isBridgeInstalled(rawContent) && !scriptNeedsUpdate && !options.forceBackup) {
       return {
         success: true,
         path: wbPath
@@ -433,8 +444,7 @@ export function installBridgeScript(options: InjectorOptions = {}): InjectionRes
 
     writeFileElevated(wbPath, newContent);
 
-    // Also write/copy the DOM bridge script into workbench directory
-    const scriptContent = buildBridgeScriptContent();
+    // Also write/copy the updated DOM bridge script into workbench directory
     writeFileElevated(scriptFilePath, scriptContent);
 
     if (options.updateChecksums !== false) {

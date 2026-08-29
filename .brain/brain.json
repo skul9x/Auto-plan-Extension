@@ -2,13 +2,13 @@
   "meta": {
     "schema_version": "1.1.0",
     "awf_version": "4.0.2",
-    "updated_at": "2026-08-29T11:03:00+07:00"
+    "updated_at": "2026-08-29T20:05:00+07:00"
   },
   "project": {
     "name": "Auto-Plan_Extension",
-    "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan, inject prompt focus-free qua DOM Renderer Bridge hoặc OS Keyboard Simulation, theo dõi log transcript AI sinh code và tự động chuyển tiếp phase.",
+    "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan, inject prompt focus-free qua DOM Renderer Bridge hoặc OS Keyboard Simulation, theo dõi log transcript AI sinh code, tự động chuyển tiếp phase, kèm hệ thống Full-Screen Settings Panel và DOM Bridge Diagnostic Logger.",
     "created_at": "2026-08-27T23:51:00+07:00",
-    "active_plan": "plans/260829-1100-cross-platform-ui-sidebar/plan.md"
+    "active_plan": "plans/260829-1940-dom-bridge-debug-logger/plan.md"
   },
   "tech_stack": {
     "language": "TypeScript / JavaScript",
@@ -16,8 +16,10 @@
     "dom_bridge": "HTTP Bridge Server (Node.js http), Renderer DOM Injection (workbench.html), Shadow DOM Traversal",
     "elevation": "Linux pkexec (Polkit GUI), Windows PowerShell UAC (Start-Process -Verb runAs)",
     "keyboard_fallback": "Windows PowerShell SendKeys (WScript.Shell), Linux xdotool",
-    "ui_components": "Activity Bar Sidebar Control Center (WebviewViewProvider), Modern Dark Glassmorphic CSS",
-    "log_watcher": "Transcript JSONL Stream Watcher (~/.gemini/antigravity-ide/brain/)"
+    "ui_components": "Activity Bar Sidebar Control Center (WebviewViewProvider), Full-Screen Settings Panel (WebviewPanel), Modern Dark Glassmorphic CSS",
+    "log_watcher": "Transcript JSONL Stream Watcher (~/.gemini/antigravity-ide/brain/)",
+    "debug_logger": "In-memory Ring Buffer (DebugLogger), VS Code Log Output Channel (Auto-Plan DOM Bridge), Multi-tier Telemetry Tracing",
+    "dom_diagnostics": "Structured DOM snapshot evaluation, ShadowRoot boundary traversal, Container tree discovery"
   },
   "features": [
     "Quét và phân tích thư mục plans/*.md tự động",
@@ -29,14 +31,22 @@
     "Tự động cập nhật checksum product.json chống cảnh báo corrupt",
     "Pre-flight Fail-Fast Health Guard chống treo 15 phút (< 100ms)",
     "Sidebar Control Center (Webview View) với Progress Bar, Phase Checkboxes, Live AI Log, Controls",
-    "Lắng nghe log transcript phát hiện từ khóa hoàn thành 'Done skul9x.' và tự động chuyển Phase"
+    "Lắng nghe log transcript phát hiện từ khóa hoàn thành 'Done skul9x.' và tự động chuyển Phase",
+    "Full-Screen Settings Panel (autoplan.openSettings) với cấu hình Tier Dispatch, Fallback Policy, Latency Test và Live Health Pills",
+    "DOM Bridge Diagnostic & Debug Logger Subsystem toàn diện (in-memory ring buffer, output channel streaming)",
+    "Engine chẩn đoán DOM Electron sâu khi tìm selector thất bại",
+    "Lệnh xuất báo cáo chẩn đoán 1-Click: copyDebugLog, exportDebugLog, clearDebugLog, showOutputChannel",
+    "Live Log Viewer Console nhúng trong Settings Panel với color badges, level filtering và auto-scroll",
+    "Quick action copy log trong Sidebar Control Center và trong Actionable Failure Notification toasts"
   ],
   "decisions_made": [
     "Sử dụng kiến trúc DOM Bridge tương tự zixfel nhưng mở rộng để điều phối Prompt và Phase",
     "Hỗ trợ chuẩn 2 nền tảng: Windows và Linux (loại trừ macOS)",
     "Xử lý phân quyền bằng pkexec trên Linux và PowerShell UAC trên Windows thay vì bắt user gõ terminal",
     "Pre-flight check < 100ms ngắt ngay khi thiếu điều kiện kèm Actionable Notification thay vì để treo 15 phút",
-    "Xây dựng Sidebar Control Center Webview trên Activity Bar để nâng tầm UI/UX cho người dùng cuối"
+    "Xây dựng Sidebar Control Center Webview trên Activity Bar để nâng tầm UI/UX cho người dùng cuối",
+    "Tách biệt giao diện cấu hình chuyên sâu vào Full-Screen Settings Panel để tránh rối Sidebar",
+    "Tích hợp Debug Logger chuyên sâu với ring-buffer và VS Code Output Channel để giải quyết triệt để lỗi silent fail khi DOM Bridge mất kết nối"
   ],
   "knowledge_items": {
     "reports": [
@@ -44,13 +54,17 @@
       "2.md: Đánh giá khả năng hoạt động của Auto-Plan trên Linux",
       "3.md: Báo cáo nguyên nhân lỗi v1.0.5 trên Linux và cách khắc phục",
       "6.md: Kế hoạch kỹ thuật chi tiết nâng cấp đa nền tảng (Windows & Linux) và tối ưu UI/UX",
-      "plans/260829-1100-cross-platform-ui-sidebar/plan.md: Kế hoạch 5 Phase chi tiết với test file-based"
+      "plans/260829-1100-cross-platform-ui-sidebar/plan.md: Kế hoạch 5 Phase chi tiết với test file-based",
+      "plans/260829-1900-execution-settings-panel/plan.md: Kế hoạch 4 Phase cho Full-Screen Settings Panel",
+      "plans/260829-1940-dom-bridge-debug-logger/plan.md: Kế hoạch 4 Phase cho DOM Bridge Debug Logger Subsystem"
     ],
     "gotchas": [
       "Linux /usr/share/antigravity thuộc root, cần pkexec hoặc chown để sửa workbench.html",
       "Sửa workbench.html cần cập nhật product.json checksums để tránh corrupt warning",
       "keyboardManager trên Linux cần xdotool nếu chạy ở Tier 3 fallback",
-      "Pre-flight check phải chạy trước khi khởi tạo timers trong orchestrator"
+      "Pre-flight check phải chạy trước khi khởi tạo timers trong orchestrator",
+      "Webview client scripts cần mock fallback cho document/window trong Node.js unit test environment",
+      "DebugLogger cần bounded capacity để tránh rò rỉ bộ nhớ trong các session dài"
     ]
   }
 }

@@ -27,6 +27,7 @@
 
   const btnActivateBridge = document.getElementById('btnActivateBridge');
   const btnDiagnostics = document.getElementById('btnDiagnostics');
+  const btnCopyBridgeLog = document.getElementById('btnCopyBridgeLog');
   const btnSettings = document.getElementById('btnSettings');
 
   let currentPhases = [];
@@ -85,6 +86,12 @@
   btnDiagnostics.addEventListener('click', () => {
     vscode.postMessage({ command: 'diagnostics' });
   });
+
+  if (btnCopyBridgeLog) {
+    btnCopyBridgeLog.addEventListener('click', () => {
+      vscode.postMessage({ command: 'copyBridgeLog' });
+    });
+  }
 
   btnSettings.addEventListener('click', () => {
     vscode.postMessage({ command: 'settings' });
@@ -234,7 +241,7 @@
     if (status.includes('connected') || status === 'focus-free') {
       bridgeStatusBadge.classList.add('status-connected');
       bridgeStatusText.textContent = '🟢 Focus-Free';
-      bridgeStatusBadge.title = 'DOM Automation Bridge Active & Connected';
+      bridgeStatusBadge.title = 'Background Bridge: Active (Keep-Alive)';
     } else if (status.includes('keyboard') || status.includes('fallback')) {
       bridgeStatusBadge.classList.add('status-keyboard');
       bridgeStatusText.textContent = '🟡 Keyboard Fallback';

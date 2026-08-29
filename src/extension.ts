@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { getConfig, setPromptText, writeConfigJson } from './config';
 import { orchestrator, OrchestratorProgressInfo } from './orchestrator';
 import { scanPlanFolder, scanPlanFolderAsync, sortPhaseFiles, getPhasesFrom, normalizePath, PhaseFile } from './planScanner';
@@ -10,6 +11,7 @@ import { isBridgeInstalled, installBridgeScript, uninstallBridgeScript, getWorkb
 import { SidebarProvider } from './sidebarProvider';
 import { SettingsProvider } from './settingsProvider';
 import { promptDispatcher } from './promptDispatcher';
+import { debugLogger } from './debugLogger';
 
 let mainStatusBarItem: vscode.StatusBarItem;
 let bridgeStatusBarItem: vscode.StatusBarItem;
@@ -910,8 +912,8 @@ export function updateBridgeStatusBar(): void {
 
   if (installed && listening) {
     if (clients.length > 0) {
-      bridgeStatusBarItem.text = '$(plug) Bridge: Connected';
-      bridgeStatusBarItem.tooltip = `Auto-Plan DOM Bridge: Active & Connected (Port: ${port}, Clients: ${clients.length})\nClick to check diagnostic status`;
+      bridgeStatusBarItem.text = '$(plug) Bridge: Online (Background Active)';
+      bridgeStatusBarItem.tooltip = `Auto-Plan: Bridge: Online (Background Active) (Port: ${port}, Clients: ${clients.length})\nClick to check diagnostic status`;
     } else {
       bridgeStatusBarItem.text = '$(plug) Bridge: Active';
       bridgeStatusBarItem.tooltip = `Auto-Plan DOM Bridge: Listening on port ${port} (Waiting for DOM client)\nClick to check diagnostic status`;
@@ -1069,6 +1071,97 @@ export async function showBridgeDiagnosticDialog(): Promise<BridgeDiagnosticRepo
   return report;
 }
 
+/**
+ * Compiles full environment report + DOM bridge telemetry + in-memory log buffer and copies to clipboard.
+ */
+export async function copyDebugLog(): Promise<string> {
+  const report = debugLogger.exportDiagnosticReportToString();
+  try {
+    if (vscode.env?.clipboard?.writeText) {
+      await vscode.env.clipboard.writeText(report);
+    }
+  } catch (err) {
+    console.warn('[Auto-Plan] Failed to copy debug log to clipboard:', err);
+  }
+  vscode.window.showInformationMessage('✅ DOM Bridge Debug Log copied to clipboard! (Ready to paste into chat)');
+  return report;
+}
+
+/**
+ * Compiles diagnostic report and saves to file, opening it in an editor tab.
+ */
+export async function exportDebugLog(targetPath?: string): Promise<string | undefined> {
+  let filePath = targetPath;
+  if (!filePath) {
+    const defaultUri = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0
+      ? vscode.Uri.file(path.join(vscode.workspace.workspaceFolders[0].uri.fsPath, 'dom-bridge-debug.txt'))
+      : vscode.Uri.file(path.join(os.homedir(), 'dom-bridge-debug.txt'));
+
+    if (vscode.window && typeof vscode.window.showSaveDialog === 'function') {
+      const chosen = await vscode.window.showSaveDialog({
+        defaultUri,
+        filters: { 'Text Files': ['txt', 'log', 'md'] },
+        saveLabel: 'Export Diagnostic Log'
+      });
+      if (chosen) {
+        filePath = chosen.fsPath;
+      }
+    }
+    if (!filePath) {
+      filePath = defaultUri.fsPath;
+    }
+  }
+
+  await debugLogger.exportLogToFile(filePath);
+  try {
+    if (vscode.workspace && typeof vscode.workspace.openTextDocument === 'function' && vscode.window && typeof vscode.window.showTextDocument === 'function') {
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+      await vscode.window.showTextDocument(doc);
+    }
+  } catch (err) {
+    console.warn('[Auto-Plan] Could not open exported log file in editor:', err);
+  }
+
+  vscode.window.showInformationMessage(`✅ DOM Bridge Debug Log exported to ${path.basename(filePath)}`);
+  return filePath;
+}
+
+/**
+ * Clears the in-memory ring buffer and refreshes active webview panels.
+ */
+export function clearDebugLog(): void {
+  debugLogger.clear();
+  if (SettingsProvider.currentPanel) {
+    SettingsProvider.currentPanel.sendLogBuffer();
+  }
+  vscode.window.showInformationMessage('Auto-Plan: Debug log buffer cleared.');
+}
+
+/**
+ * Reveals the dedicated Auto-Plan DOM Bridge output channel.
+ */
+export function showOutputChannel(): void {
+  debugLogger.showOutputChannel(false);
+}
+
+/**
+ * Actionable failure notification offering 1-click diagnostic log copy and settings.
+ */
+export async function showFailureNotificationWithDiagnostics(errorMessage: string): Promise<string | undefined> {
+  const selection = await vscode.window.showErrorMessage(
+    `Auto-Plan Error: ${errorMessage}`,
+    '📋 Copy Diagnostic Log',
+    '⚙️ Open Settings',
+    'Dismiss'
+  );
+  if (selection === '📋 Copy Diagnostic Log') {
+    await vscode.commands.executeCommand('autoplan.copyDebugLog');
+  } else if (selection === '⚙️ Open Settings') {
+    await vscode.commands.executeCommand('autoplan.openSettings');
+  }
+  return selection;
+}
+
 export function activate(context: vscode.ExtensionContext) {
   // Create Bottom-Right Interactive Status Bar Item (Priority 100)
   try {
@@ -1147,7 +1240,7 @@ export function activate(context: vscode.ExtensionContext) {
     }, 4000);
   });
 
-  orchestrator.on('error', (err: Error) => {
+  orchestrator.on('error', async (err: Error) => {
     stopElapsedTimer();
     updateStatusBar();
     sidebarProvider?.refreshAndSendState();
@@ -1156,7 +1249,7 @@ export function activate(context: vscode.ExtensionContext) {
     if (preflight && !preflight.ready && preflight.details?.os === 'linux' && !preflight.details?.xdotoolAvailable) {
       showLinuxPreflightErrorNotification();
     } else {
-      vscode.window.showErrorMessage(`Auto-Plan Error: ${err.message}`);
+      await showFailureNotificationWithDiagnostics(err.message);
     }
   });
 
@@ -1256,6 +1349,22 @@ export function activate(context: vscode.ExtensionContext) {
     return SettingsProvider.render(context.extensionUri, promptDispatcher);
   });
 
+  const copyDebugLogCmd = vscode.commands.registerCommand('autoplan.copyDebugLog', () => {
+    return copyDebugLog();
+  });
+
+  const exportDebugLogCmd = vscode.commands.registerCommand('autoplan.exportDebugLog', (targetPath?: string) => {
+    return exportDebugLog(targetPath);
+  });
+
+  const clearDebugLogCmd = vscode.commands.registerCommand('autoplan.clearDebugLog', () => {
+    return clearDebugLog();
+  });
+
+  const showOutputChannelCmd = vscode.commands.registerCommand('autoplan.showOutputChannel', () => {
+    return showOutputChannel();
+  });
+
   // Watch for configuration changes
   const configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration('autoplan')) {
@@ -1290,6 +1399,10 @@ export function activate(context: vscode.ExtensionContext) {
     oneClickSetupCmd,
     checkStatusCmd,
     openSettingsCmd,
+    copyDebugLogCmd,
+    exportDebugLogCmd,
+    clearDebugLogCmd,
+    showOutputChannelCmd,
     configWatcher
   );
 
@@ -1314,6 +1427,7 @@ export async function deactivate() {
   }
   orchestrator.dispose();
   transcriptWatcher.dispose();
+  debugLogger.dispose();
   try {
     await bridgeServer.stop();
   } catch {}

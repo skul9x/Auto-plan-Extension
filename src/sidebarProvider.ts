@@ -255,6 +255,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       case 'diagnostics':
         await showBridgeDiagnosticDialog();
         break;
+      case 'copyBridgeLog':
+      case 'copyDebugLog':
+        await vscode.commands.executeCommand('autoplan.copyDebugLog');
+        break;
       case 'settings':
         await vscode.commands.executeCommand('autoplan.openSettings');
         break;

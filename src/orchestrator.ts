@@ -342,11 +342,19 @@ export class Orchestrator extends EventEmitter {
       ...options?.overrideConfig
     };
 
-    const readiness = this.promptDispatcher.validateDispatchReadiness(
+    let readiness = this.promptDispatcher.validateDispatchReadiness(
       undefined,
       config.executionMode,
       config.allowTierFallback
     );
+    if (!readiness.ready && (config.executionMode === 'auto' || config.executionMode === 'domBridge')) {
+      readiness = await this.promptDispatcher.ensureBridgeReadinessWithWakeup(
+        200,
+        undefined,
+        config.executionMode,
+        config.allowTierFallback
+      );
+    }
     this.lastPreflightResult = readiness;
     if (!readiness.ready) {
       const mode = config.executionMode || 'auto';
@@ -455,11 +463,19 @@ export class Orchestrator extends EventEmitter {
     };
 
     // Pre-flight health guard check (< 100ms fail-fast)
-    const readiness = this.promptDispatcher.validateDispatchReadiness(
+    let readiness = this.promptDispatcher.validateDispatchReadiness(
       undefined,
       config.executionMode,
       config.allowTierFallback
     );
+    if (!readiness.ready && (config.executionMode === 'auto' || config.executionMode === 'domBridge')) {
+      readiness = await this.promptDispatcher.ensureBridgeReadinessWithWakeup(
+        200,
+        undefined,
+        config.executionMode,
+        config.allowTierFallback
+      );
+    }
     this.lastPreflightResult = readiness;
     if (!readiness.ready) {
       const mode = config.executionMode || 'auto';
@@ -682,11 +698,19 @@ export class Orchestrator extends EventEmitter {
     };
 
     // Pre-flight health guard check (< 100ms fail-fast)
-    const readiness = this.promptDispatcher.validateDispatchReadiness(
+    let readiness = this.promptDispatcher.validateDispatchReadiness(
       undefined,
       config.executionMode,
       config.allowTierFallback
     );
+    if (!readiness.ready && (config.executionMode === 'auto' || config.executionMode === 'domBridge')) {
+      readiness = await this.promptDispatcher.ensureBridgeReadinessWithWakeup(
+        200,
+        undefined,
+        config.executionMode,
+        config.allowTierFallback
+      );
+    }
     this.lastPreflightResult = readiness;
     if (!readiness.ready) {
       const mode = config.executionMode || 'auto';

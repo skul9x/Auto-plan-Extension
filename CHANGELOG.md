@@ -2,6 +2,28 @@
 
 All notable changes to the **Antigravity Auto-Plan Runner** extension will be documented in this file.
 
+## [1.3.0] - 2026-08-29
+
+### 🚀 Added
+- **DOM Bridge Diagnostic & Debug Logger Subsystem**:
+  - Core `DebugLogger` module with in-memory ring buffer (default 500 entries) and dedicated VS Code Log Output Channel (`Auto-Plan DOM Bridge`).
+  - BridgeServer HTTP log ingestion API (`POST /log`) supporting client-side log relaying and cross-process tracing.
+  - Deep Electron Renderer DOM diagnostic engine: captures evaluated selectors, match counts, shadowRoot boundaries, and container hierarchy on selector lookup failures.
+  - User-facing VS Code commands:
+    - `autoplan.copyDebugLog`: Compiles full markdown report + recent log traces and copies to clipboard with confirmation toast.
+    - `autoplan.exportDebugLog`: Compiles diagnostic report, prompts/saves to `.txt` file, and opens in active editor tab.
+    - `autoplan.clearDebugLog`: Clears in-memory buffer and refreshes webview panels.
+    - `autoplan.showOutputChannel`: Focuses and reveals the dedicated output channel.
+  - **Live Log Viewer Console in Settings Panel**: Collapsible real-time console with color-coded level badges (`[DEBUG]`, `[INFO]`, `[WARN]`, `[ERROR]`), component tags (`[SERVER]`, `[CLIENT]`, `[DOM]`, `[DISPATCHER]`), level filtering, and auto-scroll.
+  - **Sidebar 1-Click Action**: Quick action button `📋 Copy Bridge Log` inside the Sidebar Control Center footer.
+  - **Actionable Failure Notification Triggers**: Direct `📋 Copy Diagnostic Log` button on execution error toasts for instant clipboard export.
+
+### ⚡ Enhanced
+- **Extension Lifecycle & Disposables**: Automated logger and listener cleanup on extension deactivation.
+- **Configurable Logging Options**: Added `autoplan.enableVerboseBridgeLogs`, `autoplan.maxLogEntries`, and `autoplan.autoOpenBridgeLogOnError`.
+
+---
+
 ## [1.2.0] - 2026-08-29
 
 ### 🚀 Added

@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
-import { BridgeServer, CommandOptions } from './bridgeServer';
+import { BridgeServer, bridgeServer as defaultBridgeServer, CommandOptions } from './bridgeServer';
 import { KeyboardManager, keyboardManager as defaultKeyboardManager, BatchPromptOptions } from './keyboardManager';
 import { AutoPlanConfig, getConfig, ExecutionMode } from './config';
+import { DebugLogger, debugLogger, sanitizePrompt } from './debugLogger';
 
 export type DispatchTier = 'domBridge' | 'nativeCommand' | 'keyboard';
 
@@ -55,6 +56,7 @@ export interface PromptDispatcherOptions {
   configProvider?: () => AutoPlanConfig;
   commandExecutor?: (command: string, ...args: any[]) => Thenable<any>;
   warningNotifier?: (message: string) => void;
+  logger?: DebugLogger;
 }
 
 /**
@@ -70,11 +72,13 @@ export class PromptDispatcher {
   private commandExecutor: (command: string, ...args: any[]) => Thenable<any>;
   private warningNotifier: (message: string) => void;
   private customCommandExecutorProvided: boolean;
+  private logger: DebugLogger;
 
   constructor(options?: PromptDispatcherOptions) {
-    this.bridgeServer = options?.bridgeServer ?? new BridgeServer();
+    this.bridgeServer = options?.bridgeServer ?? defaultBridgeServer;
     this.keyboardManager = options?.keyboardManager ?? defaultKeyboardManager;
     this.configProvider = options?.configProvider ?? getConfig;
+    this.logger = options?.logger ?? debugLogger;
     this.customCommandExecutorProvided = Boolean(options?.commandExecutor);
     this.commandExecutor =
       options?.commandExecutor ??
@@ -99,6 +103,14 @@ export class PromptDispatcher {
       });
   }
 
+  public getLogger(): DebugLogger {
+    return this.logger;
+  }
+
+  public setLogger(logger: DebugLogger): void {
+    this.logger = logger;
+  }
+
   public getBridgeServer(): BridgeServer {
     return this.bridgeServer;
   }
@@ -111,6 +123,54 @@ export class PromptDispatcher {
    * Pre-flight health check to evaluate prompt transport readiness in < 100ms.
    */
   public validateDispatchReadiness(
+    platformOverride?: string,
+    modeOverride?: ExecutionMode,
+    allowFallbackOverride?: boolean
+  ): DispatchReadinessResult {
+    const result = this.evaluateReadiness(platformOverride, modeOverride, allowFallbackOverride);
+    const activeWindow = this.bridgeServer.getActiveWindowKey() || this.bridgeServer.getWindowKey();
+    if (result.ready) {
+      this.logger.info('DISPATCHER', `Readiness check passed: tier=${result.selectedTier}, connectedClients=${result.details.connectedClientsCount}, port=${result.details.bridgePort ?? 'none'}, activeWindow=${activeWindow}`, result);
+    } else {
+      this.logger.warn('DISPATCHER', `Readiness check failed: ${result.errorMessage || 'No transport available'}, port=${result.details.bridgePort ?? 'none'}, activeWindow=${activeWindow}`, result);
+    }
+    return result;
+  }
+
+  /**
+   * Asynchronously ensures the bridge server is active and probes for background clients before evaluating readiness.
+   */
+  public async ensureBridgeReadinessWithWakeup(
+    timeoutMs: number = 250,
+    platformOverride?: string,
+    modeOverride?: ExecutionMode,
+    allowFallbackOverride?: boolean
+  ): Promise<DispatchReadinessResult> {
+    const config = this.configProvider();
+    const mode = modeOverride ?? config.executionMode ?? 'auto';
+
+    if (!this.bridgeServer.isListening()) {
+      if (mode === 'domBridge' || mode === 'auto') {
+        try {
+          await this.bridgeServer.start();
+        } catch (err: any) {
+          this.logger.warn('DISPATCHER', `Failed to start BridgeServer during wakeup probe: ${err.message}`);
+        }
+      }
+    }
+
+    if (this.bridgeServer.getConnectedClients().length === 0) {
+      this.logger.debug('DISPATCHER', `0 connected clients. Running fast wakeup probe (timeout: ${timeoutMs}ms)...`);
+      await this.bridgeServer.probeActiveClients(timeoutMs);
+    }
+
+    const result = this.validateDispatchReadiness(platformOverride, modeOverride, allowFallbackOverride);
+    const activeWindow = this.bridgeServer.getActiveWindowKey() || this.bridgeServer.getWindowKey();
+    this.logger.info('DISPATCHER', `Wakeup readiness evaluated: ready=${result.ready}, tier=${result.selectedTier}, connectedClients=${result.details.connectedClientsCount}, port=${result.details.bridgePort ?? 'none'}, activeWindow=${activeWindow}`);
+    return result;
+  }
+
+  private evaluateReadiness(
     platformOverride?: string,
     modeOverride?: ExecutionMode,
     allowFallbackOverride?: boolean
@@ -356,15 +416,40 @@ export class PromptDispatcher {
     const mode = options?.mode || config.executionMode || 'auto';
     const timeoutMs = options?.timeoutMs ?? config.bridgeTimeoutMs ?? 5000;
 
-    // In auto mode, if bridge server is not listening or has no connected clients, fail fast to Tier 2
-    if (mode === 'auto') {
-      if (!this.bridgeServer.isListening() || this.bridgeServer.getConnectedClients().length === 0) {
-        throw new Error('DOM Bridge has no active connected clients');
+    // Ensure bridge server is listening
+    if (!this.bridgeServer.isListening()) {
+      if (mode === 'domBridge' || mode === 'auto') {
+        try {
+          await this.bridgeServer.start();
+        } catch (err: any) {
+          if (mode === 'auto') {
+            throw new Error(`DOM Bridge server failed to start: ${err.message}`);
+          }
+        }
       }
-    } else {
-      if (!this.bridgeServer.isListening()) {
-        await this.bridgeServer.start();
+    }
+
+    // Fast pre-flight wakeup probe if client count is 0
+    if (this.bridgeServer.getConnectedClients().length === 0) {
+      this.logger.debug('DISPATCHER', 'Connected clients count is 0 in dispatchTier1. Probing active clients with fast wakeup...');
+      await this.bridgeServer.probeActiveClients(200);
+    }
+
+    // Dispatcher auto-reconnect retry loop (up to 1s) if clients are still 0
+    if (this.bridgeServer.getConnectedClients().length === 0) {
+      this.logger.debug('DISPATCHER', 'Clients still 0 after fast probe, attempting 1s auto-reconnect retry loop...');
+      const reconnectStart = Date.now();
+      while (Date.now() - reconnectStart < 1000) {
+        await new Promise((r) => setTimeout(r, 100));
+        if (this.bridgeServer.getConnectedClients().length > 0) {
+          this.logger.info('DISPATCHER', `Client reconnected during retry loop (${Date.now() - reconnectStart}ms)`);
+          break;
+        }
       }
+    }
+
+    if (this.bridgeServer.getConnectedClients().length === 0) {
+      throw new Error('DOM Bridge has no active connected clients');
     }
 
     const commandOpts: CommandOptions = {
@@ -454,37 +539,51 @@ export class PromptDispatcher {
     const isStrict = allowFallback === false || (config.strictMode && mode !== 'auto');
     const fallbackHistory: FallbackRecord[] = [];
 
+    const promptPreview = sanitizePrompt(promptText, 60);
+    this.logger.info('DISPATCHER', `Dispatching prompt: "${promptPreview}" (Total ${promptText.length} chars, mode=${mode}, allowFallback=${allowFallback})`, {
+      mode,
+      allowFallback,
+      isStrict,
+      charCount: promptText.length
+    });
+
     // If fallback is disabled (allowFallback === false or strict mode): execute only the requested tier
     if (isStrict) {
       const targetTier: DispatchTier = mode === 'auto' ? 'domBridge' : mode;
 
       if (targetTier === 'domBridge') {
         try {
-          return await this.dispatchTier1(promptText, options);
+          const res = await this.dispatchTier1(promptText, options);
+          this.logger.info('DISPATCHER', `Strict Tier 1 (domBridge) succeeded in ${res.durationMs}ms`);
+          return res;
         } catch (err: any) {
-          throw new Error(
-            `[DOM Bridge Transport Failed] ${err.message || String(err)}. Remediation: Ensure DOM Bridge injection is active in workbench.html or restart the bridge server.`
-          );
+          const msg = `[DOM Bridge Transport Failed] ${err.message || String(err)}. Remediation: Ensure DOM Bridge injection is active in workbench.html or restart the bridge server.`;
+          this.logger.error('DISPATCHER', msg, { tier: 'domBridge', error: err.stack || err.message }, err);
+          throw new Error(msg);
         }
       }
 
       if (targetTier === 'nativeCommand') {
         try {
-          return await this.dispatchTier2(promptText, options);
+          const res = await this.dispatchTier2(promptText, options);
+          this.logger.info('DISPATCHER', `Strict Tier 2 (nativeCommand) succeeded in ${res.durationMs}ms`);
+          return res;
         } catch (err: any) {
-          throw new Error(
-            `[Native Command Transport Failed] ${err.message || String(err)}. Remediation: Ensure VS Code Antigravity chat command is accessible.`
-          );
+          const msg = `[Native Command Transport Failed] ${err.message || String(err)}. Remediation: Ensure VS Code Antigravity chat command is accessible.`;
+          this.logger.error('DISPATCHER', msg, { tier: 'nativeCommand', error: err.stack || err.message }, err);
+          throw new Error(msg);
         }
       }
 
       if (targetTier === 'keyboard') {
         try {
-          return await this.dispatchTier3(promptText, options);
+          const res = await this.dispatchTier3(promptText, options);
+          this.logger.info('DISPATCHER', `Strict Tier 3 (keyboard) succeeded in ${res.durationMs}ms`);
+          return res;
         } catch (err: any) {
-          throw new Error(
-            `[Keyboard Simulation Failed] ${err.message || String(err)}. Remediation: Ensure OS keyboard prerequisites (e.g. xdotool on Linux) are installed.`
-          );
+          const msg = `[Keyboard Simulation Failed] ${err.message || String(err)}. Remediation: Ensure OS keyboard prerequisites (e.g. xdotool on Linux) are installed.`;
+          this.logger.error('DISPATCHER', msg, { tier: 'keyboard', error: err.stack || err.message }, err);
+          throw new Error(msg);
         }
       }
     }
@@ -495,12 +594,19 @@ export class PromptDispatcher {
       const t1Start = Date.now();
       try {
         const res = await this.dispatchTier1(promptText, options);
+        this.logger.info('DISPATCHER', `Tier 1 (domBridge) succeeded in ${res.durationMs}ms`);
         return res;
       } catch (err: any) {
+        const durationMs = Date.now() - t1Start;
+        this.logger.warn('DISPATCHER', `Tier 1 (domBridge) failed in ${durationMs}ms: ${err.message}. Falling back to Tier 2 (nativeCommand)...`, {
+          tier: 'domBridge',
+          durationMs,
+          error: err.stack || err.message
+        }, err);
         fallbackHistory.push({
           tier: 'domBridge',
           error: err.message || String(err),
-          durationMs: Date.now() - t1Start
+          durationMs
         });
       }
 
@@ -508,15 +614,22 @@ export class PromptDispatcher {
       const t2Start = Date.now();
       try {
         const res = await this.dispatchTier2(promptText, options);
+        this.logger.info('DISPATCHER', `Tier 2 (nativeCommand) succeeded in ${res.durationMs}ms`);
         return {
           ...res,
           fallbackHistory
         };
       } catch (err: any) {
+        const durationMs = Date.now() - t2Start;
+        this.logger.warn('DISPATCHER', `Tier 2 (nativeCommand) failed in ${durationMs}ms: ${err.message}. Falling back to Tier 3 (keyboard)...`, {
+          tier: 'nativeCommand',
+          durationMs,
+          error: err.stack || err.message
+        }, err);
         fallbackHistory.push({
           tier: 'nativeCommand',
           error: err.message || String(err),
-          durationMs: Date.now() - t2Start
+          durationMs
         });
       }
 
@@ -531,16 +644,23 @@ export class PromptDispatcher {
 
       try {
         const res = await this.dispatchTier3(promptText, options);
+        this.logger.info('DISPATCHER', `Tier 3 (keyboard) succeeded in ${res.durationMs}ms`);
         return {
           ...res,
           fallbackHistory
         };
       } catch (err: any) {
+        const durationMs = Date.now() - t3Start;
         fallbackHistory.push({
           tier: 'keyboard',
           error: err.message || String(err),
-          durationMs: Date.now() - t3Start
+          durationMs
         });
+
+        this.logger.error('DISPATCHER', `All prompt dispatch tiers failed after fallback chain`, {
+          fallbackHistory,
+          durationMs
+        }, err);
 
         const summary = fallbackHistory.map((f) => `${f.tier}: ${f.error}`).join(' | ');
         throw new Error(`All prompt dispatch tiers failed. (${summary})`);
@@ -551,12 +671,19 @@ export class PromptDispatcher {
       const t2Start = Date.now();
       try {
         const res = await this.dispatchTier2(promptText, options);
+        this.logger.info('DISPATCHER', `Tier 2 (nativeCommand) succeeded in ${res.durationMs}ms`);
         return res;
       } catch (err: any) {
+        const durationMs = Date.now() - t2Start;
+        this.logger.warn('DISPATCHER', `Tier 2 (nativeCommand) failed in ${durationMs}ms: ${err.message}. Falling back to Tier 3 (keyboard)...`, {
+          tier: 'nativeCommand',
+          durationMs,
+          error: err.stack || err.message
+        }, err);
         fallbackHistory.push({
           tier: 'nativeCommand',
           error: err.message || String(err),
-          durationMs: Date.now() - t2Start
+          durationMs
         });
       }
 
@@ -564,16 +691,19 @@ export class PromptDispatcher {
       const t3Start = Date.now();
       try {
         const res = await this.dispatchTier3(promptText, options);
+        this.logger.info('DISPATCHER', `Tier 3 (keyboard) succeeded in ${res.durationMs}ms`);
         return {
           ...res,
           fallbackHistory
         };
       } catch (err: any) {
+        const durationMs = Date.now() - t3Start;
         fallbackHistory.push({
           tier: 'keyboard',
           error: err.message || String(err),
-          durationMs: Date.now() - t3Start
+          durationMs
         });
+        this.logger.error('DISPATCHER', `Native Command and fallback tiers failed`, { fallbackHistory, durationMs }, err);
         const summary = fallbackHistory.map((f) => `${f.tier}: ${f.error}`).join(' | ');
         throw new Error(`Native Command and fallback tiers failed. (${summary})`);
       }
@@ -581,8 +711,11 @@ export class PromptDispatcher {
 
     if (mode === 'keyboard') {
       try {
-        return await this.dispatchTier3(promptText, options);
+        const res = await this.dispatchTier3(promptText, options);
+        this.logger.info('DISPATCHER', `Keyboard dispatch succeeded in ${res.durationMs}ms`);
+        return res;
       } catch (err: any) {
+        this.logger.error('DISPATCHER', `[Keyboard Simulation Failed] ${err.message || String(err)}`, undefined, err);
         throw new Error(`[Keyboard Simulation Failed] ${err.message || String(err)}`);
       }
     }

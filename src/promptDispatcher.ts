@@ -23,6 +23,7 @@ export interface DispatchReadinessResult {
 
 export interface DispatchOptions {
   mode?: ExecutionMode;
+  allowFallback?: boolean;
   timeoutMs?: number;
   windowKey?: string;
   commandType?: string;
@@ -68,11 +69,13 @@ export class PromptDispatcher {
   private configProvider: () => AutoPlanConfig;
   private commandExecutor: (command: string, ...args: any[]) => Thenable<any>;
   private warningNotifier: (message: string) => void;
+  private customCommandExecutorProvided: boolean;
 
   constructor(options?: PromptDispatcherOptions) {
     this.bridgeServer = options?.bridgeServer ?? new BridgeServer();
     this.keyboardManager = options?.keyboardManager ?? defaultKeyboardManager;
     this.configProvider = options?.configProvider ?? getConfig;
+    this.customCommandExecutorProvided = Boolean(options?.commandExecutor);
     this.commandExecutor =
       options?.commandExecutor ??
       ((cmd: string, ...args: any[]) => {
@@ -107,7 +110,11 @@ export class PromptDispatcher {
   /**
    * Pre-flight health check to evaluate prompt transport readiness in < 100ms.
    */
-  public validateDispatchReadiness(platformOverride?: string): DispatchReadinessResult {
+  public validateDispatchReadiness(
+    platformOverride?: string,
+    modeOverride?: ExecutionMode,
+    allowFallbackOverride?: boolean
+  ): DispatchReadinessResult {
     const rawPlatform = platformOverride || process.platform;
     const osType: 'win32' | 'linux' | 'darwin' | 'other' =
       rawPlatform === 'win32' ? 'win32' :
@@ -125,6 +132,135 @@ export class PromptDispatcher {
       return { available: false, binary: null };
     };
 
+    const config = this.configProvider();
+    const mode: ExecutionMode = modeOverride ?? config.executionMode ?? 'auto';
+    const allowFallback: boolean = allowFallbackOverride !== undefined
+      ? allowFallbackOverride
+      : (config.allowTierFallback !== undefined ? config.allowTierFallback : !config.strictMode);
+
+    // Strict Mode validation: when fallback is disabled and mode is a specific tier
+    if (allowFallback === false && mode !== 'auto') {
+      if (mode === 'domBridge') {
+        if (connectedClientsCount > 0) {
+          let xdotoolAvailable: boolean | undefined;
+          if (osType === 'linux') {
+            const prereqs = getLinuxPrereqs();
+            xdotoolAvailable = prereqs.available;
+          }
+          return {
+            ready: true,
+            selectedTier: 'domBridge',
+            isFocusFree: true,
+            requiresForegroundFocus: false,
+            details: {
+              connectedClientsCount,
+              os: osType,
+              xdotoolAvailable,
+              bridgePort
+            }
+          };
+        } else {
+          return {
+            ready: false,
+            selectedTier: 'domBridge',
+            isFocusFree: true,
+            requiresForegroundFocus: false,
+            errorMessage: 'Strict Tier 1 (DOM Bridge) requires active Electron bridge injection.',
+            remediationAction: 'activateBridge',
+            details: {
+              connectedClientsCount: 0,
+              os: osType,
+              bridgePort
+            }
+          };
+        }
+      }
+
+      if (mode === 'nativeCommand') {
+        let xdotoolAvailable: boolean | undefined;
+        if (osType === 'linux') {
+          const prereqs = getLinuxPrereqs();
+          xdotoolAvailable = prereqs.available;
+        }
+        return {
+          ready: true,
+          selectedTier: 'nativeCommand',
+          isFocusFree: false,
+          requiresForegroundFocus: true,
+          details: {
+            connectedClientsCount,
+            os: osType,
+            xdotoolAvailable,
+            bridgePort
+          }
+        };
+      }
+
+      if (mode === 'keyboard') {
+        if (osType === 'win32') {
+          return {
+            ready: true,
+            selectedTier: 'keyboard',
+            isFocusFree: false,
+            requiresForegroundFocus: true,
+            details: {
+              connectedClientsCount,
+              os: 'win32',
+              bridgePort
+            }
+          };
+        }
+
+        if (osType === 'linux') {
+          const prereqs = getLinuxPrereqs();
+          if (prereqs.available) {
+            return {
+              ready: true,
+              selectedTier: 'keyboard',
+              isFocusFree: false,
+              requiresForegroundFocus: true,
+              details: {
+                connectedClientsCount,
+                os: 'linux',
+                xdotoolAvailable: true,
+                bridgePort
+              }
+            };
+          } else {
+            return {
+              ready: false,
+              selectedTier: 'keyboard',
+              isFocusFree: false,
+              requiresForegroundFocus: true,
+              errorMessage: 'Strict Tier 3 (Keyboard Simulation) on Linux requires xdotool to be installed.',
+              remediationAction: 'installXdotool',
+              details: {
+                connectedClientsCount: 0,
+                os: 'linux',
+                xdotoolAvailable: false,
+                bridgePort
+              }
+            };
+          }
+        }
+
+        return {
+          ready: false,
+          selectedTier: 'keyboard',
+          isFocusFree: false,
+          requiresForegroundFocus: true,
+          errorMessage: `Strict Tier 3 (Keyboard Simulation) is not supported on ${rawPlatform}.`,
+          remediationAction: 'activateBridge',
+          details: {
+            connectedClientsCount: 0,
+            os: osType,
+            bridgePort
+          }
+        };
+      }
+    }
+
+    // Existing 3-tier cascade (auto mode or fallback enabled)
     // Step 1: Check Tier 1 - DOM Bridge
     if (connectedClientsCount > 0) {
       let xdotoolAvailable: boolean | undefined;
@@ -314,27 +450,135 @@ export class PromptDispatcher {
   public async dispatchPrompt(promptText: string, options?: DispatchOptions): Promise<DispatchResult> {
     const config = this.configProvider();
     const mode: ExecutionMode = options?.mode || config.executionMode || 'auto';
+    const allowFallback = options?.allowFallback ?? config.allowTierFallback ?? true;
+    const isStrict = allowFallback === false || (config.strictMode && mode !== 'auto');
     const fallbackHistory: FallbackRecord[] = [];
 
-    // Forced Tier 1 Mode
-    if (mode === 'domBridge') {
-      try {
-        return await this.dispatchTier1(promptText, options);
-      } catch (err: any) {
-        throw new Error(`[DOM Bridge Transport Failed] ${err.message || String(err)}`);
+    // If fallback is disabled (allowFallback === false or strict mode): execute only the requested tier
+    if (isStrict) {
+      const targetTier: DispatchTier = mode === 'auto' ? 'domBridge' : mode;
+
+      if (targetTier === 'domBridge') {
+        try {
+          return await this.dispatchTier1(promptText, options);
+        } catch (err: any) {
+          throw new Error(
+            `[DOM Bridge Transport Failed] ${err.message || String(err)}. Remediation: Ensure DOM Bridge injection is active in workbench.html or restart the bridge server.`
+          );
+        }
+      }
+
+      if (targetTier === 'nativeCommand') {
+        try {
+          return await this.dispatchTier2(promptText, options);
+        } catch (err: any) {
+          throw new Error(
+            `[Native Command Transport Failed] ${err.message || String(err)}. Remediation: Ensure VS Code Antigravity chat command is accessible.`
+          );
+        }
+      }
+
+      if (targetTier === 'keyboard') {
+        try {
+          return await this.dispatchTier3(promptText, options);
+        } catch (err: any) {
+          throw new Error(
+            `[Keyboard Simulation Failed] ${err.message || String(err)}. Remediation: Ensure OS keyboard prerequisites (e.g. xdotool on Linux) are installed.`
+          );
+        }
       }
     }
 
-    // Forced Tier 2 Mode
+    // If fallback is enabled: execute Tier 1 -> Tier 2 -> Tier 3 with fallback history tracking
+    if (mode === 'auto' || mode === 'domBridge') {
+      // 1. Try Tier 1: DOM Bridge
+      const t1Start = Date.now();
+      try {
+        const res = await this.dispatchTier1(promptText, options);
+        return res;
+      } catch (err: any) {
+        fallbackHistory.push({
+          tier: 'domBridge',
+          error: err.message || String(err),
+          durationMs: Date.now() - t1Start
+        });
+      }
+
+      // 2. Try Tier 2: VS Code Command API
+      const t2Start = Date.now();
+      try {
+        const res = await this.dispatchTier2(promptText, options);
+        return {
+          ...res,
+          fallbackHistory
+        };
+      } catch (err: any) {
+        fallbackHistory.push({
+          tier: 'nativeCommand',
+          error: err.message || String(err),
+          durationMs: Date.now() - t2Start
+        });
+      }
+
+      // 3. Fallback Tier 3: OS Keyboard Simulation
+      const t3Start = Date.now();
+      const fallbackMsg = 'Auto-Plan: DOM Bridge & Native Commands unavailable. Falling back to OS Keyboard Simulation.';
+      if (config.suppressFallbackWarnings !== false) {
+        console.log(`[Auto-Plan PromptDispatcher] ${fallbackMsg}`);
+      } else {
+        this.warningNotifier(fallbackMsg);
+      }
+
+      try {
+        const res = await this.dispatchTier3(promptText, options);
+        return {
+          ...res,
+          fallbackHistory
+        };
+      } catch (err: any) {
+        fallbackHistory.push({
+          tier: 'keyboard',
+          error: err.message || String(err),
+          durationMs: Date.now() - t3Start
+        });
+
+        const summary = fallbackHistory.map((f) => `${f.tier}: ${f.error}`).join(' | ');
+        throw new Error(`All prompt dispatch tiers failed. (${summary})`);
+      }
+    }
+
     if (mode === 'nativeCommand') {
+      const t2Start = Date.now();
       try {
-        return await this.dispatchTier2(promptText, options);
+        const res = await this.dispatchTier2(promptText, options);
+        return res;
       } catch (err: any) {
-        throw new Error(`[Native Command Transport Failed] ${err.message || String(err)}`);
+        fallbackHistory.push({
+          tier: 'nativeCommand',
+          error: err.message || String(err),
+          durationMs: Date.now() - t2Start
+        });
+      }
+
+      // Fallback to Tier 3
+      const t3Start = Date.now();
+      try {
+        const res = await this.dispatchTier3(promptText, options);
+        return {
+          ...res,
+          fallbackHistory
+        };
+      } catch (err: any) {
+        fallbackHistory.push({
+          tier: 'keyboard',
+          error: err.message || String(err),
+          durationMs: Date.now() - t3Start
+        });
+        const summary = fallbackHistory.map((f) => `${f.tier}: ${f.error}`).join(' | ');
+        throw new Error(`Native Command and fallback tiers failed. (${summary})`);
       }
     }
 
-    // Forced Tier 3 Mode
     if (mode === 'keyboard') {
       try {
         return await this.dispatchTier3(promptText, options);
@@ -343,62 +587,137 @@ export class PromptDispatcher {
       }
     }
 
-    // Mode: 'auto' (3-Tier Fallback Chain)
+    throw new Error(`Unsupported execution mode: ${mode}`);
+  }
 
-    // 1. Try Tier 1: DOM Bridge
-    const t1Start = Date.now();
-    try {
-      const res = await this.dispatchTier1(promptText, options);
-      return res;
-    } catch (err: any) {
-      fallbackHistory.push({
-        tier: 'domBridge',
-        error: err.message || String(err),
-        durationMs: Date.now() - t1Start
-      });
+  /**
+   * Non-destructive live tier transport diagnostic ping and readiness test.
+   */
+  public async testTierDispatch(
+    tier: DispatchTier,
+    testPrompt?: string,
+    platformOverride?: string
+  ): Promise<{ success: boolean; tier: DispatchTier; latencyMs: number; error?: string; status?: string }> {
+    const startTime = Date.now();
+
+    if (tier === 'domBridge') {
+      try {
+        if (!this.bridgeServer.isListening() || this.bridgeServer.getConnectedClients().length === 0) {
+          return {
+            success: false,
+            tier: 'domBridge',
+            latencyMs: Date.now() - startTime,
+            error: 'DOM Bridge has no active connected clients'
+          };
+        }
+
+        const ack = await this.bridgeServer.dispatchPromptCommand(testPrompt || 'ping', {
+          type: 'ping',
+          timeoutMs: 2000
+        });
+
+        return {
+          success: ack.success,
+          tier: 'domBridge',
+          latencyMs: ack.durationMs ?? (Date.now() - startTime),
+          status: ack.status,
+          error: ack.error
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          tier: 'domBridge',
+          latencyMs: Date.now() - startTime,
+          error: err.message || String(err)
+        };
+      }
     }
 
-    // 2. Try Tier 2: VS Code Command API
-    const t2Start = Date.now();
-    try {
-      const res = await this.dispatchTier2(promptText, options);
-      return {
-        ...res,
-        fallbackHistory
-      };
-    } catch (err: any) {
-      fallbackHistory.push({
-        tier: 'nativeCommand',
-        error: err.message || String(err),
-        durationMs: Date.now() - t2Start
-      });
+    if (tier === 'nativeCommand') {
+      try {
+        if (!this.commandExecutor || typeof this.commandExecutor !== 'function') {
+          throw new Error('Command API executor is unavailable');
+        }
+
+        if (this.customCommandExecutorProvided) {
+          await this.commandExecutor(testPrompt || 'ping');
+        } else if (vscode?.commands?.getCommands) {
+          await vscode.commands.getCommands(true);
+        } else {
+          await this.commandExecutor(testPrompt || 'ping');
+        }
+
+        const latencyMs = Date.now() - startTime;
+        return {
+          success: true,
+          tier: 'nativeCommand',
+          latencyMs,
+          status: 'commandApiReady'
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          tier: 'nativeCommand',
+          latencyMs: Date.now() - startTime,
+          error: err.message || String(err)
+        };
+      }
     }
 
-    // 3. Fallback Tier 3: OS Keyboard Simulation
-    const t3Start = Date.now();
-    const fallbackMsg = 'Auto-Plan: DOM Bridge & Native Commands unavailable. Falling back to OS Keyboard Simulation.';
-    if (config.suppressFallbackWarnings !== false) {
-      console.log(`[Auto-Plan PromptDispatcher] ${fallbackMsg}`);
-    } else {
-      this.warningNotifier(fallbackMsg);
+    if (tier === 'keyboard') {
+      try {
+        const rawPlatform = platformOverride || process.platform;
+        if (rawPlatform === 'win32') {
+          return {
+            success: true,
+            tier: 'keyboard',
+            latencyMs: Date.now() - startTime,
+            status: 'powershellReady'
+          };
+        } else if (rawPlatform === 'linux') {
+          const prereqs = typeof this.keyboardManager?.checkLinuxKeyboardPrerequisites === 'function'
+            ? this.keyboardManager.checkLinuxKeyboardPrerequisites()
+            : { available: false, binary: null, error: 'xdotool not available' };
+          const latencyMs = Date.now() - startTime;
+          if (prereqs.available) {
+            return {
+              success: true,
+              tier: 'keyboard',
+              latencyMs,
+              status: `xdotoolReady (${prereqs.binary || 'xdotool'})`
+            };
+          } else {
+            return {
+              success: false,
+              tier: 'keyboard',
+              latencyMs,
+              error: prereqs.error || 'xdotool is missing on Linux'
+            };
+          }
+        } else {
+          return {
+            success: false,
+            tier: 'keyboard',
+            latencyMs: Date.now() - startTime,
+            error: `Keyboard simulation not supported on ${rawPlatform}`
+          };
+        }
+      } catch (err: any) {
+        return {
+          success: false,
+          tier: 'keyboard',
+          latencyMs: Date.now() - startTime,
+          error: err.message || String(err)
+        };
+      }
     }
 
-    try {
-      const res = await this.dispatchTier3(promptText, options);
-      return {
-        ...res,
-        fallbackHistory
-      };
-    } catch (err: any) {
-      fallbackHistory.push({
-        tier: 'keyboard',
-        error: err.message || String(err),
-        durationMs: Date.now() - t3Start
-      });
-
-      const summary = fallbackHistory.map((f) => `${f.tier}: ${f.error}`).join(' | ');
-      throw new Error(`All prompt dispatch tiers failed. (${summary})`);
-    }
+    return {
+      success: false,
+      tier,
+      latencyMs: Date.now() - startTime,
+      error: `Unknown tier: ${tier}`
+    };
   }
 }
 

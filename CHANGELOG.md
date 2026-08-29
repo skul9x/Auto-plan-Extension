@@ -2,6 +2,20 @@
 
 All notable changes to the **Antigravity Auto-Plan Runner** extension will be documented in this file.
 
+## [1.2.0] - 2026-08-29
+
+### 🚀 Added
+- **Full-Screen Settings Panel**: Dedicated Webview panel (`autoplan.openSettings`) featuring real-time tier transport testing, live bridge status diagnostics, fallback toggle controls, and seamless configuration management.
+- **Strict Tier Execution**: Strict mode dispatch enforcement allowing users to lock prompt transport to a specific tier (Tier 1 DOM Bridge, Tier 2 Native Commands, or Tier 3 Keyboard Simulation) with immediate fail-fast error escalation.
+- **Actionable Tier Pre-Flight Error Dialogs**: Interactive error notifications with direct 1-click links to open Settings Panel, trigger 1-Click DOM Bridge Setup, or view OS prerequisites guide.
+- **Live Transport Testing Diagnostic**: On-demand diagnostic test in Settings Panel with latency tracking, simulated fallback path visualization, and status reporting.
+
+### ⚡ Enhanced
+- **Orchestrator Pre-Flight Readiness**: Enhanced pre-flight validation in `runPhaseSequence()` and `start()` incorporating `executionMode` and `allowTierFallback` parameters.
+- **Resilient Fallback Policy Controls**: Granular configuration (`autoplan.allowTierFallback` and `autoplan.strictMode`) providing full control over multi-tier fallback cascade.
+
+---
+
 ## [1.1.0] - 2026-08-29
 
 ### 🚀 Added

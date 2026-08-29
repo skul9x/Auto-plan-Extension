@@ -2,7 +2,7 @@
   "name": "antigravity-auto-plan",
   "displayName": "Antigravity Auto-Plan Runner",
   "description": "Automate repeated prompts and monitor completion in Antigravity IDE",
-  "version": "1.0.3",
+  "version": "1.2.0",
   "publisher": "skul9x",
   "engines": {
     "vscode": "^1.80.0"
@@ -25,7 +25,8 @@
     "onCommand:autoplan.checkBridgeStatus",
     "onCommand:autoplan.openSidebar",
     "onCommand:autoplan.oneClickSetup",
-    "onCommand:autoplan.checkStatus"
+    "onCommand:autoplan.checkStatus",
+    "onCommand:autoplan.openSettings"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -107,6 +108,11 @@
         "command": "autoplan.checkStatus",
         "title": "Check Status & Diagnostics",
         "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.openSettings",
+        "title": "Open Settings Panel",
+        "category": "Auto-Plan"
       }
     ],
     "configuration": {
@@ -165,8 +171,19 @@
             "nativeCommand",
             "keyboard"
           ],
+          "enumDescriptions": [
+            "Auto (Tier 1 -> Tier 2 -> Tier 3)",
+            "Strict Tier 1 (DOM Bridge Focus-Free)",
+            "Strict Tier 2 (VS Code Native Commands)",
+            "Strict Tier 3 (OS Keyboard Simulation)"
+          ],
           "default": "auto",
           "description": "Prompt dispatch transport mode (auto, domBridge, nativeCommand, or keyboard)"
+        },
+        "autoplan.allowTierFallback": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow automated fallback to secondary tiers if the chosen execution tier fails"
         },
         "autoplan.bridgeTimeoutMs": {
           "type": "number",

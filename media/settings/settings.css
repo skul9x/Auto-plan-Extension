@@ -1,0 +1,768 @@
+:root {
+  --bg-color: var(--vscode-editor-background, #1e1e1e);
+  --fg-color: var(--vscode-editor-foreground, #cccccc);
+  --card-bg: var(--vscode-sideBar-background, rgba(37, 37, 38, 0.7));
+  --card-bg-hover: rgba(45, 45, 48, 0.85);
+  --card-border: var(--vscode-panel-border, rgba(255, 255, 255, 0.08));
+  --card-border-active: var(--vscode-focusBorder, #007acc);
+  
+  --primary-btn: var(--vscode-button-background, #0e639c);
+  --primary-btn-hover: var(--vscode-button-hoverBackground, #1177bb);
+  --primary-btn-fg: var(--vscode-button-foreground, #ffffff);
+  
+  --secondary-btn: var(--vscode-button-secondaryBackground, #3a3d41);
+  --secondary-btn-hover: var(--vscode-button-secondaryHoverBackground, #45494e);
+  --secondary-btn-fg: var(--vscode-button-secondaryForeground, #ffffff);
+
+  --input-bg: var(--vscode-input-background, #252526);
+  --input-fg: var(--vscode-input-foreground, #cccccc);
+  --input-border: var(--vscode-input-border, #3c3c3c);
+  --focus-border: var(--vscode-focusBorder, #007acc);
+
+  --badge-bg: var(--vscode-badge-background, #4d4d4d);
+  --badge-fg: var(--vscode-badge-foreground, #ffffff);
+
+  --success-color: #4ec9b0;
+  --success-bg: rgba(78, 201, 176, 0.15);
+  --warning-color: #ce9178;
+  --warning-bg: rgba(206, 145, 120, 0.15);
+  --info-color: #3794ff;
+  --info-bg: rgba(55, 148, 255, 0.15);
+  --danger-color: #f14c4c;
+  --danger-bg: rgba(241, 76, 76, 0.15);
+
+  --font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-color);
+  color: var(--fg-color);
+  font-family: var(--font-family);
+  font-size: 13px;
+  line-height: 1.5;
+  padding-bottom: 40px;
+  user-select: none;
+  min-height: 100vh;
+}
+
+/* ==========================================================================
+   Header Bar (Sticky Hero Header)
+   ========================================================================== */
+.header-bar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  background: var(--bg-color);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--card-border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.brand-badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-icon {
+  font-size: 24px;
+  filter: drop-shadow(0 0 6px rgba(255, 215, 0, 0.4));
+}
+
+.brand-title {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+
+.version-tag {
+  font-size: 11px;
+  opacity: 0.65;
+}
+
+.health-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--card-border);
+}
+
+.health-badge.status-healthy {
+  color: var(--success-color);
+  border-color: rgba(78, 201, 176, 0.3);
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--success-color);
+  box-shadow: 0 0 8px var(--success-color);
+  animation: pulseAnimation 2s infinite;
+}
+
+@keyframes pulseAnimation {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  50% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.save-status {
+  font-size: 12px;
+  color: var(--fg-color);
+  opacity: 0.7;
+  transition: all 0.2s ease;
+}
+
+.save-status.unsaved {
+  color: var(--warning-color);
+  font-weight: 600;
+  opacity: 1;
+}
+
+/* ==========================================================================
+   Buttons
+   ========================================================================== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
+  font-family: inherit;
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background-color: var(--primary-btn);
+  color: var(--primary-btn-fg);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: var(--primary-btn-hover);
+}
+
+.btn-secondary {
+  background-color: var(--secondary-btn);
+  color: var(--secondary-btn-fg);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background-color: var(--secondary-btn-hover);
+}
+
+.btn-outline {
+  background: transparent;
+  color: var(--fg-color);
+  border-color: var(--card-border);
+}
+
+.btn-outline:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--focus-border);
+}
+
+.btn-danger-outline {
+  color: var(--danger-color);
+  border-color: rgba(241, 76, 76, 0.3);
+}
+
+.btn-danger-outline:hover:not(:disabled) {
+  background: var(--danger-bg);
+  border-color: var(--danger-color);
+}
+
+.btn-action-addon {
+  white-space: nowrap;
+  padding: 6px 12px;
+}
+
+/* ==========================================================================
+   Main Grid Layout
+   ========================================================================== */
+.main-container {
+  max-width: 1300px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.grid-column {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* ==========================================================================
+   Glass Cards
+   ========================================================================== */
+.glass-card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 20px;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.glass-card:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--card-border);
+  padding-bottom: 12px;
+}
+
+.header-icon-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.section-icon {
+  font-size: 20px;
+}
+
+.card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-color);
+}
+
+.card-subtitle {
+  font-size: 11px;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+/* ==========================================================================
+   Tier Selection Cards
+   ========================================================================== */
+.tier-cards-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tier-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--card-border);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tier-card:hover {
+  background: var(--card-bg-hover);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.tier-card.active {
+  background: rgba(0, 122, 204, 0.08);
+  border-color: var(--card-border-active);
+  box-shadow: 0 0 10px rgba(0, 122, 204, 0.2);
+}
+
+.tier-card-radio {
+  padding-top: 3px;
+}
+
+.tier-card-radio input[type="radio"] {
+  cursor: pointer;
+  accent-color: var(--focus-border);
+  width: 16px;
+  height: 16px;
+}
+
+.tier-card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tier-card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tier-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tier-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  letter-spacing: 0.2px;
+}
+
+.badge-recommended {
+  background: var(--info-bg);
+  color: var(--info-color);
+  border: 1px solid rgba(55, 148, 255, 0.3);
+}
+
+.badge-speed {
+  background: var(--success-bg);
+  color: var(--success-color);
+  border: 1px solid rgba(78, 201, 176, 0.3);
+}
+
+.badge-api {
+  background: var(--warning-bg);
+  color: var(--warning-color);
+  border: 1px solid rgba(206, 145, 120, 0.3);
+}
+
+.badge-fallback {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg-color);
+  border: 1px solid var(--card-border);
+}
+
+.tier-desc {
+  font-size: 11px;
+  opacity: 0.75;
+  line-height: 1.4;
+}
+
+.tier-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 10px;
+  opacity: 0.6;
+  margin-top: 2px;
+}
+
+/* ==========================================================================
+   Fallback Policy Box & Switches
+   ========================================================================== */
+.fallback-policy-box {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  padding: 12px;
+  border: 1px solid var(--card-border);
+}
+
+.switch-container {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--secondary-btn);
+  transition: 0.2s;
+  border-radius: 20px;
+  border: 1px solid var(--card-border);
+}
+
+.toggle-slider:before {
+  position: absolute;
+  content: "";
+  height: 14px;
+  width: 14px;
+  left: 2px;
+  bottom: 2px;
+  background-color: white;
+  transition: 0.2s;
+  border-radius: 50%;
+}
+
+input:checked + .toggle-slider {
+  background-color: var(--primary-btn);
+  border-color: var(--focus-border);
+}
+
+input:checked + .toggle-slider:before {
+  transform: translateX(16px);
+}
+
+.toggle-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toggle-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.toggle-description {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.toggles-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ==========================================================================
+   Transport Diagnostics
+   ========================================================================== */
+.health-pills-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.health-pill-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  padding: 8px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pill-label {
+  font-size: 10px;
+  opacity: 0.6;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.health-pill-val {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--success-color);
+}
+
+.diagnostic-actions-row {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.test-tier-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.test-result-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--card-border);
+}
+
+.badge-idle {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--fg-color);
+  opacity: 0.7;
+}
+
+.badge-testing {
+  background: var(--warning-bg);
+  color: var(--warning-color);
+  border-color: rgba(206, 145, 120, 0.3);
+}
+
+.badge-success {
+  background: var(--success-bg);
+  color: var(--success-color);
+  border-color: rgba(78, 201, 176, 0.3);
+}
+
+.badge-danger {
+  background: var(--danger-bg);
+  color: var(--danger-color);
+  border-color: rgba(241, 76, 76, 0.3);
+}
+
+.bridge-mgmt-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
+}
+
+.hidden {
+  display: none !important;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ==========================================================================
+   Form Controls
+   ========================================================================== */
+.form-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.full-width {
+  grid-column: 1 / -1;
+}
+
+.form-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-color);
+}
+
+.form-input, .form-textarea {
+  background: var(--input-bg);
+  color: var(--input-fg);
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s ease;
+  width: 100%;
+}
+
+.form-input:focus, .form-textarea:focus {
+  border-color: var(--focus-border);
+}
+
+.form-textarea {
+  resize: vertical;
+  min-height: 120px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.input-hint {
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.input-action-row {
+  display: flex;
+  gap: 8px;
+}
+
+/* ==========================================================================
+   Prompt Template Tags
+   ========================================================================== */
+.template-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.template-tags-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tag-label {
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.tag-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--card-border);
+  color: var(--info-color);
+  font-size: 10px;
+  font-family: monospace;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tag-btn:hover {
+  background: var(--info-bg);
+  border-color: var(--info-color);
+}
+
+/* ==========================================================================
+   Toast Notification
+   ========================================================================== */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  padding: 10px 18px;
+  background: var(--card-bg);
+  color: var(--fg-color);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: 1000;
+  transition: transform 0.25s ease, opacity 0.25s ease;
+  animation: slideUp 0.3s ease;
+}
+
+.toast.toast-success {
+  border-color: var(--success-color);
+  color: var(--success-color);
+}
+
+.toast.toast-danger {
+  border-color: var(--danger-color);
+  color: var(--danger-color);
+}
+
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* ==========================================================================
+   Responsive Adaptations
+   ========================================================================== */
+@media (max-width: 900px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .main-container {
+    padding: 16px;
+  }
+
+  .header-bar {
+    padding: 10px 16px;
+  }
+
+  .health-pills-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .header-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .header-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .form-grid-2 {
+    grid-template-columns: 1fr;
+  }
+
+  .bridge-mgmt-buttons {
+    flex-direction: column;
+  }
+}

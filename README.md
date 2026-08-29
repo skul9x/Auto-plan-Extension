@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/ph%C3%AAn_b%E1%BA%A3n-1.1.0-blue.svg?style=flat-square" alt="Phiên bản"></a>
+  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/ph%C3%AAn_b%E1%BA%A3n-1.2.0-blue.svg?style=flat-square" alt="Phiên bản"></a>
   <a href="https://code.visualstudio.com/"><img src="https://img.shields.io/badge/T%C6%B0%C6%A1ng_th%C3%ADch-VS_Code_^1.80.0-informational.svg?style=flat-square" alt="Độ tương thích VS Code"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.3.3-3178C6.svg?style=flat-square" alt="TypeScript"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/gi%E1%BA%A5y_ph%C3%A9p-MIT-green.svg?style=flat-square" alt="Giấy phép"></a>
@@ -97,11 +97,28 @@ code --install-extension antigravity-auto-plan-1.1.0.vsix
 - Bấm vào nút Status Bar để mở **Action Menu tác vụ**:
   - 🛑 **Stop Auto-Plan**: Dừng ngay lập tức quá trình tự động hóa.
   - ⏭️ **Skip Current Phase**: Bỏ qua phase đang chạy và chuyển sang phase tiếp theo.
+  - ⚙️ **Open Settings Panel**: Mở nhanh Bảng Điều Khiển Cấu Hình Toàn Màn Hình.
   - 📄 **Open Active Transcript Log**: Mở trực tiếp file `transcript.jsonl` đang hoạt động trong trình biên soạn.
 
 ### Control Dashboard ở Sidebar
 - Truy cập từ biểu tượng Auto-Plan tại Activity Bar.
 - Xem toàn bộ cây phase plan, bật/tắt từng phase độc lập, bắt đầu/dừng tự động hóa và theo dõi log live stream mà không cần rời khỏi giao diện IDE.
+
+### 🖼️ Bảng Điều Khiển Cấu Hình Toàn Màn Hình (Settings Panel)
+Auto-Plan cung cấp bảng điều khiển cấu hình toàn màn hình trực quan và hiện đại dạng Webview tab để quản lý toàn diện các tham số và chiến lược vận chuyển prompt:
+- **Cách mở Settings Panel**:
+  - Chạy lệnh `Auto-Plan: Open Settings Panel` (`autoplan.openSettings`) từ Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`).
+  - Nhấp vào nút **⚙️ Settings** trên thanh công cụ tiêu đề của Sidebar Control Center.
+  - Bấm vào nút Status Bar `🚀 Auto-Plan` và chọn mục **⚙️ Open Settings Panel** trong Action Menu.
+- **Quản lý Chế độ Vận chuyển & Phân cấp Tầng (Tier Management)**:
+  - **Tier 1 (Focus-Free DOM Bridge)**: Tốc độ siêu tốc, chạy nền không cần tiêu điểm giao diện, chèn trực tiếp qua Electron DOM Bridge.
+  - **Tier 2 (VS Code Native Commands)**: Chuyển tiếp prompt thông qua lệnh nội bộ VS Code (`antigravity.sendTextToChat`).
+  - **Tier 3 (OS Keyboard Simulation)**: Mô phỏng phím bấm cấp hệ điều hành qua `xdotool` (Linux) hoặc PowerShell `WScript.Shell` (Windows).
+  - **Chính sách Tự động Dự phòng (Fallback Policy)**: Công tắc cho phép/chặn tự động hạ cấp tầng khi tầng được chọn không sẵn sàng (`allowTierFallback`).
+- **Xử lý Lỗi Tầng Nghiêm ngặt (Strict Tier Error Handling)**:
+  - Khi bật chế độ nghiêm ngặt (Strict Tier) mà tầng đó chưa đáp ứng điều kiện tiên quyết (ví dụ: Strict Tier 1 nhưng DOM Bridge ngắt kết nối, hoặc Strict Tier 3 trên Linux mà chưa cài `xdotool`):
+  - Bộ điều phối **Orchestrator** sẽ chặn thực thi ngay tại bước pre-flight trong < 100ms, chuyển trạng thái sang `'error'`.
+  - Hiển thị hộp thoại thông báo lỗi hành động (Actionable Notification) với các tùy chọn trực tiếp: `⚙️ Open Settings Panel`, `⚡ 1-Click DOM Bridge Setup`, hoặc `Install Guide`.
 
 ---
 
@@ -121,6 +138,8 @@ Extension có thể được tùy chỉnh thông qua VS Code Settings (`Ctrl+,` 
 | `autoplan.timeoutPerLoopMinutes` | `number` | `15` | Thời gian chờ tối đa (phút) cho mỗi phase. |
 | `autoplan.focusDelayMs` | `number` | `800` | Thời gian chờ (mili-giây) sau khi mở chat trước khi focus vào ô nhập. |
 | `autoplan.executionMode` | `string` | `"auto"` | Chế độ transport gửi prompt (`auto`, `domBridge`, `nativeCommand`, `keyboard`). |
+| `autoplan.allowTierFallback` | `boolean` | `true` | Cho phép tự động chuyển tầng dự phòng khi tầng ưu tiên gặp sự cố. |
+| `autoplan.strictMode` | `boolean` | `false` | Bật chế độ cưỡng chế nghiêm ngặt không cho phép fallback khi chạy tier cụ thể. |
 | `autoplan.bridgeTimeoutMs` | `number` | `5000` | Thời gian chờ tối đa (mili-giây) phản hồi từ DOM Bridge. |
 | `autoplan.autoApprovePermissions` | `boolean` | `true` | Tự động phê duyệt các quyền thực thi thông qua DOM bridge. |
 | `autoplan.autoInjectWorkbench` | `boolean` | `true` | Tự động đảm bảo workbench được chèn script DOM bridge khi khởi động. |
@@ -135,6 +154,7 @@ Extension có thể được tùy chỉnh thông qua VS Code Settings (`Ctrl+,` 
 | `autoplan.stop` | `Auto-Plan: Stop Automation` | Dừng ngay lập tức tiến trình tự động hóa. |
 | `autoplan.skipPhase` | `Auto-Plan: Skip Current Phase` | Bỏ qua phase hiện tại và chuyển sang phase tiếp theo trong hàng chờ. |
 | `autoplan.actionMenu` | `Auto-Plan: Show Running Action Menu` | Hiển thị menu tác vụ (Dừng, Bỏ qua, Xem Transcript). |
+| `autoplan.openSettings` | `Auto-Plan: Open Settings Panel` | Mở bảng điều khiển cấu hình toàn màn hình trực quan (Settings Panel). |
 | `autoplan.openTranscript` | `Auto-Plan: Open Active Transcript Log` | Mở file transcript `transcript.jsonl` đang active trong trình biên soạn. |
 | `autoplan.setPrompt` | `Auto-Plan: Set Prompt` | Thay đổi nội dung prompt đang hoạt động một cách linh hoạt. |
 | `autoplan.installBridge` | `Auto-Plan: Install / Update DOM Automation Bridge` | Chèn script tự động hóa DOM vào file `workbench.html`. |

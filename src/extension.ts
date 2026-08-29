@@ -8,6 +8,8 @@ import { getDefaultBrainDir, getTranscriptPath, findLatestConversation, transcri
 import { bridgeServer, BRIDGE_PROTOCOL_VERSION } from './bridgeServer';
 import { isBridgeInstalled, installBridgeScript, uninstallBridgeScript, getWorkbenchPath } from './workbenchInjector';
 import { SidebarProvider } from './sidebarProvider';
+import { SettingsProvider } from './settingsProvider';
+import { promptDispatcher } from './promptDispatcher';
 
 let mainStatusBarItem: vscode.StatusBarItem;
 let bridgeStatusBarItem: vscode.StatusBarItem;
@@ -855,6 +857,11 @@ export async function showRunningActionMenu(): Promise<void> {
       label: '$(output) Open Active Transcript Log',
       description: 'Open the active transcript.jsonl in editor',
       action: 'openTranscript'
+    },
+    {
+      label: '$(gear) Open Settings Panel',
+      description: 'Configure execution tiers and settings',
+      action: 'openSettings'
     }
   ];
 
@@ -870,6 +877,8 @@ export async function showRunningActionMenu(): Promise<void> {
     orchestrator.skipCurrentPhase();
   } else if (selected.action === 'openTranscript') {
     await openActiveTranscript();
+  } else if (selected.action === 'openSettings') {
+    await vscode.commands.executeCommand('autoplan.openSettings');
   }
 }
 
@@ -1243,6 +1252,10 @@ export function activate(context: vscode.ExtensionContext) {
     return showBridgeDiagnosticDialog();
   });
 
+  const openSettingsCmd = vscode.commands.registerCommand('autoplan.openSettings', () => {
+    return SettingsProvider.render(context.extensionUri, promptDispatcher);
+  });
+
   // Watch for configuration changes
   const configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration('autoplan')) {
@@ -1254,6 +1267,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
       updateBridgeStatusBar();
       sidebarProvider?.sendBridgeStatus();
+      SettingsProvider.currentPanel?.sendInitSettings();
     }
   });
 
@@ -1275,6 +1289,7 @@ export function activate(context: vscode.ExtensionContext) {
     openSidebarCmd,
     oneClickSetupCmd,
     checkStatusCmd,
+    openSettingsCmd,
     configWatcher
   );
 

@@ -16,6 +16,8 @@ export interface AutoPlanConfig {
   focusDelayMs?: number;
   defaultPlanFolder?: string;
   executionMode?: ExecutionMode;
+  allowTierFallback?: boolean;
+  strictMode?: boolean;
   bridgeTimeoutMs?: number;
   autoApprovePermissions?: boolean;
   autoInjectWorkbench?: boolean;
@@ -38,6 +40,8 @@ export const DEFAULT_CONFIG: AutoPlanConfig = {
   focusDelayMs: 800,
   defaultPlanFolder: '',
   executionMode: 'auto',
+  allowTierFallback: true,
+  strictMode: false,
   bridgeTimeoutMs: 5000,
   autoApprovePermissions: true,
   autoInjectWorkbench: true,
@@ -54,6 +58,12 @@ export function getConfig(): AutoPlanConfig {
   const defaultPromptTemplate = config.get<string>('defaultPromptTemplate', DEFAULT_CONFIG.defaultPromptTemplate || DEFAULT_PROMPT_TEMPLATE);
   const promptTemplate = config.get<string>('promptTemplate', defaultPromptTemplate);
   const promptText = config.get<string>('promptText', promptTemplate || DEFAULT_CONFIG.promptText);
+  const executionMode = config.get<ExecutionMode>('executionMode', DEFAULT_CONFIG.executionMode ?? 'auto');
+  const allowTierFallback = config.get<boolean>('allowTierFallback', DEFAULT_CONFIG.allowTierFallback ?? true);
+  const explicitStrictMode = config.get<boolean | undefined>('strictMode', undefined);
+  const strictMode = explicitStrictMode !== undefined
+    ? explicitStrictMode
+    : (executionMode !== 'auto' && !allowTierFallback);
 
   return {
     promptText,
@@ -65,7 +75,9 @@ export function getConfig(): AutoPlanConfig {
     timeoutPerLoopMinutes: config.get<number>('timeoutPerLoopMinutes', DEFAULT_CONFIG.timeoutPerLoopMinutes),
     focusDelayMs: config.get<number>('focusDelayMs', DEFAULT_CONFIG.focusDelayMs ?? 800),
     defaultPlanFolder: config.get<string>('defaultPlanFolder', DEFAULT_CONFIG.defaultPlanFolder || ''),
-    executionMode: config.get<ExecutionMode>('executionMode', DEFAULT_CONFIG.executionMode ?? 'auto'),
+    executionMode,
+    allowTierFallback,
+    strictMode,
     bridgeTimeoutMs: config.get<number>('bridgeTimeoutMs', DEFAULT_CONFIG.bridgeTimeoutMs ?? 5000),
     autoApprovePermissions: config.get<boolean>('autoApprovePermissions', DEFAULT_CONFIG.autoApprovePermissions ?? true),
     autoInjectWorkbench: config.get<boolean>('autoInjectWorkbench', DEFAULT_CONFIG.autoInjectWorkbench ?? true),
@@ -113,7 +125,19 @@ export const SIDECAR_CONFIG_FILENAME = 'ag-autoplan-config.json';
  * for the DOM Bridge sidecar script to consume.
  */
 export function writeConfigJson(config?: AutoPlanConfig, targetDir?: string): string | null {
-  const currentConfig = config || getConfig();
+  const baseConfig = config ? { ...DEFAULT_CONFIG, ...config } : getConfig();
+  const executionMode = baseConfig.executionMode ?? 'auto';
+  const allowTierFallback = baseConfig.allowTierFallback ?? true;
+  const strictMode = config?.strictMode !== undefined
+    ? config.strictMode
+    : (executionMode !== 'auto' && !allowTierFallback);
+
+  const currentConfig: AutoPlanConfig = {
+    ...baseConfig,
+    executionMode,
+    allowTierFallback,
+    strictMode
+  };
   let wbDir = targetDir;
   if (!wbDir) {
     const wbPath = getWorkbenchPath();

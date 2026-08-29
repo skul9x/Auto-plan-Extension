@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https: data:; font-src ${webview.cspSource};">
+  <link href="${styleUri}" rel="stylesheet">
+  <title>Auto-Plan Settings & Tier Management</title>
+</head>
+<body>
+  <!-- Sticky Header Bar -->
+  <header class="header-bar">
+    <div class="header-left">
+      <div class="brand-badge">
+        <span class="brand-icon">⚡</span>
+        <div class="brand-info">
+          <h1 class="brand-title">Auto-Plan Settings</h1>
+          <span class="version-tag">v1.0.3 • Tier Automation</span>
+        </div>
+      </div>
+      <div id="overallHealthBadge" class="health-badge status-healthy" title="Overall System Health">
+        <span class="pulse-dot"></span>
+        <span id="overallHealthText">Engine Ready</span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span id="saveStatusText" class="save-status">All changes saved</span>
+      <button id="btnReset" class="btn btn-secondary" title="Reset configuration to defaults">
+        <span>🔄</span> Reset Defaults
+      </button>
+      <button id="btnSave" class="btn btn-primary" disabled title="Save configuration changes">
+        <span>💾</span> Save Changes
+      </button>
+    </div>
+  </header>
+
+  <main class="main-container">
+    <div class="settings-grid">
+      <!-- Left Column: Tier Selection, Fallback Policy & Live Diagnostics -->
+      <div class="grid-column">
+        <!-- Section: Execution Mode & Dispatch Tiers -->
+        <section class="glass-card">
+          <div class="card-header">
+            <div class="header-icon-title">
+              <span class="section-icon">🔀</span>
+              <div>
+                <h2 class="card-title">Prompt Dispatch Tiers</h2>
+                <p class="card-subtitle">Choose the execution transport tier for sending prompts to Antigravity chat.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="tier-cards-container">
+            <!-- Auto Mode -->
+            <label class="tier-card active" for="optTierAuto" data-tier="auto">
+              <div class="tier-card-radio">
+                <input type="radio" id="optTierAuto" name="executionMode" value="auto" checked>
+              </div>
+              <div class="tier-card-body">
+                <div class="tier-card-title-row">
+                  <span class="tier-name">Auto Mode (Smart Cascade)</span>
+                  <span class="tier-badge badge-recommended">🛡️ Recommended</span>
+                </div>
+                <p class="tier-desc">Primary DOM Bridge with automated fallback to VS Code Command API and OS Keyboard Simulation.</p>
+                <div class="tier-meta-row">
+                  <span class="tier-meta-item">Cascade: Tier 1 ➔ Tier 2 ➔ Tier 3</span>
+                </div>
+              </div>
+            </label>
+
+            <!-- Tier 1: DOM Bridge -->
+            <label class="tier-card" for="optTier1" data-tier="domBridge">
+              <div class="tier-card-radio">
+                <input type="radio" id="optTier1" name="executionMode" value="domBridge">
+              </div>
+              <div class="tier-card-body">
+                <div class="tier-card-title-row">
+                  <span class="tier-name">Tier 1: DOM Bridge</span>
+                  <span class="tier-badge badge-speed">⚡ Focus-Free & High Speed</span>
+                </div>
+                <p class="tier-desc">Direct WebSocket bridge into Antigravity IDE DOM. Executes in background without window stealing or focus disruption.</p>
+                <div class="tier-meta-row">
+                  <span id="tier1StatusIndicator" class="tier-meta-item">Port: 49152</span>
+                  <span id="tier1ClientsIndicator" class="tier-meta-item">Clients: 0</span>
+                </div>
+              </div>
+            </label>
+
+            <!-- Tier 2: VS Code Commands -->
+            <label class="tier-card" for="optTier2" data-tier="nativeCommand">
+              <div class="tier-card-radio">
+                <input type="radio" id="optTier2" name="executionMode" value="nativeCommand">
+              </div>
+              <div class="tier-card-body">
+                <div class="tier-card-title-row">
+                  <span class="tier-name">Tier 2: Native Commands</span>
+                  <span class="tier-badge badge-api">🔌 Command API</span>
+                </div>
+                <p class="tier-desc">Native VS Code workbench command dispatching and internal chat actions. Zero external dependencies.</p>
+                <div class="tier-meta-row">
+                  <span id="tier2StatusIndicator" class="tier-meta-item">Command: autoplan.sendPrompt</span>
+                </div>
+              </div>
+            </label>
+
+            <!-- Tier 3: OS Keyboard Simulation -->
+            <label class="tier-card" for="optTier3" data-tier="keyboard">
+              <div class="tier-card-radio">
+                <input type="radio" id="optTier3" name="executionMode" value="keyboard">
+              </div>
+              <div class="tier-card-body">
+                <div class="tier-card-title-row">
+                  <span class="tier-name">Tier 3: OS Keyboard</span>
+                  <span class="tier-badge badge-fallback">⌨️ Universal Fallback</span>
+                </div>
+                <p class="tier-desc">Simulates physical keyboard keystrokes via native system toolchains (xdotool on Linux / PowerShell on Windows).</p>
+                <div class="tier-meta-row">
+                  <span id="tier3StatusIndicator" class="tier-meta-item">Toolchain: Ready</span>
+                </div>
+              </div>
+            </label>
+          </div>
+
+          <!-- Fallback Policy Switch -->
+          <div class="fallback-policy-box">
+            <div class="switch-container">
+              <label class="toggle-switch">
+                <input type="checkbox" id="chkAllowFallback" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <div class="toggle-details">
+                <span class="toggle-title">Allow Tier Fallback</span>
+                <span class="toggle-description">When disabled, Auto-Plan will stop immediately if your selected Tier fails (Strict Mode).</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section: Live Transport Diagnostics -->
+        <section class="glass-card">
+          <div class="card-header">
+            <div class="header-icon-title">
+              <span class="section-icon">🩺</span>
+              <div>
+                <h2 class="card-title">Transport Diagnostics & Actions</h2>
+                <p class="card-subtitle">Real-time telemetry and 1-click transport dispatch testing.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Live Status Pills -->
+          <div class="health-pills-row">
+            <div class="health-pill-card">
+              <span class="pill-label">Bridge Port</span>
+              <span id="healthPort" class="health-pill-val">49152</span>
+            </div>
+            <div class="health-pill-card">
+              <span class="pill-label">DOM Injected</span>
+              <span id="healthInjected" class="health-pill-val">Ready</span>
+            </div>
+            <div class="health-pill-card">
+              <span class="pill-label">Connected</span>
+              <span id="healthClients" class="health-pill-val">0 clients</span>
+            </div>
+            <div class="health-pill-card">
+              <span class="pill-label">OS Toolchain</span>
+              <span id="healthToolchain" class="health-pill-val">Available</span>
+            </div>
+          </div>
+
+          <!-- Diagnostic Actions -->
+          <div class="diagnostic-actions-row">
+            <div class="test-tier-wrapper">
+              <button id="btnTestTier" class="btn btn-secondary">
+                <span id="testTierSpinner" class="spinner hidden"></span>
+                <span>🧪 Test Selected Tier</span>
+              </button>
+              <span id="testTierBadge" class="test-result-badge badge-idle">Ready to test</span>
+            </div>
+            <div class="bridge-mgmt-buttons">
+              <button id="btnSetupBridge" class="btn btn-outline" title="Inject or update DOM Automation Bridge script">
+                ⚡ 1-Click DOM Bridge Setup
+              </button>
+              <button id="btnUninstallBridge" class="btn btn-outline btn-danger-outline" title="Remove DOM Bridge injection from workbench">
+                🗑️ Uninstall Bridge
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Right Column: Timing, Plan Automation & Prompt Template -->
+      <div class="grid-column">
+        <!-- Section: Timing & Loop Execution -->
+        <section class="glass-card">
+          <div class="card-header">
+            <div class="header-icon-title">
+              <span class="section-icon">⏱️</span>
+              <div>
+                <h2 class="card-title">Timing & Loop Controls</h2>
+                <p class="card-subtitle">Tune delays, timeouts, and repetition thresholds.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="txtDelayMs" class="form-label">Delay Between Loops (ms)</label>
+              <input type="number" id="txtDelayMs" class="form-input" min="0" max="60000" step="100" value="2000">
+              <span class="input-hint">Pause duration before executing next loop cycle.</span>
+            </div>
+
+            <div class="form-group">
+              <label for="txtTimeoutMinutes" class="form-label">Timeout Per Loop (min)</label>
+              <input type="number" id="txtTimeoutMinutes" class="form-input" min="1" max="180" step="1" value="15">
+              <span class="input-hint">Maximum wait time for AI response completion.</span>
+            </div>
+
+            <div class="form-group">
+              <label for="txtRepeatCount" class="form-label">Default Repeat Count</label>
+              <input type="number" id="txtRepeatCount" class="form-input" min="1" max="100" step="1" value="5">
+              <span class="input-hint">Default iteration count if not specified.</span>
+            </div>
+
+            <div class="form-group">
+              <label for="txtFocusDelayMs" class="form-label">Focus Delay (ms)</label>
+              <input type="number" id="txtFocusDelayMs" class="form-input" min="100" max="5000" step="50" value="800">
+              <span class="input-hint">Delay after keyboard focus shortcut.</span>
+            </div>
+
+            <div class="form-group full-width">
+              <label for="txtBridgeTimeoutMs" class="form-label">Bridge Acknowledgment Timeout (ms)</label>
+              <input type="number" id="txtBridgeTimeoutMs" class="form-input" min="1000" max="30000" step="500" value="5000">
+              <span class="input-hint">Time to wait for DOM Bridge acknowledgment before triggering fallback.</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section: Plan & File Automation -->
+        <section class="glass-card">
+          <div class="card-header">
+            <div class="header-icon-title">
+              <span class="section-icon">📁</span>
+              <div>
+                <h2 class="card-title">Plan & System Automation</h2>
+                <p class="card-subtitle">Automate permissions, workbench injection, and plan discovery.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="txtDefaultPlanFolder" class="form-label">Default Plan Folder</label>
+            <div class="input-action-row">
+              <input type="text" id="txtDefaultPlanFolder" class="form-input" placeholder="e.g. plans/260829-1845-my-feature">
+              <button id="btnBrowseFolder" class="btn btn-secondary btn-action-addon" title="Select Folder from Workspace">
+                📂 Browse...
+              </button>
+            </div>
+            <span class="input-hint">Workspace-relative or absolute path to active phase plan directory.</span>
+          </div>
+
+          <div class="toggles-list">
+            <div class="switch-container">
+              <label class="toggle-switch">
+                <input type="checkbox" id="chkAutoApprovePermissions" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <div class="toggle-details">
+                <span class="toggle-title">Auto-Approve Terminal/Action Permissions</span>
+                <span class="toggle-description">Automatically grant permission requests via DOM Bridge during autonomous runs.</span>
+              </div>
+            </div>
+
+            <div class="switch-container">
+              <label class="toggle-switch">
+                <input type="checkbox" id="chkAutoInjectWorkbench" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <div class="toggle-details">
+                <span class="toggle-title">Auto-Inject Workbench on Startup</span>
+                <span class="toggle-description">Verify and inject DOM Bridge script into workbench.html upon extension activation.</span>
+              </div>
+            </div>
+
+            <div class="switch-container">
+              <label class="toggle-switch">
+                <input type="checkbox" id="chkSuppressFallbackWarnings" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <div class="toggle-details">
+                <span class="toggle-title">Suppress Fallback Toast Notifications</span>
+                <span class="toggle-description">Prevent popup notification toasts when seamlessly falling back between tiers.</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section: Prompt Template & Keyword -->
+        <section class="glass-card">
+          <div class="card-header">
+            <div class="header-icon-title">
+              <span class="section-icon">📝</span>
+              <div>
+                <h2 class="card-title">Prompt Template & Completion</h2>
+                <p class="card-subtitle">Configure prompt templates with dynamic placeholder tags.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <div class="template-header-row">
+              <label for="txtPromptTemplate" class="form-label">Phase Prompt Template</label>
+              <div class="template-tags-bar">
+                <span class="tag-label">Insert Tag:</span>
+                <button type="button" id="btnInsertXxx" class="tag-btn" data-tag="{xxx}" title="Insert active phase file path">+ {xxx}</button>
+                <button type="button" id="btnInsertFile" class="tag-btn" data-tag="{file}" title="Insert phase filename only">+ {file}</button>
+                <button type="button" id="btnInsertPath" class="tag-btn" data-tag="{path}" title="Insert phase directory path">+ {path}</button>
+              </div>
+            </div>
+            <textarea id="txtPromptTemplate" class="form-textarea" rows="6" spellcheck="false" placeholder="Enter prompt template..."></textarea>
+            <span class="input-hint">{xxx} will be automatically replaced with the full relative path to the phase markdown file.</span>
+          </div>
+
+          <div class="form-group">
+            <label for="txtCompletionKeyword" class="form-label">AI Completion Keyword</label>
+            <div class="input-action-row">
+              <input type="text" id="txtCompletionKeyword" class="form-input" placeholder="Done skul9x.">
+              <button type="button" id="btnPresetKeyword" class="btn btn-secondary btn-action-addon" title="Set to standard 'Done skul9x.' preset">
+                Preset: Done skul9x.
+              </button>
+            </div>
+            <span class="input-hint">The runner monitors the transcript stream for this keyword to confirm loop completion.</span>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <!-- Toast Notification Alert -->
+  <div id="toastNotification" class="toast hidden"></div>
+
+  <!-- Nonce Script Execution -->
+  <script nonce="${nonce}" src="${scriptUri}"></script>
+</body>
+</html>

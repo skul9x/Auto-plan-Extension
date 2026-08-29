@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 import * as path from 'path';
+import * as vscode from 'vscode';
 import { AutoPlanConfig, getConfig, DEFAULT_PROMPT_TEMPLATE } from './config';
 import { KeyboardManager, keyboardManager as defaultKeyboardManager } from './keyboardManager';
 import {
@@ -74,11 +75,17 @@ export interface OrchestratorProgressInfo {
   conversationId?: string;
 }
 
+export type ActionableErrorNotifier = (
+  errorMessage: string,
+  ...items: string[]
+) => Promise<string | undefined> | Thenable<string | undefined>;
+
 export interface OrchestratorOptions {
   configProvider?: () => AutoPlanConfig;
   keyboardManager?: KeyboardManager;
   transcriptWatcher?: TranscriptWatcher;
   promptDispatcher?: PromptDispatcher;
+  actionableErrorNotifier?: ActionableErrorNotifier;
   onStateChange?: (info: OrchestratorProgressInfo) => void;
   onIterationComplete?: (iteration: number, total: number, result: CompletionResult) => void;
   onPhaseStart?: (phase: PhaseItem, index: number, total: number) => void;
@@ -107,6 +114,7 @@ export class Orchestrator extends EventEmitter {
   private keyboardManager: KeyboardManager;
   private transcriptWatcher: TranscriptWatcher;
   private promptDispatcher: PromptDispatcher;
+  private actionableErrorNotifier: ActionableErrorNotifier;
 
   constructor(options?: OrchestratorOptions) {
     super();
@@ -122,6 +130,38 @@ export class Orchestrator extends EventEmitter {
             configProvider: options?.configProvider ?? getConfig
           })
         : defaultPromptDispatcher);
+
+    this.actionableErrorNotifier =
+      options?.actionableErrorNotifier ??
+      (async (errorMessage: string, ...items: string[]) => {
+        try {
+          if (typeof vscode !== 'undefined' && vscode?.window?.showErrorMessage) {
+            const selection = await vscode.window.showErrorMessage(errorMessage, ...items);
+            if (selection === '⚙️ Open Settings Panel') {
+              await vscode.commands?.executeCommand('autoplan.openSettings');
+            } else if (selection === '⚡ 1-Click DOM Bridge Setup') {
+              await vscode.commands?.executeCommand('autoplan.oneClickSetup');
+            } else if (selection === 'Install Guide') {
+              await vscode.window?.showInformationMessage(
+                'To configure prompt automation, enable the DOM Automation Bridge in settings or ensure OS prerequisites (e.g. xdotool on Linux) are installed.'
+              );
+            }
+            return selection;
+          } else {
+            console.error(`[Auto-Plan Orchestrator] ${errorMessage}`);
+          }
+        } catch {
+          console.error(`[Auto-Plan Orchestrator] ${errorMessage}`);
+        }
+        return undefined;
+      });
+
+    // Prevent unhandled error event crash when caller has not attached an error listener
+    this.on('error', (err) => {
+      if (this.listenerCount('error') <= 1) {
+        console.error(`[Auto-Plan Orchestrator Error] ${err?.message || err}`);
+      }
+    });
 
     if (options?.onStateChange) {
       this.on('stateChange', options.onStateChange);
@@ -158,6 +198,18 @@ export class Orchestrator extends EventEmitter {
 
   public getLastPreflightResult(): DispatchReadinessResult | null {
     return this.lastPreflightResult;
+  }
+
+  /**
+   * Shows actionable error notification for pre-flight failures offering settings and setup options.
+   */
+  public async showPreflightActionableNotification(errorMessage: string): Promise<string | undefined> {
+    return this.actionableErrorNotifier(
+      errorMessage,
+      '⚙️ Open Settings Panel',
+      '⚡ 1-Click DOM Bridge Setup',
+      'Install Guide'
+    );
   }
 
   /**
@@ -284,12 +336,25 @@ export class Orchestrator extends EventEmitter {
     }
 
     // Pre-flight health guard check (< 100ms fail-fast)
-    const readiness = this.promptDispatcher.validateDispatchReadiness();
+    const baseConfig = this.configProvider();
+    const config: AutoPlanConfig = {
+      ...baseConfig,
+      ...options?.overrideConfig
+    };
+
+    const readiness = this.promptDispatcher.validateDispatchReadiness(
+      undefined,
+      config.executionMode,
+      config.allowTierFallback
+    );
     this.lastPreflightResult = readiness;
     if (!readiness.ready) {
-      const errorMsg = readiness.errorMessage || 'Pre-flight check failed: No usable prompt transport available.';
+      const mode = config.executionMode || 'auto';
+      const detail = readiness.errorMessage || 'No usable prompt transport available.';
+      const errorMsg = `Pre-flight check failed for selected mode '${mode}'. ${detail}`;
       this.setState('error', errorMsg);
       this.emit('error', new Error(errorMsg));
+      await this.showPreflightActionableNotification(errorMsg);
       return false;
     }
 
@@ -383,25 +448,32 @@ export class Orchestrator extends EventEmitter {
       return false;
     }
 
+    const baseConfig = this.configProvider();
+    const config: AutoPlanConfig = {
+      ...baseConfig,
+      ...overrideConfig
+    };
+
     // Pre-flight health guard check (< 100ms fail-fast)
-    const readiness = this.promptDispatcher.validateDispatchReadiness();
+    const readiness = this.promptDispatcher.validateDispatchReadiness(
+      undefined,
+      config.executionMode,
+      config.allowTierFallback
+    );
     this.lastPreflightResult = readiness;
     if (!readiness.ready) {
-      const errorMsg = readiness.errorMessage || 'Pre-flight check failed: No usable prompt transport available.';
+      const mode = config.executionMode || 'auto';
+      const detail = readiness.errorMessage || 'No usable prompt transport available.';
+      const errorMsg = `Pre-flight check failed for selected mode '${mode}'. ${detail}`;
       this.setState('error', errorMsg);
       this.emit('error', new Error(errorMsg));
+      await this.showPreflightActionableNotification(errorMsg);
       return false;
     }
 
     if (readiness.warningMessage && readiness.requiresForegroundFocus) {
       this.emit('warning', readiness.warningMessage);
     }
-
-    const baseConfig = this.configProvider();
-    const config: AutoPlanConfig = {
-      ...baseConfig,
-      ...overrideConfig
-    };
 
     this.isAborted = false;
     this.isSkippingCurrentPhase = false;
@@ -439,14 +511,38 @@ export class Orchestrator extends EventEmitter {
 
         const dispatchOptions: DispatchOptions = {
           mode: config.executionMode,
+          allowFallback: config.allowTierFallback,
           timeoutMs: config.bridgeTimeoutMs,
           keyboardOptions: {
             focusDelayMs: config.focusDelayMs
           }
         };
 
-        const dispatchResult = await this.promptDispatcher.dispatchPrompt(renderedPrompt, dispatchOptions);
-        phase.dispatchResult = dispatchResult;
+        let dispatchResult: DispatchResult;
+        try {
+          dispatchResult = await this.promptDispatcher.dispatchPrompt(renderedPrompt, dispatchOptions);
+          phase.dispatchResult = dispatchResult;
+        } catch (dispatchErr: any) {
+          phase.status = 'Failed';
+          phase.endTime = Date.now();
+          const errMsg = dispatchErr?.message || String(dispatchErr);
+          phase.error = errMsg;
+          phase.dispatchResult = {
+            success: false,
+            tier: (config.executionMode === 'auto' ? 'domBridge' : config.executionMode) as any,
+            durationMs: 0,
+            error: errMsg
+          };
+          throw dispatchErr;
+        }
+
+        if (!dispatchResult.success) {
+          phase.status = 'Failed';
+          phase.endTime = Date.now();
+          phase.error = dispatchResult.error || 'Prompt dispatch failed';
+          phase.dispatchResult = dispatchResult;
+          throw new Error(phase.error);
+        }
 
         if (this.isAborted) break;
         if (this.isSkippingCurrentPhase) {
@@ -579,25 +675,32 @@ export class Orchestrator extends EventEmitter {
       return false;
     }
 
+    const baseConfig = this.configProvider();
+    const config: AutoPlanConfig = {
+      ...baseConfig,
+      ...overrideConfig
+    };
+
     // Pre-flight health guard check (< 100ms fail-fast)
-    const readiness = this.promptDispatcher.validateDispatchReadiness();
+    const readiness = this.promptDispatcher.validateDispatchReadiness(
+      undefined,
+      config.executionMode,
+      config.allowTierFallback
+    );
     this.lastPreflightResult = readiness;
     if (!readiness.ready) {
-      const errorMsg = readiness.errorMessage || 'Pre-flight check failed: No usable prompt transport available.';
+      const mode = config.executionMode || 'auto';
+      const detail = readiness.errorMessage || 'No usable prompt transport available.';
+      const errorMsg = `Pre-flight check failed for selected mode '${mode}'. ${detail}`;
       this.setState('error', errorMsg);
       this.emit('error', new Error(errorMsg));
+      await this.showPreflightActionableNotification(errorMsg);
       return false;
     }
 
     if (readiness.warningMessage && readiness.requiresForegroundFocus) {
       this.emit('warning', readiness.warningMessage);
     }
-
-    const baseConfig = this.configProvider();
-    const config: AutoPlanConfig = {
-      ...baseConfig,
-      ...overrideConfig
-    };
 
     this.isAborted = false;
     this.totalIterations = config.repeatCount;
@@ -616,6 +719,7 @@ export class Orchestrator extends EventEmitter {
 
         const dispatchOptions: DispatchOptions = {
           mode: config.executionMode,
+          allowFallback: config.allowTierFallback,
           timeoutMs: config.bridgeTimeoutMs,
           keyboardOptions: {
             focusDelayMs: config.focusDelayMs

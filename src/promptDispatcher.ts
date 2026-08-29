@@ -29,6 +29,7 @@ export interface DispatchOptions {
   windowKey?: string;
   commandType?: string;
   openNewConversation?: boolean;
+  revealChat?: boolean;
   keyboardOptions?: BatchPromptOptions;
   extra?: Record<string, any>;
 }
@@ -416,6 +417,19 @@ export class PromptDispatcher {
     const mode = options?.mode || config.executionMode || 'auto';
     const timeoutMs = options?.timeoutMs ?? config.bridgeTimeoutMs ?? 5000;
 
+    // Chat Reveal Hook: Guarantee chat DOM tree is mounted before prompt dispatching
+    if (options?.revealChat !== false) {
+      try {
+        await this.commandExecutor('workbench.action.chat.open');
+      } catch {
+        try {
+          await this.commandExecutor('antigravity.prioritized.chat.open');
+        } catch {
+          // Non-fatal if chat view is already open or command is unavailable
+        }
+      }
+    }
+
     // Ensure bridge server is listening
     if (!this.bridgeServer.isListening()) {
       if (mode === 'domBridge' || mode === 'auto') {
@@ -459,11 +473,28 @@ export class PromptDispatcher {
       extra: options?.extra
     };
 
-    const ackResult = await this.bridgeServer.dispatchPromptCommand(promptText, commandOpts);
+    let ackResult: any;
+    try {
+      ackResult = await this.bridgeServer.dispatchPromptCommand(promptText, commandOpts);
+    } catch (err: any) {
+      this.logger.error('DISPATCHER', `Tier 1 dispatch failed: ${err.message}`, {
+        domSnapshot: err.domSnapshot,
+        steps: err.steps,
+        metadata: err.metadata
+      }, err);
+      throw err;
+    }
+
     const durationMs = Date.now() - startTime;
 
     if (!ackResult.success) {
-      throw new Error(ackResult.error || `DOM Bridge rejected command ${ackResult.commandId}`);
+      const err: any = new Error(ackResult.error || `DOM Bridge rejected command ${ackResult.commandId}`);
+      if (ackResult.metadata) {
+        err.metadata = ackResult.metadata;
+        if (ackResult.metadata.domSnapshot) err.domSnapshot = ackResult.metadata.domSnapshot;
+        if (ackResult.metadata.steps) err.steps = ackResult.metadata.steps;
+      }
+      throw err;
     }
 
     return {

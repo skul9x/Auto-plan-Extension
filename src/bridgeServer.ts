@@ -702,7 +702,20 @@ export class BridgeServer {
           }, ack.error);
           clearTimeout(deferred.timer);
           this.pendingCommands.delete(ack.commandId);
-          deferred.reject(new Error(ack.error || 'DOM Bridge reported command error'));
+          const errObj: any = new Error(ack.error || 'DOM Bridge reported command error');
+          if (ack.metadata) {
+            errObj.metadata = ack.metadata;
+            if (ack.metadata.domSnapshot) {
+              errObj.domSnapshot = ack.metadata.domSnapshot;
+            }
+            if (ack.metadata.steps) {
+              errObj.steps = ack.metadata.steps;
+            }
+            if (ack.metadata.diagnostics) {
+              errObj.diagnostics = ack.metadata.diagnostics;
+            }
+          }
+          deferred.reject(errObj);
         } else if (ack.status === 'submitClicked' || ack.status === 'completed' || ack.status === 'promptInjected') {
           this.logger.info('SERVER', `Command ${ack.commandId} ACK received: status=${ack.status} (${durationMs}ms)`, {
             commandId: ack.commandId,

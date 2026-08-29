@@ -24,13 +24,19 @@
   ];
 
   const CONTAINER_SELECTORS = [
+    '#antigravity\\.agentSidePanelInputBox',
+    'div[id*="agentSidePanelInputBox"]',
+    '.chat-widget',
     '.interactive-session',
     'div.chat-input',
     '.chat-input-container',
+    '.chat-input-part',
+    '.interactive-input',
+    '.chat-editor-widget',
+    '.composer-container',
+    '.composer-bar',
     '.monaco-dialog-box',
-    '.dialog-shadow',
-    '.notifications-toasts',
-    '.monaco-alert-dialog'
+    '.notifications-toasts'
   ];
 
   let activeClientInstance = null;
@@ -86,6 +92,50 @@
   }
 
   /**
+   * Safely splits compound CSS selectors on descendant whitespace combinators,
+   * preserving spaces inside quotes and bracketed attribute selectors.
+   */
+  function splitSelectorCombinators(selector) {
+    if (!selector || typeof selector !== 'string') return [];
+    const parts = [];
+    let current = '';
+    let inBracket = false;
+    let inQuote = null;
+
+    for (let i = 0; i < selector.length; i++) {
+      const ch = selector[i];
+      if (inQuote) {
+        current += ch;
+        if (ch === inQuote && selector[i - 1] !== '\\') {
+          inQuote = null;
+        }
+      } else if (ch === '"' || ch === "'") {
+        inQuote = ch;
+        current += ch;
+      } else if (ch === '[') {
+        inBracket = true;
+        current += ch;
+      } else if (ch === ']') {
+        inBracket = false;
+        current += ch;
+      } else if (/\s/.test(ch)) {
+        if (inBracket) {
+          current += ch;
+        } else if (current.trim()) {
+          parts.push(current.trim());
+          current = '';
+        }
+      } else {
+        current += ch;
+      }
+    }
+    if (current.trim()) {
+      parts.push(current.trim());
+    }
+    return parts;
+  }
+
+  /**
    * Recursively search within root, shadow roots, and child iframes safely.
    * If scoped container search yields 0 matches, ALWAYS falls back to searching full document tree.
    */
@@ -97,6 +147,8 @@
     let results = [];
     const isTopLevel = (typeof document !== 'undefined' && (doc === document || doc === document.body)) ||
       (doc && (doc.documentElement || doc.body) && !doc.parentElement);
+
+    const selectorParts = splitSelectorCombinators(selector);
 
     try {
       if (typeof doc.querySelectorAll === 'function') {
@@ -113,12 +165,41 @@
                   results.push(container);
                 }
                 if (typeof container.querySelectorAll === 'function') {
-                  const found = container.querySelectorAll(selector);
-                  results = results.concat(Array.from(found));
+                  try {
+                    const found = container.querySelectorAll(selector);
+                    results = results.concat(Array.from(found));
+                  } catch (_) {}
                 }
+
+                // Handle compound selectors when container matches prefix
+                if (selectorParts.length > 1) {
+                  for (let p = 1; p < selectorParts.length; p++) {
+                    const prefix = selectorParts.slice(0, p).join(' ');
+                    const suffix = selectorParts.slice(p).join(' ');
+                    try {
+                      if (typeof container.matches === 'function' && container.matches(prefix)) {
+                        const subFound = container.querySelectorAll(suffix);
+                        results = results.concat(Array.from(subFound));
+                      }
+                    } catch (_) {}
+                  }
+                }
+
                 if (container.shadowRoot && !visited.has(container.shadowRoot)) {
                   results = results.concat(queryDeep(selector, container.shadowRoot, visited));
+                  if (selectorParts.length > 1) {
+                    for (let p = 1; p < selectorParts.length; p++) {
+                      const prefix = selectorParts.slice(0, p).join(' ');
+                      const suffix = selectorParts.slice(p).join(' ');
+                      try {
+                        if (typeof container.matches === 'function' && container.matches(prefix)) {
+                          results = results.concat(queryDeep(suffix, container.shadowRoot, visited));
+                        }
+                      } catch (_) {}
+                    }
+                  }
                 }
+
                 if (typeof container.querySelectorAll === 'function') {
                   const innerNodes = container.querySelectorAll('*');
                   for (let i = 0; i < innerNodes.length; i++) {
@@ -161,6 +242,17 @@
             logBridge('WARN', `querySelectorAll failed for selector "${selector}": ${selErr?.message || selErr}`, { selector }, selErr);
           }
 
+          // If doc is a ShadowRoot and selector is compound, also search suffixes
+          if (selectorParts.length > 1 && !isTopLevel) {
+            for (let p = 1; p < selectorParts.length; p++) {
+              const suffix = selectorParts.slice(p).join(' ');
+              try {
+                const subFound = doc.querySelectorAll(suffix);
+                results = results.concat(Array.from(subFound));
+              } catch (_) {}
+            }
+          }
+
           try {
             const allNodes = doc.querySelectorAll('*');
             for (let i = 0; i < allNodes.length; i++) {
@@ -170,15 +262,15 @@
               }
               if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
                 try {
-                  const frameDoc = el.contentDocument || (el.contentWindow && el.contentWindow.document);
-                  if (frameDoc && !visited.has(frameDoc)) {
-                    results = results.concat(queryDeep(selector, frameDoc, visited));
+                  const src = el.src || el.getAttribute?.('src') || '';
+                  if (!src.startsWith('vscode-webview:') && !src.startsWith('http:') && !src.startsWith('https:')) {
+                    const frameDoc = el.contentDocument || (el.contentWindow && el.contentWindow.document);
+                    if (frameDoc && !visited.has(frameDoc)) {
+                      results = results.concat(queryDeep(selector, frameDoc, visited));
+                    }
                   }
-                } catch (frameErr) {
-                  logBridge('WARN', `Cross-origin iframe access restricted during full DOM search: ${frameErr?.message || frameErr}`, {
-                    iframeId: el.id,
-                    iframeSrc: el.src
-                  }, frameErr);
+                } catch (_) {
+                  // Silently ignore cross-origin restrictions on iframes
                 }
               }
             }
@@ -195,20 +287,47 @@
   }
 
   /**
-   * Helper to check if an element is visible in the DOM
+   * Helper to check if an element is visible in the DOM.
+   * When allowDisabled is true, elements with el.disabled === true are not rejected.
    */
-  function isElementVisible(el) {
+  function isElementVisible(el, options = {}) {
     if (!el) return false;
-    if (el.disabled) return false;
+    const allowDisabled = typeof options === 'boolean' ? options : Boolean(options && options.allowDisabled);
+    if (el.disabled && !allowDisabled) return false;
     try {
-      if (typeof el.getBoundingClientRect === 'function') {
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 && rect.height === 0 && !el.offsetParent && el.style?.display === 'none') {
+      let curr = el;
+      while (curr && curr.nodeType === 1) {
+        if (curr.hasAttribute && curr.hasAttribute('hidden')) {
           return false;
         }
+        if (curr.getAttribute && curr.getAttribute('aria-hidden') === 'true') {
+          return false;
+        }
+        if (curr.style) {
+          if (curr.style.display === 'none' || curr.style.visibility === 'hidden') {
+            return false;
+          }
+        }
+        if (typeof window !== 'undefined' && window.getComputedStyle) {
+          try {
+            const cs = window.getComputedStyle(curr);
+            if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) {
+              return false;
+            }
+          } catch (_) {}
+        }
+        curr = curr.parentElement || (curr.parentNode && curr.parentNode.nodeType === 1 ? curr.parentNode : null);
       }
-      if (el.style && (el.style.display === 'none' || el.style.visibility === 'hidden')) {
-        return false;
+
+      if (typeof el.getBoundingClientRect === 'function') {
+        const rect = el.getBoundingClientRect();
+        const isMonacoInputArea = (el.classList && el.classList.contains('inputarea')) ||
+          (el.tagName === 'TEXTAREA' && typeof el.className === 'string' && el.className.includes('inputarea'));
+        if (!isMonacoInputArea) {
+          if (rect.width === 0 && rect.height === 0 && !el.offsetParent && el.style?.display === 'none') {
+            return false;
+          }
+        }
       }
     } catch (visErr) {
       logBridge('WARN', `Error checking element visibility: ${visErr?.message || visErr}`, {}, visErr);
@@ -277,7 +396,7 @@
     // ContentEditables
     const contentEditables = [];
     try {
-      const ceList = queryDeep('[contenteditable="true"], div.monaco-editor, div.ProseMirror', root);
+      const ceList = queryDeep('[contenteditable="true"], div.monaco-editor, div.ProseMirror, div[data-lexical-editor="true"]', root);
       for (let i = 0; i < ceList.length; i++) {
         const ce = ceList[i];
         let rect = { width: 0, height: 0 };
@@ -359,24 +478,28 @@
     if (!root) return null;
 
     const selectors = [
+      'div[data-lexical-editor="true"]',
+      'div[aria-label="Message input"]',
+      '#antigravity\\.agentSidePanelInputBox [contenteditable="true"]',
+      'div[contenteditable="true"][role="combobox"]',
+      '.chat-widget .monaco-editor textarea.inputarea',
       '.interactive-session .monaco-editor textarea.inputarea',
-      'div.monaco-editor textarea.inputarea',
-      '.monaco-editor textarea.inputarea',
-      '.monaco-editor textarea',
-      'textarea.interactive-input-editor',
+      '.interactive-input .monaco-editor textarea.inputarea',
       'div.interactive-input-editor textarea',
-      '.interactive-input textarea',
-      '.chat-input-container textarea',
+      'div.monaco-editor textarea.inputarea',
+      'div.monaco-editor[role="textbox"]',
+      'div.ProseMirror[contenteditable="true"]',
+      'div.ProseMirror',
+      'div[contenteditable="true"][role="textbox"]',
+      '[data-testid*="composer-input"]',
+      '[data-testid*="chat-input"]',
+      '[data-testid*="prompt-input"]',
       'textarea[placeholder*="Ask"]',
+      'textarea[placeholder*="Message"]',
       'textarea[placeholder*="Prompt"]',
       'textarea[placeholder*="Chat"]',
-      'div.monaco-editor[contenteditable="true"]',
-      'div.ProseMirror',
-      'div[contenteditable="true"]',
+      'textarea[placeholder*="Type"]',
       'textarea.inputarea',
-      'div.chat-input textarea',
-      '[data-testid*="chat-input"]',
-      'textarea',
       '[role="textbox"]'
     ];
 
@@ -413,46 +536,169 @@
 
   /**
    * Locates the chat submit / send button.
+   * Prioritizes scoped container searches and Antigravity-specific button attributes.
+   * Generic icon selectors are strictly scoped to chat containers to prevent false positive clicks on workbench elements.
    * On failure, captures evaluated selectors and nearby button elements.
    */
   function findSendButton(contextOrDoc, outOptions = {}) {
-    const root = (contextOrDoc && (contextOrDoc.ownerDocument || contextOrDoc)) || (typeof document !== 'undefined' ? document : null);
-    if (!root) return null;
+    const root = (contextOrDoc && (contextOrDoc.ownerDocument || (contextOrDoc.nodeType === 9 ? contextOrDoc : null))) ||
+      (typeof document !== 'undefined' ? document : null);
+    if (!root && !contextOrDoc) return null;
 
-    const selectors = [
+    const evaluatedSelectors = [];
+
+    // Specific Antigravity & chat submit button selectors
+    const HIGH_PRIORITY_BUTTON_SELECTORS = [
+      'button[data-testid="send-button"]',
+      '[data-testid="send-button"]',
+      'button[aria-label="Send message"]',
+      'button[aria-label*="Send message"]',
+      'button[title*="Send message"]',
+      'button[data-tooltip-id*="send-tooltip"]',
+      'button[data-tooltip-id*="send-button"]',
+      '[data-tooltip-id*="send-tooltip"]',
+      '[data-tooltip-id*="send-button"]',
       'button[aria-label*="Send"]',
       'button[title*="Send"]',
       'button[aria-label*="Submit"]',
       'button[title*="Submit"]',
-      '.interactive-item-submit-button',
-      '.chat-submit-button',
+      'button[aria-label*="Generate"]',
+      'button[title*="Generate"]',
+      'button[aria-label*="Accept"]',
+      'button[title*="Accept"]',
       'button[type="submit"]',
       '[data-testid*="send-button"]',
-      '.codicon-send',
-      'button.codicon-send',
-      '[aria-label*="Chat Submit"]',
-      '[aria-label*="Submit Prompt"]'
+      '[data-testid*="submit-button"]',
+      'div.chat-input-toolbar button',
+      'div.chat-input-actions button',
+      '.chat-input-toolbar button',
+      '.chat-input-actions button'
     ];
 
-    const evaluatedSelectors = [];
+    // Generic codicon icon selectors (ONLY searched within scoped chat containers)
+    const SCOPED_CODICON_SELECTORS = [
+      'button.codicon-arrow-up',
+      '.codicon-arrow-up',
+      'button.codicon-send',
+      '.codicon-send',
+      'button.codicon-arrow-right',
+      '.codicon-arrow-right'
+    ];
 
-    for (let i = 0; i < selectors.length; i++) {
-      const sel = selectors[i];
-      const candidates = queryDeep(sel, root);
-      evaluatedSelectors.push({ selector: sel, matches: candidates.length });
+    // Identify candidate containers (prioritizing contextOrDoc container if provided)
+    const containers = [];
+    const visitedContainers = new Set();
 
+    if (contextOrDoc && contextOrDoc.nodeType === 1) {
+      try {
+        const closestContainer = (typeof contextOrDoc.closest === 'function')
+          ? contextOrDoc.closest(CONTAINER_SELECTORS.join(', '))
+          : null;
+        if (closestContainer && !visitedContainers.has(closestContainer)) {
+          visitedContainers.add(closestContainer);
+          containers.push(closestContainer);
+        }
+
+        const isSelfContainer = CONTAINER_SELECTORS.some(sel => {
+          try {
+            return typeof contextOrDoc.matches === 'function' && contextOrDoc.matches(sel);
+          } catch (_) {
+            return false;
+          }
+        });
+        if (isSelfContainer && !visitedContainers.has(contextOrDoc)) {
+          visitedContainers.add(contextOrDoc);
+          containers.push(contextOrDoc);
+        }
+      } catch (_) {}
+    }
+
+    // Query all chat containers from document
+    if (root) {
+      try {
+        const docContainers = queryDeep(CONTAINER_SELECTORS.join(', '), root);
+        for (let i = 0; i < docContainers.length; i++) {
+          const c = docContainers[i];
+          if (c && !visitedContainers.has(c)) {
+            visitedContainers.add(c);
+            containers.push(c);
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Helper to evaluate candidates for a selector
+    function checkCandidates(candidates) {
       for (let j = 0; j < candidates.length; j++) {
         const el = candidates[j];
-        if (el) {
-          if (el.classList && el.classList.contains('codicon-send') && el.tagName !== 'BUTTON') {
-            const parentBtn = el.closest ? el.closest('button, [role="button"]') : el.parentElement;
-            if (parentBtn && isElementVisible(parentBtn)) {
-              return parentBtn;
-            }
+        if (!el) continue;
+
+        const isIcon = el.classList && (
+          el.classList.contains('codicon-send') ||
+          el.classList.contains('codicon-arrow-up') ||
+          el.classList.contains('codicon-arrow-right')
+        );
+
+        if (isIcon && el.tagName !== 'BUTTON') {
+          const parentBtn = el.closest ? el.closest('button, [role="button"]') : el.parentElement;
+          if (parentBtn && isElementVisible(parentBtn, { allowDisabled: true })) {
+            return parentBtn;
           }
-          if (isElementVisible(el)) {
-            return el;
-          }
+        }
+
+        if (isElementVisible(el, { allowDisabled: true })) {
+          return el;
+        }
+      }
+      return null;
+    }
+
+    // 1. Scoped search inside chat containers: Tier 1 (High priority selectors)
+    for (let c = 0; c < containers.length; c++) {
+      const container = containers[c];
+      for (let i = 0; i < HIGH_PRIORITY_BUTTON_SELECTORS.length; i++) {
+        const sel = HIGH_PRIORITY_BUTTON_SELECTORS[i];
+        let candidates = [];
+        try {
+          candidates = queryDeep(sel, container);
+        } catch (_) {}
+        evaluatedSelectors.push({ selector: `(scoped) ${sel}`, matches: candidates.length });
+        const matched = checkCandidates(candidates);
+        if (matched) {
+          return matched;
+        }
+      }
+    }
+
+    // 2. Scoped search inside chat containers: Tier 2 (Generic codicons inside containers)
+    for (let c = 0; c < containers.length; c++) {
+      const container = containers[c];
+      for (let i = 0; i < SCOPED_CODICON_SELECTORS.length; i++) {
+        const sel = SCOPED_CODICON_SELECTORS[i];
+        let candidates = [];
+        try {
+          candidates = queryDeep(sel, container);
+        } catch (_) {}
+        evaluatedSelectors.push({ selector: `(scoped-codicon) ${sel}`, matches: candidates.length });
+        const matched = checkCandidates(candidates);
+        if (matched) {
+          return matched;
+        }
+      }
+    }
+
+    // 3. Fallback: Global document-level query (EXCLUDES generic codicon-arrow-right & action-label)
+    if (root) {
+      for (let i = 0; i < HIGH_PRIORITY_BUTTON_SELECTORS.length; i++) {
+        const sel = HIGH_PRIORITY_BUTTON_SELECTORS[i];
+        let candidates = [];
+        try {
+          candidates = queryDeep(sel, root);
+        } catch (_) {}
+        evaluatedSelectors.push({ selector: `(global) ${sel}`, matches: candidates.length });
+        const matched = checkCandidates(candidates);
+        if (matched) {
+          return matched;
         }
       }
     }
@@ -460,7 +706,7 @@
     // If submit button not found, capture nearby button elements
     const nearbyButtons = [];
     try {
-      const candidates = queryDeep('button, [role="button"], .codicon-send, .monaco-button, a.monaco-button', root);
+      const candidates = root ? queryDeep('button, [role="button"], .codicon-send, .codicon-arrow-up, .monaco-button, a.monaco-button', root) : [];
       for (let i = 0; i < candidates.length; i++) {
         const btn = candidates[i];
         if (!btn) continue;
@@ -469,8 +715,9 @@
           className: btn.className || '',
           ariaLabel: btn.getAttribute?.('aria-label') || '',
           title: btn.getAttribute?.('title') || btn.title || '',
-          codicon: Boolean(btn.classList && (btn.classList.contains('codicon-send') || (typeof btn.className === 'string' && btn.className.includes('codicon')))),
-          visible: isElementVisible(btn)
+          codicon: Boolean(btn.classList && (btn.classList.contains('codicon-send') || btn.classList.contains('codicon-arrow-up') || btn.classList.contains('codicon-arrow-right') || (typeof btn.className === 'string' && btn.className.includes('codicon')))),
+          visible: isElementVisible(btn, { allowDisabled: true }),
+          disabled: Boolean(btn.disabled)
         });
       }
     } catch (btnErr) {
@@ -525,11 +772,11 @@
         if (el) {
           if (el.classList && (el.classList.contains('codicon-plus') || el.classList.contains('codicon-add')) && el.tagName !== 'BUTTON') {
             const parentBtn = el.closest ? el.closest('button, [role="button"]') : el.parentElement;
-            if (parentBtn && isElementVisible(parentBtn)) {
+            if (parentBtn && isElementVisible(parentBtn, { allowDisabled: true })) {
               return parentBtn;
             }
           }
-          if (isElementVisible(el)) {
+          if (isElementVisible(el, { allowDisabled: true })) {
             return el;
           }
         }
@@ -540,11 +787,87 @@
   }
 
   /**
+   * Dispatches the full native pointer and mouse event cascade on a target button element
+   */
+  function dispatchButtonClickCascade(button, win) {
+    if (!button) return false;
+    const targetWin = win || (typeof window !== 'undefined' ? window : null);
+    let anyDispatched = false;
+
+    // 1. Pointerdown
+    try {
+      if (targetWin && typeof targetWin.PointerEvent === 'function') {
+        button.dispatchEvent(new targetWin.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, composed: true }));
+        anyDispatched = true;
+      } else if (typeof PointerEvent !== 'undefined') {
+        button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, composed: true }));
+        anyDispatched = true;
+      }
+    } catch (_) {}
+
+    // 2. Mousedown
+    try {
+      if (targetWin && typeof targetWin.MouseEvent === 'function') {
+        button.dispatchEvent(new targetWin.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, composed: true }));
+        anyDispatched = true;
+      } else if (typeof MouseEvent !== 'undefined') {
+        button.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, composed: true }));
+        anyDispatched = true;
+      }
+    } catch (_) {}
+
+    // 3. Native button.click()
+    try {
+      if (typeof button.click === 'function') {
+        button.click();
+        anyDispatched = true;
+      }
+    } catch (clickErr) {
+      logBridge('WARN', `button.click() failed: ${clickErr?.message || clickErr}`, {}, clickErr);
+    }
+
+    // 4. Pointerup
+    try {
+      if (targetWin && typeof targetWin.PointerEvent === 'function') {
+        button.dispatchEvent(new targetWin.PointerEvent('pointerup', { bubbles: true, cancelable: true, button: 0, composed: true }));
+        anyDispatched = true;
+      } else if (typeof PointerEvent !== 'undefined') {
+        button.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, button: 0, composed: true }));
+        anyDispatched = true;
+      }
+    } catch (_) {}
+
+    // 5. Mouseup
+    try {
+      if (targetWin && typeof targetWin.MouseEvent === 'function') {
+        button.dispatchEvent(new targetWin.MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, composed: true }));
+        anyDispatched = true;
+      } else if (typeof MouseEvent !== 'undefined') {
+        button.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, composed: true }));
+        anyDispatched = true;
+      }
+    } catch (_) {}
+
+    // 6. Click
+    try {
+      if (targetWin && typeof targetWin.MouseEvent === 'function') {
+        button.dispatchEvent(new targetWin.MouseEvent('click', { bubbles: true, cancelable: true, button: 0, composed: true }));
+        anyDispatched = true;
+      } else if (typeof MouseEvent !== 'undefined') {
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, composed: true }));
+        anyDispatched = true;
+      }
+    } catch (_) {}
+
+    return anyDispatched;
+  }
+
+  /**
    * Injects prompt text into active chat input and triggers submit with step-by-step diagnostics
    */
   async function injectPromptAndSubmit(promptText, options = {}) {
     const doc = options.document || (typeof document !== 'undefined' ? document : null);
-    const win = options.window || (typeof window !== 'undefined' ? window : null);
+    const win = options.window || (typeof win !== 'undefined' ? win : (typeof window !== 'undefined' ? window : null));
     if (!doc) {
       const err = new Error('DOM document not available for prompt injection');
       logBridge('ERROR', err.message);
@@ -582,6 +905,18 @@
       logBridge('WARN', `inputElem.focus() failed: ${focusErr?.message || focusErr}`, {}, focusErr);
     }
 
+    // Pre-Injection Focus Guard: if element is not active element, attempt focus on parent container editor
+    if (doc.activeElement && doc.activeElement !== inputElem) {
+      try {
+        const parentEditor = (inputElem.closest && inputElem.closest('.monaco-editor, .chat-widget, .interactive-session, #antigravity\\.agentSidePanelInputBox, div[id*="agentSidePanelInputBox"], .composer-container, .interactive-input')) || inputElem.parentElement;
+        if (parentEditor && typeof parentEditor.focus === 'function') {
+          parentEditor.focus({ preventScroll: true });
+        }
+      } catch (parentFocusErr) {
+        logBridge('DEBUG', `parentEditor.focus() failed: ${parentFocusErr?.message || parentFocusErr}`, {}, parentFocusErr);
+      }
+    }
+
     steps.push({
       step: 1,
       name: 'Input discovery & focus',
@@ -600,31 +935,55 @@
       inputElem.contentEditable === 'true' ||
       inputElem.contentEditable === true ||
       inputElem.classList?.contains('ProseMirror') ||
-      inputElem.classList?.contains('monaco-editor');
+      inputElem.classList?.contains('monaco-editor') ||
+      inputElem.hasAttribute?.('data-lexical-editor') ||
+      inputElem.getAttribute?.('role') === 'textbox' ||
+      inputElem.getAttribute?.('role') === 'combobox';
 
     let valueSet = false;
 
-    // Strategy 1: Monaco Editor Model setValue
+    // Strategy 1: Monaco Editor Model API
     try {
       if (win && win.monaco && win.monaco.editor) {
         let editorInstance = null;
         if (typeof win.monaco.editor.getEditors === 'function') {
           const editors = win.monaco.editor.getEditors();
-          for (let i = 0; i < editors.length; i++) {
-            const ed = editors[i];
-            const domNode = typeof ed.getDomNode === 'function' ? ed.getDomNode() : null;
-            if (domNode && (domNode === inputElem || (typeof domNode.contains === 'function' && domNode.contains(inputElem)) || (typeof inputElem.contains === 'function' && inputElem.contains(domNode)))) {
-              editorInstance = ed;
-              break;
+          if (Array.isArray(editors)) {
+            for (let i = 0; i < editors.length; i++) {
+              const ed = editors[i];
+              if (!ed) continue;
+              const domNode = typeof ed.getDomNode === 'function' ? ed.getDomNode() : null;
+              if (domNode && (
+                domNode === inputElem ||
+                (typeof domNode.contains === 'function' && domNode.contains(inputElem)) ||
+                (typeof inputElem.contains === 'function' && inputElem.contains(domNode)) ||
+                (inputElem.closest && inputElem.closest('.monaco-editor') === domNode)
+              )) {
+                editorInstance = ed;
+                break;
+              }
             }
           }
         }
         if (editorInstance) {
           const model = typeof editorInstance.getModel === 'function' ? editorInstance.getModel() : null;
-          if (model && typeof model.setValue === 'function') {
-            model.setValue(promptText);
-            valueSet = true;
-            injectionStrategy = 'monaco-model';
+          if (model) {
+            if (typeof model.getFullModelRange === 'function' && typeof editorInstance.executeEdits === 'function') {
+              editorInstance.executeEdits('autoplan', [{
+                range: model.getFullModelRange(),
+                text: promptText,
+                forceMoveMarkers: true
+              }]);
+              if (typeof editorInstance.setPosition === 'function' && typeof model.getPositionAt === 'function') {
+                editorInstance.setPosition(model.getPositionAt(promptText.length));
+              }
+              valueSet = true;
+              injectionStrategy = 'monaco-model';
+            } else if (typeof model.setValue === 'function') {
+              model.setValue(promptText);
+              valueSet = true;
+              injectionStrategy = 'monaco-model';
+            }
           }
         }
       }
@@ -632,36 +991,51 @@
       logBridge('WARN', `Monaco editor model injection error: ${monacoErr?.message || monacoErr}`, {}, monacoErr);
     }
 
-    // Strategy 2: ProseMirror Transaction Dispatch
-    if (!valueSet && isContentEditable) {
+    // Strategy 2: document.execCommand('insertText') (Antigravity Lexical & Monaco Textarea)
+    if (!valueSet && doc && typeof doc.execCommand === 'function') {
       try {
-        const pmView = inputElem.pmViewDesc?.view || inputElem._pmView;
-        if (pmView && pmView.state && typeof pmView.dispatch === 'function' && pmView.state.schema) {
-          const schema = pmView.state.schema;
-          const tr = pmView.state.tr;
-          if (schema.text && tr && typeof tr.replaceWith === 'function') {
-            tr.replaceWith(0, pmView.state.doc?.content?.size || 0, schema.text(promptText));
-            pmView.dispatch(tr);
-            valueSet = true;
-            injectionStrategy = 'prosemirror-transaction';
-          }
+        if (typeof inputElem.focus === 'function') {
+          inputElem.focus({ preventScroll: true });
         }
-      } catch (pmErr) {
-        logBridge('WARN', `ProseMirror transaction dispatch error: ${pmErr?.message || pmErr}`, {}, pmErr);
-      }
-    }
-
-    // Strategy 3: execCommand (for rich text/contenteditable/ProseMirror/Monaco)
-    if (!valueSet && isContentEditable && doc.execCommand) {
-      try {
         doc.execCommand('selectAll', false, null);
-        const success = doc.execCommand('insertText', false, promptText);
-        if (success) {
+        const execSuccess = doc.execCommand('insertText', false, promptText);
+        if (execSuccess) {
           valueSet = true;
           injectionStrategy = 'execCommand';
         }
       } catch (cmdErr) {
         logBridge('WARN', `doc.execCommand failed: ${cmdErr?.message || cmdErr}`, {}, cmdErr);
+      }
+    }
+
+    // Strategy 3: ProseMirror / Lexical Direct View & Transaction Dispatch
+    if (!valueSet) {
+      try {
+        const pmContainer = (inputElem.closest && inputElem.closest('.ProseMirror')) || inputElem;
+        const pmView = inputElem.pmViewDesc?.view ||
+          inputElem._pmView ||
+          pmContainer?.pmViewDesc?.view ||
+          pmContainer?._pmView;
+
+        if (pmView) {
+          if (typeof pmView.pasteText === 'function') {
+            pmView.pasteText(promptText);
+            valueSet = true;
+            injectionStrategy = 'prosemirror-view';
+          } else if (pmView.state && typeof pmView.dispatch === 'function' && pmView.state.schema) {
+            const schema = pmView.state.schema;
+            const tr = pmView.state.tr;
+            if (schema.text && tr && typeof tr.replaceWith === 'function') {
+              const docSize = pmView.state.doc?.content?.size || (pmView.state.doc?.nodeSize ? pmView.state.doc.nodeSize - 2 : 0) || 0;
+              tr.replaceWith(0, docSize, schema.text(promptText));
+              pmView.dispatch(tr);
+              valueSet = true;
+              injectionStrategy = 'prosemirror-transaction';
+            }
+          }
+        }
+      } catch (pmErr) {
+        logBridge('WARN', `ProseMirror view/transaction dispatch error: ${pmErr?.message || pmErr}`, {}, pmErr);
       }
     }
 
@@ -681,17 +1055,21 @@
         logBridge('WARN', `beforeinput dispatch failed: ${biErr?.message || biErr}`, {}, biErr);
       }
 
-      // Value setter with descriptor fallback
+      // Value setter with descriptor fallback (bypassing React / framework state proxy setters)
       let descSet = false;
-      if (win && win.HTMLTextAreaElement && win.HTMLTextAreaElement.prototype) {
+      const proto = inputElem.tagName === 'TEXTAREA'
+        ? (win?.HTMLTextAreaElement?.prototype || (typeof HTMLTextAreaElement !== 'undefined' ? HTMLTextAreaElement.prototype : null))
+        : (win?.HTMLInputElement?.prototype || (typeof HTMLInputElement !== 'undefined' ? HTMLInputElement.prototype : null));
+
+      if (proto) {
         try {
-          const desc = Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, 'value');
+          const desc = Object.getOwnPropertyDescriptor(proto, 'value');
           if (desc && desc.set) {
             desc.set.call(inputElem, promptText);
             descSet = true;
           }
         } catch (vErr) {
-          logBridge('WARN', `HTMLTextAreaElement value descriptor set failed: ${vErr?.message || vErr}`, {}, vErr);
+          logBridge('WARN', `Prototype value descriptor set failed: ${vErr?.message || vErr}`, {}, vErr);
         }
       }
       if (!descSet) {
@@ -700,7 +1078,7 @@
       valueSet = true;
       injectionStrategy = 'textarea-value';
     } else if (!valueSet) {
-      // ContentEditable direct fallback
+      // Strategy 5: ContentEditable / Text Direct Fallback
       if (typeof inputElem.innerText !== 'undefined') {
         inputElem.innerText = promptText;
       } else {
@@ -753,86 +1131,217 @@
       events: dispatchedEvents
     });
 
-    // Step 4: Submit triggering (Enter keydown/keyup events + submit button click)
+    // Step 3.5: State sync micro-tick (25-50ms) to allow Lexical AST and React batch updates
+    const syncDelayMs = options.syncDelayMs !== undefined ? options.syncDelayMs : 30;
+    if (syncDelayMs > 0) {
+      await new Promise(r => setTimeout(r, syncDelayMs));
+    }
+
+    // Step 4: Submit triggering (Enter keydown/keypress/keyup + pointer/mouse button cascade + button polling + double-tap retry + form fallback)
+    let submitStrategy = 'enterKey';
     let enterDispatched = false;
+    let sendButtonClicked = false;
+    let doubleTapExecuted = false;
+    let formSubmitted = false;
+
+    // Helper to evaluate if button is disabled or aria-disabled
+    const isButtonDisabled = (btn) => {
+      if (!btn) return true;
+      if (btn.disabled) return true;
+      if (btn.getAttribute) {
+        if (btn.getAttribute('aria-disabled') === 'true' || btn.getAttribute('disabled') !== null) {
+          return true;
+        }
+      }
+      if (btn.classList && (btn.classList.contains('disabled') || btn.classList.contains('monaco-button-disabled'))) {
+        return true;
+      }
+      return false;
+    };
+
+    const sendBtnDiag = {};
+    let sendBtn = options.sendButton || findSendButton(inputElem || doc, sendBtnDiag);
+
+    // Button Enablement Polling (up to 250ms/300ms)
+    const maxPollMs = options.pollTimeoutMs !== undefined ? options.pollTimeoutMs : 250;
+    const pollIntervalMs = options.pollIntervalMs !== undefined ? options.pollIntervalMs : 25;
+    const pollStart = Date.now();
+    let buttonWaitDurationMs = 0;
+    let initialDisabled = sendBtn ? isButtonDisabled(sendBtn) : true;
+
+    if (sendBtn && initialDisabled && maxPollMs > 0) {
+      while (Date.now() - pollStart < maxPollMs) {
+        await new Promise(r => setTimeout(r, pollIntervalMs));
+        if (!isButtonDisabled(sendBtn)) {
+          break;
+        }
+        const refreshedBtn = options.sendButton || findSendButton(inputElem || doc);
+        if (refreshedBtn) {
+          sendBtn = refreshedBtn;
+          if (!isButtonDisabled(sendBtn)) {
+            break;
+          }
+        }
+      }
+      buttonWaitDurationMs = Date.now() - pollStart;
+    } else if (!sendBtn && maxPollMs > 0) {
+      while (Date.now() - pollStart < maxPollMs) {
+        await new Promise(r => setTimeout(r, pollIntervalMs));
+        sendBtn = options.sendButton || findSendButton(inputElem || doc, sendBtnDiag);
+        if (sendBtn) {
+          if (!isButtonDisabled(sendBtn)) {
+            break;
+          }
+        }
+      }
+      buttonWaitDurationMs = Date.now() - pollStart;
+    }
+
+    // Upgraded Keyboard Enter Event Dispatching on inputElem (composed: true for Lexical & web components)
     try {
-      if (win && typeof win.KeyboardEvent === 'function') {
-        inputElem.dispatchEvent(new win.KeyboardEvent('keydown', {
+      const KbEventClass = (win && win.KeyboardEvent) || (typeof KeyboardEvent !== 'undefined' ? KeyboardEvent : null);
+      if (KbEventClass) {
+        const kbEventInit = {
           key: 'Enter',
           code: 'Enter',
           keyCode: 13,
           which: 13,
+          charCode: 13,
           bubbles: true,
-          cancelable: true
-        }));
-        inputElem.dispatchEvent(new win.KeyboardEvent('keyup', {
-          key: 'Enter',
-          code: 'Enter',
-          keyCode: 13,
-          which: 13,
-          bubbles: true,
-          cancelable: true
-        }));
+          cancelable: true,
+          composed: true
+        };
+
+        // 1. keydown
+        try {
+          const kd = new KbEventClass('keydown', kbEventInit);
+          inputElem.dispatchEvent(kd);
+        } catch (_) {}
+
+        // 2. keypress (critical for Lexical & ProseMirror input handlers)
+        try {
+          const kp = new KbEventClass('keypress', kbEventInit);
+          inputElem.dispatchEvent(kp);
+        } catch (_) {}
+
+        // 3. keyup
+        try {
+          const ku = new KbEventClass('keyup', kbEventInit);
+          inputElem.dispatchEvent(ku);
+        } catch (_) {}
+
         enterDispatched = true;
       }
     } catch (kbErr) {
       logBridge('WARN', `KeyboardEvent dispatch failed: ${kbErr?.message || kbErr}`, {}, kbErr);
     }
 
-    const sendBtnDiag = {};
-    const sendBtn = options.sendButton || findSendButton(doc || inputElem?.ownerDocument || inputElem, sendBtnDiag);
-    let sendButtonClicked = false;
+    // Native Button Click & Pointer Event Cascade
     if (sendBtn) {
-      if (typeof sendBtn.click === 'function') {
-        try {
-          sendBtn.click();
-          sendButtonClicked = true;
-        } catch (clickErr) {
-          logBridge('WARN', `sendBtn.click() failed: ${clickErr?.message || clickErr}`, {}, clickErr);
+      dispatchButtonClickCascade(sendBtn, win);
+      sendButtonClicked = true;
+      submitStrategy = 'buttonClick';
+
+      // Double-Tap Submission Guard (asynchronous retry after 50ms if disabled or state-transitioning)
+      const isStillDisabled = isButtonDisabled(sendBtn);
+      if (initialDisabled || isStillDisabled || options.doubleTapRetry || options.doubleTap) {
+        const retryDelay = options.doubleTapDelayMs !== undefined ? options.doubleTapDelayMs : 50;
+        if (retryDelay > 0) {
+          await new Promise(r => setTimeout(r, retryDelay));
+        }
+        const recheckedBtn = options.sendButton || findSendButton(inputElem || doc) || sendBtn;
+        if (recheckedBtn) {
+          dispatchButtonClickCascade(recheckedBtn, win);
+          doubleTapExecuted = true;
+          sendBtn = recheckedBtn;
         }
       }
+    }
+
+    // Form Submission Fallback
+    const form = (sendBtn && (sendBtn.form || (typeof sendBtn.closest === 'function' && sendBtn.closest('form')))) ||
+      (inputElem && (inputElem.form || (typeof inputElem.closest === 'function' && inputElem.closest('form'))));
+
+    if (form) {
       try {
-        if (win && typeof win.MouseEvent === 'function') {
-          sendBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true }));
-          sendButtonClicked = true;
+        if (typeof form.requestSubmit === 'function') {
+          if (sendBtn && (sendBtn.form === form || (typeof sendBtn.closest === 'function' && sendBtn.closest('form') === form))) {
+            form.requestSubmit(sendBtn);
+          } else {
+            form.requestSubmit();
+          }
+          formSubmitted = true;
+        } else {
+          const EventClass = (win && win.Event) || (typeof Event !== 'undefined' ? Event : null);
+          if (EventClass) {
+            form.dispatchEvent(new EventClass('submit', { bubbles: true, cancelable: true }));
+            formSubmitted = true;
+          }
         }
-      } catch (_) {}
+        if (!sendButtonClicked) {
+          submitStrategy = 'formSubmit';
+        }
+      } catch (formErr) {
+        logBridge('WARN', `Form submission fallback failed: ${formErr?.message || formErr}`, {}, formErr);
+      }
+    }
+
+    if (!sendButtonClicked && !formSubmitted && enterDispatched) {
+      submitStrategy = 'enterKey';
     }
 
     const isDocHidden = Boolean(doc?.hidden || (typeof document !== 'undefined' && document.hidden));
     const isBackgroundSubmission = Boolean(options.isBackground || isDocHidden);
+    const isSuccess = Boolean(sendButtonClicked || formSubmitted || enterDispatched);
 
     steps.push({
       step: 4,
       name: 'Submit triggering',
-      status: (sendButtonClicked || enterDispatched) ? 'success' : 'failed',
+      status: isSuccess ? 'success' : 'failed',
+      submitStrategy,
       enterDispatched,
       sendButtonClicked,
+      doubleTapExecuted,
+      formSubmitted,
       buttonSelector: sendBtn?.className || sendBtn?.tagName || null,
+      buttonWaitDurationMs,
+      initialDisabled,
       sendButtonDiagnostics: !sendButtonClicked ? sendBtnDiag.diagnostics : undefined
     });
 
     const report = {
-      success: true,
+      success: isSuccess,
       isBackgroundSubmission,
+      submitStrategy,
       injectionStrategy,
       sendButtonClicked,
       enterDispatched,
+      doubleTapExecuted,
+      formSubmitted,
       buttonSelector: sendBtn?.className || sendBtn?.tagName || null,
+      buttonWaitDurationMs,
+      initialDisabled,
       charsInjected: promptText.length,
       steps,
       diagnostics: {
         timestamp: Date.now(),
         isBackground: isBackgroundSubmission,
         documentHidden: isDocHidden,
+        submitStrategy,
+        doubleTapExecuted,
+        buttonWaitDurationMs,
+        initialDisabled,
         steps
       }
     };
 
-    logBridge('INFO', `Prompt injected and submitted (${promptText.length} chars, strategy=${injectionStrategy}, sendClicked=${sendButtonClicked}, background=${isBackgroundSubmission})`, {
+    logBridge('INFO', `Prompt injected and submitted (${promptText.length} chars, strategy=${injectionStrategy}, submitStrategy=${submitStrategy}, sendClicked=${sendButtonClicked}, doubleTap=${doubleTapExecuted}, background=${isBackgroundSubmission})`, {
       injectionStrategy,
+      submitStrategy,
       sendButtonClicked,
       enterDispatched,
+      doubleTapExecuted,
+      formSubmitted,
       isBackgroundSubmission,
       steps
     });
@@ -1542,10 +2051,12 @@
     DEFAULT_APPROVAL_PATTERNS,
     CONTAINER_SELECTORS,
     queryDeep,
+    isElementVisible,
     captureDomDiagnosticSnapshot,
     findChatInput,
     findSendButton,
     findNewConversationButton,
+    dispatchButtonClickCascade,
     injectPromptAndSubmit,
     triggerNewConversation,
     startAutoApprovalObserver,

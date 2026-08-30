@@ -238,6 +238,44 @@
           </div>
         </section>
 
+        <!-- Section: Plan & Phase Diagnostics -->
+        <section class="glass-card" id="sectionPhaseDiagnostics">
+          <div class="card-header">
+            <div class="header-icon-title">
+              <span class="section-icon">📊</span>
+              <div>
+                <h2 class="card-title">Plan & Phase Diagnostics</h2>
+                <p class="card-subtitle">Real-time introspection into active plan folder, completed vs. pending phases, and stall blockers.</p>
+              </div>
+            </div>
+            <button type="button" id="btnRefreshPhaseDiagnostics" class="btn btn-secondary btn-sm" title="Refresh Phase Diagnostics">
+              <span>🔄</span> Refresh
+            </button>
+          </div>
+
+          <div class="phase-telemetry-content">
+            <div class="telemetry-stat-row">
+              <div class="stat-box">
+                <span class="stat-label">Active Plan Folder</span>
+                <span id="diagPlanFolder" class="stat-value">None</span>
+              </div>
+              <div class="stat-box">
+                <span class="stat-label">Phase Ratio</span>
+                <span id="diagPhaseRatio" class="stat-value">0 / 0 Completed</span>
+              </div>
+              <div class="stat-box">
+                <span class="stat-label">Stall & Blocker Status</span>
+                <span id="diagBlockerStatus" class="stat-value status-ok">✅ No Blockers</span>
+              </div>
+            </div>
+
+            <div id="diagStallWarningBox" class="stall-warning-box hidden">
+              <span class="stall-warning-icon">⚠️</span>
+              <span id="diagStallWarningText" class="stall-warning-text"></span>
+            </div>
+          </div>
+        </section>
+
         <!-- Section: Plan & File Automation -->
         <section class="glass-card">
           <div class="card-header">

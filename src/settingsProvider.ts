@@ -8,6 +8,9 @@ import { bridgeServer } from './bridgeServer';
 import { isBridgeInstalled } from './workbenchInjector';
 import { keyboardManager } from './keyboardManager';
 import { debugLogger, DebugLogger, LogEntry } from './debugLogger';
+import { orchestrator } from './orchestrator';
+import { auditPlanPhases, PlanPhasesAuditReport } from './planScanner';
+import { getCurrentPlanFolder } from './extension';
 
 /**
  * Generates a cryptographically secure random nonce for Content Security Policy.
@@ -219,30 +222,68 @@ export class SettingsProvider {
   }
 
   /**
+   * Collects current plan and phase execution diagnostic audit.
+   */
+  public getPhaseDiagnostics(): PlanPhasesAuditReport | null {
+    try {
+      if (orchestrator.isRunning()) {
+        return orchestrator.getPhaseAuditReport();
+      }
+      const activeFolder = getCurrentPlanFolder();
+      if (activeFolder && fs.existsSync(activeFolder)) {
+        return auditPlanPhases(activeFolder);
+      }
+      const config = getConfig();
+      if (config.defaultPlanFolder && fs.existsSync(config.defaultPlanFolder)) {
+        return auditPlanPhases(config.defaultPlanFolder);
+      }
+    } catch {}
+    return null;
+  }
+
+  /**
    * Broadcasts live health and diagnostic status to the webview.
    */
   public sendHealthUpdate(): void {
     try {
       const health = this.getHealthDiagnostics();
+      const planPhases = this.getPhaseDiagnostics();
       this._panel.webview.postMessage({
         command: 'healthUpdate',
         type: 'healthUpdate',
-        ...health
+        ...health,
+        planPhases
       });
     } catch {}
   }
 
   /**
-   * Broadcasts current configuration to the webview.
+   * Broadcasts current configuration and phase telemetry to the webview.
    */
   public sendInitSettings(): void {
     try {
       const currentConfig = getConfig();
+      const planPhases = this.getPhaseDiagnostics();
       this._panel.webview.postMessage({
         command: 'initSettings',
         type: 'initSettings',
         settings: currentConfig,
-        config: currentConfig
+        config: currentConfig,
+        planPhases
+      });
+    } catch {}
+  }
+
+  /**
+   * Broadcasts dedicated phase diagnostics update to webview.
+   */
+  public sendPhaseDiagnostics(): void {
+    try {
+      const planPhases = this.getPhaseDiagnostics();
+      this._panel.webview.postMessage({
+        command: 'phaseDiagnostics',
+        type: 'phaseDiagnostics',
+        planPhases
       });
     } catch {}
   }
@@ -285,7 +326,13 @@ export class SettingsProvider {
       case 'ready': {
         this.sendInitSettings();
         this.sendHealthUpdate();
+        this.sendPhaseDiagnostics();
         this.sendLogBuffer();
+        break;
+      }
+
+      case 'requestPhaseDiagnostics': {
+        this.sendPhaseDiagnostics();
         break;
       }
 

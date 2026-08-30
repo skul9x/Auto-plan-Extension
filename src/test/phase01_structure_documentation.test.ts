@@ -25,13 +25,13 @@ async function runPhase01StructureDocumentationTestSuite() {
   const rootDir = path.resolve(__dirname, '../../');
   const structurePath = path.join(rootDir, 'structure.md');
 
-  // 1. Verify structure.md existence and size (> 1000 bytes)
-  console.log('[Test 1] Verifying structure.md existence and file size (> 1000 bytes)...');
+  // 1. Verify structure.md existence and size (> 2500 bytes)
+  console.log('[Test 1] Verifying structure.md existence and file size (> 2500 bytes)...');
   assert.strictEqual(fs.existsSync(structurePath), true, 'structure.md file must exist in project root');
   
   const stats = fs.statSync(structurePath);
-  assert.ok(stats.size > 1000, `structure.md size should be > 1000 bytes (actual: ${stats.size} bytes)`);
-  console.log(`  ✓ structure.md exists and size is ${stats.size} bytes (> 1000 bytes requirement).`);
+  assert.ok(stats.size > 2500, `structure.md size should be > 2500 bytes (actual: ${stats.size} bytes)`);
+  console.log(`  ✓ structure.md exists and size is ${stats.size} bytes (> 2500 bytes requirement).`);
 
   // 2. Read content and verify required structural headings
   console.log('\n[Test 2] Verifying key structural section headings in structure.md...');
@@ -39,9 +39,11 @@ async function runPhase01StructureDocumentationTestSuite() {
 
   const requiredHeadings = [
     '# Project Structure',
+    '## Directory Hierarchy',
     '## Core Modules',
-    '## Data Flow Diagram',
-    '## IPC Protocols'
+    '## Webview Assets & UI Panels',
+    '## Data Flow & Architecture Diagrams',
+    '## IPC Protocols & Communication Channels'
   ];
 
   for (const heading of requiredHeadings) {
@@ -52,18 +54,23 @@ async function runPhase01StructureDocumentationTestSuite() {
     console.log(`  ✓ Found required heading: "${heading}"`);
   }
 
-  // 3. Verify all referenced source files exist on disk
-  console.log('\n[Test 3] Verifying physical existence of all referenced source components...');
+  // 3. Verify all referenced source files and webview assets exist on disk
+  console.log('\n[Test 3] Verifying physical existence of all referenced source components & webview assets...');
   const requiredFiles = [
     'src/extension.ts',
     'src/orchestrator.ts',
     'src/promptDispatcher.ts',
+    'src/settingsProvider.ts',
+    'src/sidebarProvider.ts',
     'src/bridgeServer.ts',
     'src/transcriptWatcher.ts',
     'src/workbenchInjector.ts',
     'src/planScanner.ts',
-    'src/sidebarProvider.ts',
-    'media/autoplan-dom-bridge.js'
+    'src/keyboardManager.ts',
+    'src/config.ts',
+    'media/autoplan-dom-bridge.js',
+    'media/settings/settings.html',
+    'media/sidebar/sidebar.html'
   ];
 
   for (const relPath of requiredFiles) {

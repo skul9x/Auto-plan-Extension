@@ -10,14 +10,14 @@ async function runPhase02ReadmeDocumentationTestSuite() {
   const packageJsonPath = path.join(projectRoot, 'package.json');
 
   // --------------------------------------------------------------------------
-  // Test 1: Verify README.md exists and size > 3000 bytes
+  // Test 1: Verify README.md exists and size > 5000 bytes
   // --------------------------------------------------------------------------
-  console.log('[Test 1] Verifying README.md file existence and minimum size (> 3000 bytes)...');
+  console.log('[Test 1] Verifying README.md file existence and minimum size (> 5000 bytes)...');
   assert.ok(fs.existsSync(readmePath), `README.md must exist at path: ${readmePath}`);
   const stats = fs.statSync(readmePath);
   assert.ok(
-    stats.size > 3000,
-    `README.md file size should be > 3000 bytes (actual: ${stats.size} bytes)`
+    stats.size > 5000,
+    `README.md file size should be > 5000 bytes (actual: ${stats.size} bytes)`
   );
   console.log(`  ✓ README.md verified (${stats.size} bytes).`);
 
@@ -46,16 +46,34 @@ async function runPhase02ReadmeDocumentationTestSuite() {
   }
 
   // --------------------------------------------------------------------------
-  // Test 3: Verify required section headers
+  // Test 3: Verify all commands in package.json are documented in README.md
   // --------------------------------------------------------------------------
-  console.log('\n[Test 3] Verifying required structural Markdown headings...');
+  console.log('\n[Test 3] Verifying package.json commands are documented in README.md...');
+  const commands = packageJson?.contributes?.commands;
+  assert.ok(Array.isArray(commands) && commands.length > 0, 'package.json contributes.commands must exist');
+
+  console.log(`  Found ${commands.length} commands in package.json.`);
+  for (const cmd of commands) {
+    assert.ok(
+      readmeContent.includes(cmd.command),
+      `README.md must document command '${cmd.command}'`
+    );
+    console.log(`    ✓ Command '${cmd.command}' found in README.md.`);
+  }
+
+  // --------------------------------------------------------------------------
+  // Test 4: Verify required section headers
+  // --------------------------------------------------------------------------
+  console.log('\n[Test 4] Verifying required structural Markdown headings...');
   const requiredHeadings = [
     '# Antigravity Auto-Plan Extension',
     '## Features',
-    '## Installation',
-    '## Configuration',
+    '## Installation & Setup',
+    '## Configuration Reference',
+    '## Commands Reference',
+    '## Architecture Overview',
     '## Troubleshooting',
-    '## Development'
+    '## Development & Testing'
   ];
 
   for (const heading of requiredHeadings) {
@@ -67,18 +85,20 @@ async function runPhase02ReadmeDocumentationTestSuite() {
   }
 
   // --------------------------------------------------------------------------
-  // Test 4: Verify core feature highlights & troubleshooting details
+  // Test 5: Verify core feature highlights & troubleshooting details
   // --------------------------------------------------------------------------
-  console.log('\n[Test 4] Verifying core technical concepts & troubleshooting documentation...');
+  console.log('\n[Test 5] Verifying core technical concepts & troubleshooting documentation...');
   const requiredKeywords = [
+    'Settings Panel',
     'Sidebar Control Center',
     'Focus-Free DOM Bridge',
     '3-Tier Resilient Transport',
     'Zero-Timeout Pre-Flight Guard',
     'Anti-Pollution Transcript Watcher',
-    'autoplan.oneClickSetup',
     'pkexec',
     'xdotool',
+    'autoplan.openSettings',
+    'autoplan.oneClickSetup',
     '🚀 Auto-Plan',
     'Linux Pre-Flight Failed',
     'Reload Window',

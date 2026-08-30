@@ -7,7 +7,6 @@ let createdStatusBarItems: any[] = [];
 let shownInfoMessages: string[] = [];
 let shownErrorMessages: string[] = [];
 let shownWarningMessages: string[] = [];
-let lastWebviewPostedMessage: any = null;
 
 const configStore: { [key: string]: any } = {
   defaultPromptTemplate: 'Implement the code closely following the file {xxx}',
@@ -15,9 +14,9 @@ const configStore: { [key: string]: any } = {
   promptText: 'Implement the code closely following the file {xxx}',
   repeatCount: 3,
   completionKeyword: 'Done skul9x.',
-  delayBetweenLoopsMs: 40,
+  delayBetweenLoopsMs: 30,
   timeoutPerLoopMinutes: 15,
-  focusDelayMs: 800,
+  focusDelayMs: 50,
   defaultPlanFolder: '',
   executionMode: 'auto',
   bridgeTimeoutMs: 3000,
@@ -135,26 +134,26 @@ import { KeyboardManager } from '../keyboardManager';
 import { TranscriptWatcher } from '../transcriptWatcher';
 import { PromptDispatcher, DispatchReadinessResult } from '../promptDispatcher';
 import { BridgeServer } from '../bridgeServer';
-import { scanPlanFolder } from '../planScanner';
 import { SidebarProvider } from '../sidebarProvider';
 import {
   buildLinuxElevationCommand,
-  buildWindowsElevationCommand
+  buildWindowsElevationCommand,
+  isBridgeInstalled
 } from '../workbenchInjector';
 
-async function runPhase05E2ECrossPlatformReleaseTests() {
+async function runPhase03E2ECrossPlatformReleaseFixTests() {
   console.log('======================================================================');
-  console.log('🚀 Running Phase 05: E2E Cross-Platform & Release Verification Tests');
+  console.log('🚀 Running Phase 03: Full Regression E2E Release Verification Tests');
   console.log('======================================================================\n');
 
   const rootDir = path.resolve(__dirname, '..', '..');
 
   // -------------------------------------------------------------------------
-  // 1. Linux & Windows Workflow Elevation & Fallback Matrix Simulation
+  // 1. Cross-Platform Elevation & Dispatcher Matrix
   // -------------------------------------------------------------------------
-  console.log('--- 1. Testing Elevation Command Builders & Multi-Platform Matrix ---');
-  
-  // 1.1 Linux Elevation Command (Polkit pkexec)
+  console.log('--- 1. Testing Elevation Command Builders & Transport Matrix ---');
+
+  // 1.1 Linux Elevation Command (pkexec)
   const linuxElev = buildLinuxElevationCommand('/tmp/src.tmp', '/usr/share/code/workbench.html');
   assert.ok(linuxElev.includes('pkexec'), 'Linux elevation command must use pkexec');
   assert.ok(linuxElev.includes('/tmp/src.tmp'), 'Linux command must reference source file');
@@ -165,8 +164,8 @@ async function runPhase05E2ECrossPlatformReleaseTests() {
   assert.ok(winElev.includes('powershell'), 'Windows elevation command must use powershell');
   assert.ok(winElev.includes('runAs'), 'Windows command must use Verb runAs');
 
-  // 1.3 Linux Pre-flight validation (< 100ms when neither Bridge nor xdotool present)
-  const emptyBridgeServer = new BridgeServer({ portStart: 49350, portEnd: 49360, windowKey: 'e2e-win-1' });
+  // 1.3 Dispatcher Fallback Readiness Checks
+  const emptyBridgeServer = new BridgeServer({ portStart: 49450, portEnd: 49460, windowKey: 'e2e-p03-win' });
   const mockKmNoXdotool = new KeyboardManager();
   mockKmNoXdotool.checkLinuxKeyboardPrerequisites = () => ({
     available: false,
@@ -178,13 +177,9 @@ async function runPhase05E2ECrossPlatformReleaseTests() {
     keyboardManager: mockKmNoXdotool
   });
 
-  const tStart = process.hrtime.bigint();
-  const unreadyResult: DispatchReadinessResult = unreadyDispatcher.validateDispatchReadiness('linux');
-  const tDurationMs = Number(process.hrtime.bigint() - tStart) / 1_000_000;
-  assert.strictEqual(unreadyResult.ready, false, 'Pre-flight check must return ready=false on Linux with no transport');
-  assert.ok(tDurationMs < 100, `Pre-flight validation must complete in < 100ms (actual: ${tDurationMs.toFixed(2)}ms)`);
+  const unreadyResult = unreadyDispatcher.validateDispatchReadiness('linux');
+  assert.strictEqual(unreadyResult.ready, false, 'Pre-flight check must return ready=false on Linux without xdotool or bridge');
 
-  // 1.4 Fallback to xdotool when present on Linux without Bridge
   const mockKmWithXdotool = new KeyboardManager();
   mockKmWithXdotool.checkLinuxKeyboardPrerequisites = () => ({ available: true, binary: '/usr/bin/xdotool' });
   const linuxFallbackDispatcher = new PromptDispatcher({
@@ -192,41 +187,72 @@ async function runPhase05E2ECrossPlatformReleaseTests() {
     keyboardManager: mockKmWithXdotool
   });
   const linuxFallbackRes = linuxFallbackDispatcher.validateDispatchReadiness('linux');
-  assert.strictEqual(linuxFallbackRes.ready, true, 'Linux fallback with xdotool must be ready');
+  assert.strictEqual(linuxFallbackRes.ready, true);
   assert.strictEqual(linuxFallbackRes.selectedTier, 'keyboard');
 
-  // 1.5 Fallback to PowerShell SendKeys on Windows without Bridge
   const winFallbackDispatcher = new PromptDispatcher({ bridgeServer: emptyBridgeServer });
   const winFallbackRes = winFallbackDispatcher.validateDispatchReadiness('win32');
-  assert.strictEqual(winFallbackRes.ready, true, 'Windows fallback must be ready via keyboard');
+  assert.strictEqual(winFallbackRes.ready, true);
   assert.strictEqual(winFallbackRes.selectedTier, 'keyboard');
 
-  console.log('✔ Cross-platform elevation commands & dispatch fallback matrix verified');
+  console.log('✔ Cross-platform elevation commands & dispatch fallback matrix verified.');
 
   // -------------------------------------------------------------------------
-  // 2. End-to-End Orchestrator + Dispatcher Pipeline (3-Phase Synthetic Run)
+  // 2. Port Range Dynamic Probing & Server Lifecycle
   // -------------------------------------------------------------------------
-  console.log('\n--- 2. Testing End-to-End 3-Phase Plan Synthetic Execution ---');
-  const tempPlanDir = path.join(os.tmpdir(), `ag_release_plan_${Date.now()}`);
-  const tempBrainDir = path.join(os.tmpdir(), `ag_release_brain_${Date.now()}`);
+  console.log('\n--- 2. Testing Port Range Probing & Bridge Server ---');
+  const customBridge = new BridgeServer({ portStart: 48860, portEnd: 48900, windowKey: 'p03-probe-win' });
+  const activePort = await customBridge.start();
+  assert.ok(activePort >= 48860 && activePort <= 48900, `Active port ${activePort} must be within range 48860-48900`);
+  assert.strictEqual(customBridge.getPort(), activePort);
+  assert.strictEqual(customBridge.isListening(), true);
+
+  // Status endpoint verification
+  const statusRes = await new Promise<any>((resolve) => {
+    http.get(`http://127.0.0.1:${activePort}/autoplan-status?clientVersion=1.4.0&windowKey=p03-probe-win`, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch {
+          resolve({});
+        }
+      });
+    }).on('error', () => resolve({}));
+  });
+
+  assert.strictEqual(statusRes.service, 'autoplan-bridge-server');
+  assert.strictEqual(statusRes.activeWindowKey, 'p03-probe-win');
+  assert.ok(customBridge.getConnectedClients().length > 0, 'BridgeServer should record connected client');
+
+  await customBridge.stop();
+  assert.strictEqual(customBridge.isListening(), false);
+  console.log('✔ Port range probing and Bridge Server lifecycle verified.');
+
+  // -------------------------------------------------------------------------
+  // 3. Multi-Phase Automated Execution Loop (Synthetic E2E Run)
+  // -------------------------------------------------------------------------
+  console.log('\n--- 3. Testing Multi-Phase Orchestrator & Dispatch Pipeline ---');
+  const tempPlanDir = path.join(os.tmpdir(), `ag_p03_plan_${Date.now()}`);
+  const tempBrainDir = path.join(os.tmpdir(), `ag_p03_brain_${Date.now()}`);
   fs.mkdirSync(tempPlanDir, { recursive: true });
   fs.mkdirSync(tempBrainDir, { recursive: true });
 
-  fs.writeFileSync(path.join(tempPlanDir, 'phase-01-init.md'), '# Phase 1: Init\nStatus: Pending');
-  fs.writeFileSync(path.join(tempPlanDir, 'phase-02-build.md'), '# Phase 2: Build\nStatus: Pending');
-  fs.writeFileSync(path.join(tempPlanDir, 'phase-03-test.md'), '# Phase 3: Test\nStatus: Pending');
+  fs.writeFileSync(path.join(tempPlanDir, 'phase-01-setup.md'), '# Phase 1: Setup\nStatus: Pending');
+  fs.writeFileSync(path.join(tempPlanDir, 'phase-02-core.md'), '# Phase 2: Core\nStatus: Pending');
+  fs.writeFileSync(path.join(tempPlanDir, 'phase-03-verify.md'), '# Phase 3: Verify\nStatus: Pending');
 
-  // Active BridgeServer with connected client for Focus-Free DOM Bridge flow
-  const activeBridgeServer = new BridgeServer({ portStart: 49370, portEnd: 49390, windowKey: 'e2e-release-win' });
-  const port = await activeBridgeServer.start();
+  const e2eBridgeServer = new BridgeServer({ portStart: 49470, portEnd: 49490, windowKey: 'p03-e2e-win' });
+  const e2ePort = await e2eBridgeServer.start();
 
-  // Simulate active connected client via HTTP
+  // Register client
   await new Promise((resolve) => {
     const req = http.request(
       {
         host: '127.0.0.1',
-        port,
-        path: '/autoplan-status?clientVersion=1.1.0&windowKey=e2e-release-win',
+        port: e2ePort,
+        path: '/autoplan-status?clientVersion=1.4.0&windowKey=p03-e2e-win',
         method: 'GET'
       },
       () => resolve(true)
@@ -235,16 +261,14 @@ async function runPhase05E2ECrossPlatformReleaseTests() {
     req.end();
   });
 
-  const dispatcherBridgeReady = new PromptDispatcher({ bridgeServer: activeBridgeServer });
-  const bridgeCheck = dispatcherBridgeReady.validateDispatchReadiness('linux');
-  assert.strictEqual(bridgeCheck.ready, true);
-  assert.strictEqual(bridgeCheck.selectedTier, 'domBridge');
+  const dispatcherReady = new PromptDispatcher({ bridgeServer: e2eBridgeServer });
+  assert.strictEqual(dispatcherReady.validateDispatchReadiness('win32').selectedTier, 'domBridge');
 
   const watcher = new TranscriptWatcher({
     brainDir: tempBrainDir,
     keyword: 'Done skul9x.',
     pollIntervalMs: 20,
-    settleQuietPeriodMs: 50
+    settleQuietPeriodMs: 40
   });
 
   const mockKb = new KeyboardManager({
@@ -254,49 +278,48 @@ async function runPhase05E2ECrossPlatformReleaseTests() {
 
   const startedPhases: string[] = [];
   const completedPhases: string[] = [];
-  let orchestratorFinished = false;
+  let allDone = false;
 
   const orchestrator = new Orchestrator({
     configProvider: () => ({
-      promptText: 'Static Prompt',
-      promptTemplate: 'Run phase: {file}',
-      defaultPromptTemplate: 'Run phase: {file}',
+      promptText: 'Implement phase: {file}',
+      promptTemplate: 'Implement phase: {file}',
+      defaultPromptTemplate: 'Implement phase: {file}',
       repeatCount: 3,
       completionKeyword: 'Done skul9x.',
-      delayBetweenLoopsMs: 30,
+      delayBetweenLoopsMs: 20,
       timeoutPerLoopMinutes: 1,
       focusDelayMs: 10
     }),
     keyboardManager: mockKb,
     transcriptWatcher: watcher,
-    promptDispatcher: dispatcherBridgeReady,
-    onPhaseStart: (phase) => startedPhases.push(phase.fileName),
-    onPhaseComplete: (phase) => completedPhases.push(phase.fileName),
-    onAllComplete: () => { orchestratorFinished = true; }
+    promptDispatcher: dispatcherReady,
+    onPhaseStart: (p) => startedPhases.push(p.fileName),
+    onPhaseComplete: (p) => completedPhases.push(p.fileName),
+    onAllComplete: () => { allDone = true; }
   });
 
-  // Background responder simulating agent writing transcripts and bridge client acking commands
-  let convIndex = 0;
-  const timer = setInterval(async () => {
+  let loopIndex = 0;
+  const responder = setInterval(async () => {
     // Ack pending bridge commands
-    const statusRes = await new Promise<any>((res) => {
-      http.get(`http://127.0.0.1:${port}/autoplan-status?windowKey=e2e-release-win`, (r) => {
+    const sRes = await new Promise<any>((resolve) => {
+      http.get(`http://127.0.0.1:${e2ePort}/autoplan-status?windowKey=p03-e2e-win`, (r) => {
         let b = '';
         r.on('data', chunk => b += chunk);
-        r.on('end', () => { try { res(JSON.parse(b)); } catch { res({}); } });
-      }).on('error', () => res({}));
+        r.on('end', () => { try { resolve(JSON.parse(b)); } catch { resolve({}); } });
+      }).on('error', () => resolve({}));
     });
 
-    if (statusRes.pendingCommands && statusRes.pendingCommands.length > 0) {
-      for (const cmd of statusRes.pendingCommands) {
+    if (sRes.pendingCommands && sRes.pendingCommands.length > 0) {
+      for (const cmd of sRes.pendingCommands) {
         const postData = JSON.stringify({
           commandId: cmd.id,
           status: 'submitClicked',
-          windowKey: 'e2e-release-win'
+          windowKey: 'p03-e2e-win'
         });
         const req = http.request({
           host: '127.0.0.1',
-          port,
+          port: e2ePort,
           path: '/autoplan-ack',
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) }
@@ -307,8 +330,8 @@ async function runPhase05E2ECrossPlatformReleaseTests() {
     }
 
     if (orchestrator.getState() === 'waiting') {
-      convIndex++;
-      const convId = `conv_release_${convIndex}_${Date.now()}`;
+      loopIndex++;
+      const convId = `conv_p03_${loopIndex}_${Date.now()}`;
       const logDir = path.join(tempBrainDir, convId, '.system_generated', 'logs');
       fs.mkdirSync(logDir, { recursive: true });
 
@@ -321,105 +344,105 @@ async function runPhase05E2ECrossPlatformReleaseTests() {
       });
       fs.writeFileSync(path.join(logDir, 'transcript.jsonl'), `${modelLine}\n`, 'utf8');
     }
-  }, 60);
+  }, 50);
 
-  const startRes = await orchestrator.startFolder(tempPlanDir);
-  clearInterval(timer);
-  await activeBridgeServer.stop();
+  const startSuccess = await orchestrator.startFolder(tempPlanDir);
+  clearInterval(responder);
+  await e2eBridgeServer.stop();
 
-  assert.strictEqual(startRes, true);
+  assert.strictEqual(startSuccess, true);
   assert.strictEqual(startedPhases.length, 3);
   assert.strictEqual(completedPhases.length, 3);
-  assert.strictEqual(orchestratorFinished, true);
+  assert.strictEqual(allDone, true);
 
-  console.log('✔ End-to-End Orchestrator pipeline with DOM Bridge and transcript events verified');
+  console.log('✔ Multi-phase automated execution loop verified.');
 
   // -------------------------------------------------------------------------
-  // 3. Sidebar Control Center Full Lifecycle & IPC Integration
+  // 4. Sidebar Control Center Webview IPC
   // -------------------------------------------------------------------------
-  console.log('\n--- 3. Testing Sidebar Control Center Full Lifecycle & Webview IPC ---');
-  let postedWebviewMessages: any[] = [];
-  const mockWebviewView: any = {
+  console.log('\n--- 4. Testing Sidebar Provider & Webview IPC ---');
+  let postedMessages: any[] = [];
+  const mockWebview: any = {
     webview: {
       options: {},
       html: '',
       cspSource: 'https://mock.csp',
       asWebviewUri: (uri: any) => uri,
       postMessage: async (msg: any) => {
-        postedWebviewMessages.push(msg);
+        postedMessages.push(msg);
         return true;
       },
       onDidReceiveMessage: (cb: any) => {
-        mockWebviewView._onDidReceiveMessage = cb;
+        mockWebview._onDidReceiveMessage = cb;
         return { dispose: () => {} };
       }
     }
   };
 
   const sidebarProvider = new SidebarProvider(mockContext.extensionUri, mockContext);
-  sidebarProvider.resolveWebviewView(mockWebviewView, {} as any, {} as any);
+  sidebarProvider.resolveWebviewView(mockWebview, {} as any, {} as any);
 
-  assert.ok(mockWebviewView._onDidReceiveMessage, 'Webview message listener must be registered');
+  // Send selectPlanFolder
+  await mockWebview._onDidReceiveMessage({ command: 'selectPlanFolder', folderPath: tempPlanDir });
+  const lastState = postedMessages.filter(m => m.type === 'stateUpdate').pop();
+  assert.ok(lastState, 'Sidebar must post stateUpdate after selecting folder');
+  assert.strictEqual(lastState.phases.length, 3);
 
-  // 3.1 Select Plan Folder IPC
-  await mockWebviewView._onDidReceiveMessage({ command: 'selectPlanFolder', folderPath: tempPlanDir });
-  const stateUpdateMsg = postedWebviewMessages.filter(m => m.type === 'stateUpdate').pop();
-  assert.ok(stateUpdateMsg, 'Sidebar must post stateUpdate after selectPlanFolder');
-  assert.strictEqual(stateUpdateMsg.phases.length, 3);
+  // Send togglePhase
+  await mockWebview._onDidReceiveMessage({ command: 'togglePhase', index: 0, selected: true });
+  await new Promise(r => setTimeout(r, 20));
+  const toggledState1 = postedMessages.filter(m => m.type === 'stateUpdate').pop();
+  assert.ok(toggledState1.selectedIndices.includes(0), 'selectedIndices should include 0 after toggling on');
 
-  // 3.2 Toggle Phase IPC
-  await mockWebviewView._onDidReceiveMessage({
-    command: 'togglePhase',
-    index: 1,
-    selected: false
-  });
-  const selectedStateMsg = postedWebviewMessages.filter(m => m.type === 'stateUpdate').pop();
-  assert.ok(selectedStateMsg);
+  await mockWebview._onDidReceiveMessage({ command: 'togglePhase', index: 0, selected: false });
+  await new Promise(r => setTimeout(r, 20));
+  const toggledState2 = postedMessages.filter(m => m.type === 'stateUpdate').pop();
+  assert.ok(!toggledState2.selectedIndices.includes(0), 'selectedIndices should not include 0 after toggling off');
 
-  console.log('✔ Sidebar Control Center scan, selection, and IPC state updates verified');
+  console.log('✔ Sidebar Provider Webview IPC communications verified.');
 
   // -------------------------------------------------------------------------
-  // 4. VSIX Package Integrity Verification
+  // 5. Release Package (.vsix) Integrity Verification
   // -------------------------------------------------------------------------
-  console.log('\n--- 4. Testing VSIX Release Package Integrity ---');
-  const pkgJsonPath = path.join(rootDir, 'package.json');
-  const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
-  const expectedVsixName = `antigravity-auto-plan-${pkg.version}.vsix`;
-  const expectedVsixPath = path.join(rootDir, expectedVsixName);
+  console.log('\n--- 5. Testing VSIX Package Integrity & Header ---');
+  const pkgJson = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+  const vsixFileName = `antigravity-auto-plan-${pkgJson.version}.vsix`;
+  let vsixPath = path.join(rootDir, vsixFileName);
 
-  // Match version-specific vsix or any existing antigravity-auto-plan-*.vsix file
-  let targetVsixPath = expectedVsixPath;
-  if (!fs.existsSync(targetVsixPath)) {
+  if (!fs.existsSync(vsixPath)) {
     const rootFiles = fs.readdirSync(rootDir);
-    const foundVsix = rootFiles.find(f => f.startsWith('antigravity-auto-plan-') && f.endsWith('.vsix'));
-    if (foundVsix) {
-      targetVsixPath = path.join(rootDir, foundVsix);
+    const candidate = rootFiles.find(f => f.startsWith('antigravity-auto-plan-') && f.endsWith('.vsix'));
+    if (candidate) {
+      vsixPath = path.join(rootDir, candidate);
     }
   }
 
-  assert.ok(fs.existsSync(targetVsixPath), `VSIX release archive must exist at ${targetVsixPath}`);
-  const stats = fs.statSync(targetVsixPath);
-  assert.ok(stats.size > 2000, `VSIX size must be > 2KB (actual: ${stats.size})`);
+  assert.ok(fs.existsSync(vsixPath), `VSIX package must exist at ${vsixPath}`);
+  const vsixStat = fs.statSync(vsixPath);
+  assert.ok(vsixStat.size > 2048, `VSIX package size must be > 2KB (actual: ${vsixStat.size} bytes)`);
 
-  // Verify Zip header: 50 4B 03 04
-  const fd = fs.openSync(targetVsixPath, 'r');
-  const header = Buffer.alloc(4);
-  fs.readSync(fd, header, 0, 4, 0);
-  fs.closeSync(fd);
-  assert.strictEqual(header.toString('hex'), '504b0304', 'VSIX archive must have valid ZIP magic header 504b0304');
+  const vsixFd = fs.openSync(vsixPath, 'r');
+  const magicBuf = Buffer.alloc(4);
+  fs.readSync(vsixFd, magicBuf, 0, 4, 0);
+  fs.closeSync(vsixFd);
 
-  // Clean up temp test dirs
+  assert.strictEqual(magicBuf.toString('hex'), '504b0304', 'VSIX archive must have valid ZIP magic bytes (50 4B 03 04)');
+  console.log(`✔ VSIX archive ${path.basename(vsixPath)} (${(vsixStat.size / 1024).toFixed(1)} KB) validated.`);
+
+  // Cleanup temporary directories
   try {
     fs.rmSync(tempPlanDir, { recursive: true, force: true });
     fs.rmSync(tempBrainDir, { recursive: true, force: true });
   } catch {}
 
   console.log('\n======================================================================');
-  console.log('🎉 ALL PHASE 05 E2E CROSS-PLATFORM RELEASE TESTS PASSED SUCCESSFULLY!');
+  console.log('🎉 ALL PHASE 03 E2E RELEASE VERIFICATION TESTS PASSED SUCCESSFULLY!');
   console.log('======================================================================\n');
 }
 
-runPhase05E2ECrossPlatformReleaseTests().catch((err) => {
-  console.error('\n❌ Phase 05 E2E Cross-Platform Test Failed:', err);
+runPhase03E2ECrossPlatformReleaseFixTests().then(() => {
+  process.exit(0);
+}).catch((err) => {
+  console.error('\n❌ Phase 03 E2E Release Verification Test Failed:', err);
   process.exit(1);
 });

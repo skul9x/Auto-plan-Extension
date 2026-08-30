@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { getWorkbenchPath, isBridgeInstalled, BACKUP_SUFFIX } from './workbenchInjector';
 import { getConfig, AutoPlanConfig } from './config';
+import type { PlanPhasesAuditReport, PhaseDiagnosticInfo, PhaseStallReason } from './planScanner';
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
@@ -14,7 +15,8 @@ export type LogComponent =
   | 'INJECTOR'
   | 'DOM'
   | 'ORCHESTRATOR'
-  | 'SETTINGS';
+  | 'SETTINGS'
+  | 'PHASE';
 
 export interface LogEntry {
   id: string;
@@ -67,6 +69,7 @@ export interface EnvironmentReport {
     maxLogEntries: number;
     autoOpenBridgeLogOnError: boolean;
   };
+  planPhases?: PlanPhasesAuditReport;
 }
 
 /**
@@ -119,6 +122,7 @@ export class DebugLogger {
   private listeners: Set<(entry: LogEntry) => void> = new Set();
   private outputChannel: vscode.OutputChannel | vscode.LogOutputChannel | null = null;
   private bridgeServerInstance: any = null;
+  private planAuditProvider: (() => PlanPhasesAuditReport | null) | null = null;
   private sequenceCounter: number = 0;
 
   constructor(capacity?: number) {
@@ -141,6 +145,13 @@ export class DebugLogger {
    */
   public registerBridgeServer(server: any): void {
     this.bridgeServerInstance = server;
+  }
+
+  /**
+   * Registers a provider callback that supplies real-time plan phase audit telemetry
+   */
+  public registerPlanAuditProvider(provider: () => PlanPhasesAuditReport | null): void {
+    this.planAuditProvider = provider;
   }
 
   /**
@@ -230,6 +241,51 @@ export class DebugLogger {
 
   public error(component: LogComponent, message: string, details?: any, error?: string | Error): LogEntry {
     return this.log('ERROR', component, message, details, error);
+  }
+
+  /**
+   * Logs a high-visibility phase lifecycle transition event with component 'PHASE'
+   */
+  public logPhaseEvent(
+    phase: PhaseDiagnosticInfo,
+    event: 'START' | 'COMPLETE' | 'FAIL' | 'SKIP' | 'STALL',
+    message: string,
+    details?: any
+  ): LogEntry {
+    let level: LogLevel = 'INFO';
+    if (event === 'FAIL') {
+      level = 'ERROR';
+    } else if (event === 'SKIP' || event === 'STALL') {
+      level = 'WARN';
+    }
+
+    const phaseNum = phase.phaseNumber !== undefined ? phase.phaseNumber : phase.index + 1;
+    const formattedMessage = `[PHASE_${event}] Phase ${phaseNum} (${phase.fileName}): ${message}`;
+
+    const enrichedDetails = {
+      phaseIndex: phase.index,
+      phaseNumber: phaseNum,
+      fileName: phase.fileName,
+      status: phase.status,
+      event,
+      ...(details !== undefined ? (typeof details === 'object' && details !== null ? details : { details }) : {})
+    };
+
+    let errorToLog: string | Error | undefined = undefined;
+    if (event === 'FAIL') {
+      errorToLog = phase.error || details?.error || message;
+    } else if (details?.error) {
+      errorToLog = details.error;
+    }
+
+    return this.log(level, 'PHASE', formattedMessage, enrichedDetails, errorToLog);
+  }
+
+  /**
+   * Logs a diagnosed stall / blocker event for a phase
+   */
+  public logPhaseStall(phase: PhaseDiagnosticInfo, stallReason: PhaseStallReason): LogEntry {
+    return this.logPhaseEvent(phase, 'STALL', stallReason.description, { stallReason });
   }
 
   /**
@@ -351,7 +407,10 @@ export class DebugLogger {
   /**
    * Compiles comprehensive environment and diagnostic metadata
    */
-  public buildEnvironmentReport(serverOverride?: any): EnvironmentReport {
+  public buildEnvironmentReport(
+    serverOverride?: any,
+    planAuditOverride?: PlanPhasesAuditReport
+  ): EnvironmentReport {
     // OS details
     const osInfo = {
       platform: process.platform,
@@ -469,6 +528,19 @@ export class DebugLogger {
       // Fallback
     }
 
+    // Phase telemetry audit snapshot
+    let planPhases: PlanPhasesAuditReport | undefined = planAuditOverride;
+    if (!planPhases && this.planAuditProvider) {
+      try {
+        const providerResult = this.planAuditProvider();
+        if (providerResult) {
+          planPhases = providerResult;
+        }
+      } catch (providerErr) {
+        console.error('[DebugLogger] Error in planAuditProvider callback:', providerErr);
+      }
+    }
+
     return {
       timestamp: new Date().toISOString(),
       os: osInfo,
@@ -476,20 +548,87 @@ export class DebugLogger {
       vscode: vscodeInfo,
       domBridge: domBridgeInfo,
       server: serverInfo,
-      config: configInfo
+      config: configInfo,
+      ...(planPhases ? { planPhases } : {})
     };
   }
 
   /**
    * Formats a complete diagnostic report string in clean Markdown format
    */
-  public exportDiagnosticReportToString(maxEntries: number = 100, serverOverride?: any): string {
-    const report = this.buildEnvironmentReport(serverOverride);
+  public exportDiagnosticReportToString(
+    maxEntries: number = 100,
+    serverOverride?: any,
+    planAuditOverride?: PlanPhasesAuditReport
+  ): string {
+    const report = this.buildEnvironmentReport(serverOverride, planAuditOverride);
     const recentLogs = this.getRecentEntries(maxEntries);
 
     const isBridgeInstalled = report.domBridge.installed;
     const isServerListening = report.server.activePort !== null;
     const hasConnectedClients = report.server.connectedClientsCount > 0;
+
+    // Build Section 2: Phase Execution & Stall Diagnostics
+    const phaseSectionLines: string[] = ['## 2. Phase Execution & Stall Diagnostics', ''];
+    if (report.planPhases && report.planPhases.phases && report.planPhases.phases.length > 0) {
+      const pp = report.planPhases;
+      const runningCount = pp.phases.filter(p => p.status === 'Running').length;
+      const healthStatus = pp.hasBlockers || pp.failedCount > 0
+        ? `⚠️ Stall Detected${pp.primaryBlockerReason ? ` (${pp.primaryBlockerReason})` : ''}`
+        : '✅ Normal';
+
+      phaseSectionLines.push(`- **Plan Folder:** \`${pp.folderPath}\``);
+      phaseSectionLines.push(
+        `- **Summary:** ${pp.totalPhases} total phases (${pp.completedCount} Completed, ${runningCount} Running, ${pp.pendingCount} Pending, ${pp.failedCount} Failed${pp.skippedCount > 0 ? `, ${pp.skippedCount} Skipped` : ''})`
+      );
+      phaseSectionLines.push(`- **Execution Health:** ${healthStatus}`);
+      phaseSectionLines.push('');
+      phaseSectionLines.push('| # | Phase File | Status | Duration | Stall / Blocker Reason | Action / Remediation |');
+      phaseSectionLines.push('| :--- | :--- | :--- | :--- | :--- | :--- |');
+
+      for (const p of pp.phases) {
+        const numStr = String(p.phaseNumber !== undefined ? p.phaseNumber : p.index + 1).padStart(2, '0');
+        const fileStr = `\`${p.fileName}\``;
+        let statusStr = p.status as string;
+        if (p.status === 'Completed') {
+          statusStr = '✅ Completed';
+        } else if (p.status === 'Running') {
+          statusStr = '🔄 Running';
+        } else if (p.status === 'Pending') {
+          statusStr = '⏳ Pending';
+        } else if (p.status === 'Failed') {
+          statusStr = '❌ Failed';
+        } else if (p.status === 'Skipped') {
+          statusStr = '⏭️ Skipped';
+        }
+
+        const durationStr = p.executionTimeMs !== undefined && p.executionTimeMs > 0
+          ? `${(p.executionTimeMs / 1000).toFixed(1)}s`
+          : '-';
+
+        let stallStr = '-';
+        if (p.stallReason?.description) {
+          stallStr = p.stallReason.description.replace(/\|/g, '\\|');
+        } else if (p.status === 'Completed') {
+          stallStr = 'None';
+        } else if (p.status === 'Running') {
+          stallStr = 'None';
+        }
+
+        let actionStr = '-';
+        if (p.stallReason?.remediationAction) {
+          actionStr = p.stallReason.remediationAction.replace(/\|/g, '\\|');
+        }
+
+        phaseSectionLines.push(`| ${numStr} | ${fileStr} | ${statusStr} | ${durationStr} | ${stallStr} | ${actionStr} |`);
+      }
+    } else if (report.planPhases) {
+      phaseSectionLines.push(`- **Plan Folder:** \`${report.planPhases.folderPath}\``);
+      phaseSectionLines.push(`- **Summary:** 0 total phases found`);
+      phaseSectionLines.push(`- **Execution Health:** ${report.planPhases.primaryBlockerReason ? `⚠️ ${report.planPhases.primaryBlockerReason}` : '✅ Normal'}`);
+    } else {
+      phaseSectionLines.push('*(No active plan folder or phase telemetry registered)*');
+    }
 
     const lines: string[] = [
       '# Auto-Plan DOM Bridge Diagnostic Report',
@@ -524,7 +663,11 @@ export class DebugLogger {
       '',
       '---',
       '',
-      '## 2. Component Health Status Checklist',
+      ...phaseSectionLines,
+      '',
+      '---',
+      '',
+      '## 3. Component Health Status Checklist',
       '',
       '- [x] **Extension Host Runtime**: Operational',
       '- [x] **Configuration Subsystem**: Loaded and verified',
@@ -534,7 +677,7 @@ export class DebugLogger {
       '',
       '---',
       '',
-      `## 3. Recent Log Traces (Last ${recentLogs.length} entries)`,
+      `## 4. Recent Log Traces (Last ${recentLogs.length} entries)`,
       '',
       '```text',
       ...(recentLogs.length > 0
@@ -553,9 +696,10 @@ export class DebugLogger {
   public async exportLogToFile(
     targetFilePath: string,
     maxEntries: number = 100,
-    serverOverride?: any
+    serverOverride?: any,
+    planAuditOverride?: PlanPhasesAuditReport
   ): Promise<string> {
-    const reportContent = this.exportDiagnosticReportToString(maxEntries, serverOverride);
+    const reportContent = this.exportDiagnosticReportToString(maxEntries, serverOverride, planAuditOverride);
     const targetDir = path.dirname(targetFilePath);
 
     if (!fs.existsSync(targetDir)) {
@@ -585,3 +729,17 @@ export class DebugLogger {
 
 export const debugLogger = new DebugLogger();
 export default debugLogger;
+
+export {
+  PhaseStallCode,
+  PhaseStallReason,
+  PhaseDiagnosticInfo,
+  PlanPhasesAuditReport,
+  PhaseExecutionContext,
+  analyzePhaseStallReason,
+  auditPlanPhases,
+  auditPlanPhasesAsync,
+  inspectPhaseHeader,
+  inspectPhaseHeaderAsync
+} from './planScanner';
+

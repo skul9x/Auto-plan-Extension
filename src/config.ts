@@ -24,6 +24,7 @@ export interface AutoPlanConfig {
   autoInjectWorkbench?: boolean;
   suppressFallbackWarnings?: boolean;
   enableVerboseBridgeLogs?: boolean;
+  enablePhaseAuditLogging?: boolean;
   maxLogEntries?: number;
   autoOpenBridgeLogOnError?: boolean;
 }
@@ -52,6 +53,7 @@ export const DEFAULT_CONFIG: AutoPlanConfig = {
   autoInjectWorkbench: true,
   suppressFallbackWarnings: true,
   enableVerboseBridgeLogs: false,
+  enablePhaseAuditLogging: true,
   maxLogEntries: 500,
   autoOpenBridgeLogOnError: false
 };
@@ -92,6 +94,7 @@ export function getConfig(): AutoPlanConfig {
     autoInjectWorkbench: config.get<boolean>('autoInjectWorkbench', DEFAULT_CONFIG.autoInjectWorkbench ?? true),
     suppressFallbackWarnings: config.get<boolean>('suppressFallbackWarnings', DEFAULT_CONFIG.suppressFallbackWarnings ?? true),
     enableVerboseBridgeLogs: config.get<boolean>('enableVerboseBridgeLogs', DEFAULT_CONFIG.enableVerboseBridgeLogs ?? false),
+    enablePhaseAuditLogging: config.get<boolean>('enablePhaseAuditLogging', DEFAULT_CONFIG.enablePhaseAuditLogging ?? true),
     maxLogEntries: config.get<number>('maxLogEntries', DEFAULT_CONFIG.maxLogEntries ?? 500),
     autoOpenBridgeLogOnError: config.get<boolean>('autoOpenBridgeLogOnError', DEFAULT_CONFIG.autoOpenBridgeLogOnError ?? false)
   };

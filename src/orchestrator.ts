@@ -20,8 +20,14 @@ import {
   PhaseFile,
   scanPlanFolder,
   renderPromptTemplate,
-  normalizePath
+  normalizePath,
+  analyzePhaseStallReason,
+  PhaseDiagnosticInfo,
+  PlanPhasesAuditReport,
+  PhaseExecutionContext,
+  PhaseStallReason
 } from './planScanner';
+import { debugLogger as defaultDebugLogger, DebugLogger } from './debugLogger';
 
 export type OrchestratorState =
   | 'idle'
@@ -85,6 +91,9 @@ export interface OrchestratorOptions {
   keyboardManager?: KeyboardManager;
   transcriptWatcher?: TranscriptWatcher;
   promptDispatcher?: PromptDispatcher;
+  debugLogger?: DebugLogger;
+  stallTimeoutMs?: number;
+  stallWatchdogThresholdMs?: number;
   actionableErrorNotifier?: ActionableErrorNotifier;
   onStateChange?: (info: OrchestratorProgressInfo) => void;
   onIterationComplete?: (iteration: number, total: number, result: CompletionResult) => void;
@@ -103,10 +112,13 @@ export class Orchestrator extends EventEmitter {
   private totalIterations: number = 0;
   private currentPhaseIndex: number = -1;
   private phases: PhaseItem[] = [];
+  private currentPlanFolder: string | null = null;
   private isAborted: boolean = false;
   private isSkippingCurrentPhase: boolean = false;
   private delayReject: ((reason?: any) => void) | null = null;
   private delayTimer: NodeJS.Timeout | null = null;
+  private stallWatchdogTimer: NodeJS.Timeout | null = null;
+  private stallWatchdogThresholdMs: number = 120000;
   private lastConversationId: string | undefined = undefined;
   private lastPreflightResult: DispatchReadinessResult | null = null;
 
@@ -114,6 +126,7 @@ export class Orchestrator extends EventEmitter {
   private keyboardManager: KeyboardManager;
   private transcriptWatcher: TranscriptWatcher;
   private promptDispatcher: PromptDispatcher;
+  private debugLogger: DebugLogger;
   private actionableErrorNotifier: ActionableErrorNotifier;
 
   constructor(options?: OrchestratorOptions) {
@@ -122,6 +135,10 @@ export class Orchestrator extends EventEmitter {
     this.configProvider = options?.configProvider ?? getConfig;
     this.keyboardManager = options?.keyboardManager ?? defaultKeyboardManager;
     this.transcriptWatcher = options?.transcriptWatcher ?? defaultTranscriptWatcher;
+    this.debugLogger = options?.debugLogger ?? defaultDebugLogger;
+    this.stallWatchdogThresholdMs =
+      options?.stallTimeoutMs ?? options?.stallWatchdogThresholdMs ?? 120000;
+
     this.promptDispatcher =
       options?.promptDispatcher ??
       (options?.keyboardManager
@@ -130,6 +147,9 @@ export class Orchestrator extends EventEmitter {
             configProvider: options?.configProvider ?? getConfig
           })
         : defaultPromptDispatcher);
+
+    // Register this orchestrator instance as the Plan Audit provider for DebugLogger
+    this.debugLogger.registerPlanAuditProvider(() => this.getPhaseAuditReport());
 
     this.actionableErrorNotifier =
       options?.actionableErrorNotifier ??
@@ -196,8 +216,231 @@ export class Orchestrator extends EventEmitter {
     return this.promptDispatcher;
   }
 
+  public getDebugLogger(): DebugLogger {
+    return this.debugLogger;
+  }
+
   public getLastPreflightResult(): DispatchReadinessResult | null {
     return this.lastPreflightResult;
+  }
+
+  /**
+   * Converts a runtime PhaseItem to PhaseDiagnosticInfo.
+   */
+  public toPhaseDiagnosticInfo(phase: PhaseItem): PhaseDiagnosticInfo {
+    const phaseNum = phase.phaseNumber || phase.index + 1;
+    const isCompleted = phase.status === 'Completed';
+    const isSelected = phase.status !== 'Skipped';
+    let executionTimeMs: number | undefined = undefined;
+    if (phase.startTime && phase.endTime) {
+      executionTimeMs = phase.endTime - phase.startTime;
+    } else if (phase.startTime) {
+      executionTimeMs = Date.now() - phase.startTime;
+    }
+
+    return {
+      index: phase.index,
+      phaseNumber: phaseNum,
+      fileName: phase.fileName,
+      filePath: phase.filePath,
+      status: phase.status,
+      isCompleted,
+      isSelected,
+      error: phase.error,
+      conversationId: phase.conversationId,
+      executionTimeMs
+    };
+  }
+
+  /**
+   * Starts the proactive stall watchdog timer for the currently executing phase.
+   */
+  private startStallWatchdog(phase: PhaseItem, phaseIndex: number, thresholdMs: number): void {
+    this.stopStallWatchdog();
+    if (thresholdMs <= 0) return;
+
+    this.stallWatchdogTimer = setTimeout(() => {
+      if (
+        this.isRunning() &&
+        this.currentPhaseIndex === phaseIndex &&
+        (phase.status === 'Running' || this.state === 'waiting')
+      ) {
+        const diag = this.toPhaseDiagnosticInfo(phase);
+        const stallReason: PhaseStallReason = {
+          code: 'AI_RESPONSE_TIMEOUT',
+          description: `Phase ${phase.phaseNumber || phaseIndex + 1} (${phase.fileName}) has been waiting for AI response for > ${(thresholdMs / 1000).toFixed(0)}s without completion.`,
+          remediationAction: 'Check AI output transcript or increase timeoutPerLoopMinutes setting'
+        };
+        this.debugLogger.logPhaseStall(diag, stallReason);
+        this.emit(
+          'warning',
+          `[Watchdog] Phase ${phase.phaseNumber || phaseIndex + 1} (${phase.fileName}) wait duration exceeded ${(thresholdMs / 1000).toFixed(0)}s`
+        );
+      }
+    }, thresholdMs);
+
+    if (this.stallWatchdogTimer && typeof this.stallWatchdogTimer.unref === 'function') {
+      this.stallWatchdogTimer.unref();
+    }
+  }
+
+  /**
+   * Stops the proactive stall watchdog timer.
+   */
+  private stopStallWatchdog(): void {
+    if (this.stallWatchdogTimer) {
+      clearTimeout(this.stallWatchdogTimer);
+      this.stallWatchdogTimer = null;
+    }
+  }
+
+  /**
+   * Diagnoses and logs cascade blockers for subsequent phases when an active phase errors.
+   */
+  private diagnoseSubsequentPhasesOnFailure(failedIndex: number, failedError?: string): void {
+    const failedPhase = this.phases[failedIndex];
+    const phaseNum = failedPhase ? failedPhase.phaseNumber || failedIndex + 1 : failedIndex + 1;
+    const phaseName = failedPhase ? failedPhase.fileName : `Phase ${phaseNum}`;
+
+    for (let j = failedIndex + 1; j < this.phases.length; j++) {
+      const nextPhase = this.phases[j];
+      const stallReason: PhaseStallReason = {
+        code: 'BLOCKED_BY_PREVIOUS_FAILURE',
+        description: `Blocked by failure in previous Phase ${phaseNum} (${phaseName})${failedError ? `: ${failedError}` : ''}`,
+        blockedByPhaseIndex: failedIndex,
+        blockedByPhaseName: phaseName,
+        remediationAction: `Fix error in Phase ${phaseNum} (${phaseName}) or restart automation`
+      };
+      this.debugLogger.logPhaseStall(this.toPhaseDiagnosticInfo(nextPhase), stallReason);
+    }
+  }
+
+  /**
+   * Returns a real-time PlanPhasesAuditReport reflecting current execution and phase states.
+   */
+  public getPhaseAuditReport(): PlanPhasesAuditReport {
+    const folder =
+      this.currentPlanFolder ||
+      (this.phases.length > 0
+        ? path.dirname(this.phases[0].nativePath || this.phases[0].filePath)
+        : '');
+    const normFolder = normalizePath(folder ? path.resolve(folder) : '');
+
+    if (this.phases.length === 0) {
+      return {
+        folderPath: normFolder,
+        totalPhases: 0,
+        completedCount: 0,
+        pendingCount: 0,
+        failedCount: 0,
+        skippedCount: 0,
+        phases: [],
+        hasBlockers: false
+      };
+    }
+
+    const executionContext: PhaseExecutionContext = {
+      orchestratorState: this.state,
+      currentPhaseIndex: this.currentPhaseIndex,
+      preflightReady: this.lastPreflightResult ? this.lastPreflightResult.ready : undefined,
+      preflightError: this.lastPreflightResult?.errorMessage,
+      activePhases: this.phases.map((p) => ({
+        index: p.index,
+        phaseNumber: p.phaseNumber,
+        fileName: p.fileName,
+        status: p.status,
+        error: p.error,
+        conversationId: p.conversationId,
+        startTime: p.startTime,
+        endTime: p.endTime,
+        executionTimeMs:
+          p.startTime && p.endTime
+            ? p.endTime - p.startTime
+            : p.startTime
+            ? Date.now() - p.startTime
+            : undefined
+      }))
+    };
+
+    const diagnosticPhases: PhaseDiagnosticInfo[] = this.phases.map((p, idx) => {
+      const isSelected = p.status !== 'Skipped';
+      const diag: PhaseDiagnosticInfo = {
+        index: p.index,
+        phaseNumber: p.phaseNumber || idx + 1,
+        fileName: p.fileName,
+        filePath: p.filePath,
+        status: p.status,
+        isCompleted: p.status === 'Completed',
+        isSelected,
+        error: p.error,
+        conversationId: p.conversationId,
+        executionTimeMs:
+          p.startTime && p.endTime
+            ? p.endTime - p.startTime
+            : p.startTime
+            ? Date.now() - p.startTime
+            : undefined
+      };
+      return diag;
+    });
+
+    for (let i = 0; i < diagnosticPhases.length; i++) {
+      diagnosticPhases[i].stallReason = analyzePhaseStallReason(
+        diagnosticPhases[i],
+        diagnosticPhases,
+        i,
+        executionContext
+      );
+    }
+
+    const totalPhases = diagnosticPhases.length;
+    const completedCount = diagnosticPhases.filter((p) => p.status === 'Completed').length;
+    const pendingCount = diagnosticPhases.filter((p) => p.status === 'Pending').length;
+    const failedCount = diagnosticPhases.filter((p) => p.status === 'Failed').length;
+    const skippedCount = diagnosticPhases.filter((p) => p.status === 'Skipped').length;
+    const runningPhase = diagnosticPhases.find((p) => p.status === 'Running');
+
+    const hasBlockers =
+      failedCount > 0 ||
+      executionContext.preflightReady === false ||
+      diagnosticPhases.some(
+        (p) =>
+          p.stallReason?.code === 'BLOCKED_BY_PREVIOUS_FAILURE' ||
+          p.stallReason?.code === 'PREFLIGHT_TRANSPORT_FAILURE' ||
+          p.stallReason?.code === 'UNRECOGNIZED_HEADER_SYNTAX'
+      );
+
+    let primaryBlockerReason: string | undefined = undefined;
+    if (executionContext.preflightReady === false || executionContext.preflightError) {
+      primaryBlockerReason =
+        executionContext.preflightError || 'Pre-flight transport readiness check failed';
+    } else if (failedCount > 0) {
+      const failed = diagnosticPhases.find((p) => p.status === 'Failed');
+      primaryBlockerReason = failed?.error || `Phase ${failed?.phaseNumber || ''} failed`;
+    } else {
+      const blockerPhase = diagnosticPhases.find(
+        (p) =>
+          p.stallReason?.code === 'BLOCKED_BY_PREVIOUS_FAILURE' ||
+          p.stallReason?.code === 'PREFLIGHT_TRANSPORT_FAILURE' ||
+          p.stallReason?.code === 'UNRECOGNIZED_HEADER_SYNTAX'
+      );
+      if (blockerPhase) {
+        primaryBlockerReason = blockerPhase.stallReason?.description;
+      }
+    }
+
+    return {
+      folderPath: normFolder,
+      totalPhases,
+      completedCount,
+      pendingCount,
+      failedCount,
+      skippedCount,
+      runningPhase,
+      phases: diagnosticPhases,
+      hasBlockers,
+      primaryBlockerReason
+    };
   }
 
   /**
@@ -303,7 +546,10 @@ export class Orchestrator extends EventEmitter {
       return false;
     }
 
+    this.currentPlanFolder = folderPath;
     this.setState('scanning', `Scanning plan folder: ${folderPath}`);
+    this.debugLogger.info('ORCHESTRATOR', `Scanning plan folder: ${folderPath}`);
+
     const phaseFiles = scanPlanFolder(folderPath);
 
     this.phases = phaseFiles.map((pf, idx) => ({
@@ -335,6 +581,10 @@ export class Orchestrator extends EventEmitter {
       throw new Error('phaseFiles array must not be empty');
     }
 
+    const firstItem = phaseFiles[0];
+    const firstPath = typeof firstItem === 'string' ? firstItem : firstItem.filePath;
+    this.currentPlanFolder = path.dirname(path.resolve(firstPath));
+
     // Pre-flight health guard check (< 100ms fail-fast)
     const baseConfig = this.configProvider();
     const config: AutoPlanConfig = {
@@ -360,6 +610,11 @@ export class Orchestrator extends EventEmitter {
       const mode = config.executionMode || 'auto';
       const detail = readiness.errorMessage || 'No usable prompt transport available.';
       const errorMsg = `Pre-flight check failed for selected mode '${mode}'. ${detail}`;
+      this.debugLogger.warn('DISPATCHER', errorMsg, {
+        stallCode: 'PREFLIGHT_TRANSPORT_FAILURE',
+        executionMode: mode,
+        readiness
+      });
       this.setState('error', errorMsg);
       this.emit('error', new Error(errorMsg));
       await this.showPreflightActionableNotification(errorMsg);
@@ -367,6 +622,7 @@ export class Orchestrator extends EventEmitter {
     }
 
     if (readiness.warningMessage && readiness.requiresForegroundFocus) {
+      this.debugLogger.warn('DISPATCHER', readiness.warningMessage);
       this.emit('warning', readiness.warningMessage);
     }
 
@@ -429,6 +685,7 @@ export class Orchestrator extends EventEmitter {
     }
 
     this.isSkippingCurrentPhase = true;
+    this.stopStallWatchdog();
 
     if (this.delayTimer) {
       clearTimeout(this.delayTimer);
@@ -481,6 +738,18 @@ export class Orchestrator extends EventEmitter {
       const mode = config.executionMode || 'auto';
       const detail = readiness.errorMessage || 'No usable prompt transport available.';
       const errorMsg = `Pre-flight check failed for selected mode '${mode}'. ${detail}`;
+      this.debugLogger.warn('DISPATCHER', errorMsg, {
+        stallCode: 'PREFLIGHT_TRANSPORT_FAILURE',
+        executionMode: mode,
+        readiness
+      });
+      if (this.phases.length > 0) {
+        this.debugLogger.logPhaseStall(this.toPhaseDiagnosticInfo(this.phases[0]), {
+          code: 'PREFLIGHT_TRANSPORT_FAILURE',
+          description: errorMsg,
+          remediationAction: 'Run 1-Click DOM Bridge Setup or check transport settings'
+        });
+      }
       this.setState('error', errorMsg);
       this.emit('error', new Error(errorMsg));
       await this.showPreflightActionableNotification(errorMsg);
@@ -488,6 +757,7 @@ export class Orchestrator extends EventEmitter {
     }
 
     if (readiness.warningMessage && readiness.requiresForegroundFocus) {
+      this.debugLogger.warn('DISPATCHER', readiness.warningMessage);
       this.emit('warning', readiness.warningMessage);
     }
 
@@ -513,7 +783,21 @@ export class Orchestrator extends EventEmitter {
         phase.status = 'Running';
         phase.startTime = Date.now();
 
-        // 1. Emit Phase Start
+        // 1. Render Prompt Template & Emit Phase Start Event
+        const template = config.promptTemplate || config.promptText || DEFAULT_PROMPT_TEMPLATE;
+        const renderedPrompt = renderPromptTemplate(template, phase.filePath);
+
+        this.debugLogger.logPhaseEvent(
+          this.toPhaseDiagnosticInfo(phase),
+          'START',
+          `Starting execution for ${phase.fileName}`,
+          {
+            phaseIndex: i,
+            filePath: phase.filePath,
+            promptPreview: this.debugLogger.sanitizePrompt(renderedPrompt)
+          }
+        );
+
         this.emit('phaseStart', phase, i, this.phases.length, phase.fileName, phase.filePath);
 
         // 2. Timestamp & Reset
@@ -521,9 +805,6 @@ export class Orchestrator extends EventEmitter {
 
         // 3. New Conversation Trigger, Focus, Paste & Submit via PromptDispatcher (3-Tier)
         this.setState('sending', `Phase ${i + 1}/${this.phases.length}: Sending prompt for ${phase.fileName}`);
-        
-        const template = config.promptTemplate || config.promptText || DEFAULT_PROMPT_TEMPLATE;
-        const renderedPrompt = renderPromptTemplate(template, phase.filePath);
 
         const dispatchOptions: DispatchOptions = {
           mode: config.executionMode,
@@ -549,6 +830,17 @@ export class Orchestrator extends EventEmitter {
             durationMs: 0,
             error: errMsg
           };
+          this.debugLogger.logPhaseEvent(
+            this.toPhaseDiagnosticInfo(phase),
+            'FAIL',
+            `Prompt dispatch failed for ${phase.fileName}: ${errMsg}`,
+            {
+              phaseIndex: i,
+              error: errMsg,
+              stack: dispatchErr?.stack
+            }
+          );
+          this.diagnoseSubsequentPhasesOnFailure(i, errMsg);
           throw dispatchErr;
         }
 
@@ -557,67 +849,162 @@ export class Orchestrator extends EventEmitter {
           phase.endTime = Date.now();
           phase.error = dispatchResult.error || 'Prompt dispatch failed';
           phase.dispatchResult = dispatchResult;
+          this.debugLogger.logPhaseEvent(
+            this.toPhaseDiagnosticInfo(phase),
+            'FAIL',
+            `Prompt dispatch failed for ${phase.fileName}: ${phase.error}`,
+            { phaseIndex: i, dispatchResult }
+          );
+          this.diagnoseSubsequentPhasesOnFailure(i, phase.error);
           throw new Error(phase.error);
         }
 
+        this.debugLogger.info(
+          'DISPATCHER',
+          `Prompt dispatched for ${phase.fileName} via ${dispatchResult.tier} tier in ${dispatchResult.durationMs}ms`,
+          {
+            phaseIndex: i,
+            fileName: phase.fileName,
+            tier: dispatchResult.tier,
+            durationMs: dispatchResult.durationMs,
+            success: dispatchResult.success
+          }
+        );
+
         if (this.isAborted) break;
         if (this.isSkippingCurrentPhase) {
+          this.stopStallWatchdog();
           phase.status = 'Skipped';
           phase.endTime = Date.now();
+          this.debugLogger.logPhaseEvent(
+            this.toPhaseDiagnosticInfo(phase),
+            'SKIP',
+            `Phase ${phase.phaseNumber || i + 1} (${phase.fileName}) skipped by user`,
+            { phaseIndex: i }
+          );
           this.emit('skipped', phase);
           this.isSkippingCurrentPhase = false;
           continue;
         }
 
-        // 6. Anti-Pollution Watcher: wait for new conversation created after phaseStartTime
+        // 6. Anti-Pollution Watcher & Proactive Stall Watchdog
         this.setState('waiting', `Phase ${i + 1}/${this.phases.length}: Waiting for completion of ${phase.fileName}`);
+        this.debugLogger.info(
+          'ORCHESTRATOR',
+          `Watching transcript for ${phase.fileName} starting from timestamp ${phaseStartTime}`,
+          {
+            phaseIndex: i,
+            fileName: phase.fileName,
+            phaseStartTime,
+            pollIntervalMs: this.transcriptWatcher.getOptions().pollIntervalMs
+          }
+        );
+
+        const watchdogThreshold = config.timeoutPerLoopMinutes
+          ? Math.min(this.stallWatchdogThresholdMs, config.timeoutPerLoopMinutes * 60 * 1000 * 0.5)
+          : this.stallWatchdogThresholdMs;
+        this.startStallWatchdog(phase, i, watchdogThreshold);
+
+        const onPhaseRebound = (oldConvId: string, newConvId: string, newFilePath: string) => {
+          phase.conversationId = newConvId;
+          this.lastConversationId = newConvId;
+          this.debugLogger.info(
+            'ORCHESTRATOR',
+            `Dynamic conversation rebound for ${phase.fileName}: ${oldConvId} -> ${newConvId} (${newFilePath})`,
+            {
+              phaseIndex: i,
+              fileName: phase.fileName,
+              oldConvId,
+              newConvId,
+              newFilePath
+            }
+          );
+          this.setState(this.state, undefined, newConvId);
+        };
+        this.transcriptWatcher.on('conversationRebound', onPhaseRebound);
 
         let convId: string;
+        let completionResult: CompletionResult;
+
         try {
-          convId = await this.transcriptWatcher.waitForNewConversation(
-            phaseStartTime - 1000,
-            this.lastConversationId,
-            config.timeoutPerLoopMinutes * 60 * 1000,
-            this.transcriptWatcher.getOptions().pollIntervalMs
-          );
-        } catch (err: any) {
+          try {
+            convId = await this.transcriptWatcher.waitForNewConversation(
+              phaseStartTime - 1000,
+              this.lastConversationId,
+              config.timeoutPerLoopMinutes * 60 * 1000,
+              this.transcriptWatcher.getOptions().pollIntervalMs
+            );
+          } catch (err: any) {
+            if (this.isSkippingCurrentPhase) {
+              this.stopStallWatchdog();
+              phase.status = 'Skipped';
+              phase.endTime = Date.now();
+              this.debugLogger.logPhaseEvent(
+                this.toPhaseDiagnosticInfo(phase),
+                'SKIP',
+                `Phase ${phase.phaseNumber || i + 1} (${phase.fileName}) skipped during conversation wait`,
+                { phaseIndex: i }
+              );
+              this.emit('skipped', phase);
+              this.isSkippingCurrentPhase = false;
+              continue;
+            }
+            if (this.isAborted) break;
+            convId = 'current_conversation';
+          }
+
+          if (convId && convId !== 'current_conversation') {
+            phase.conversationId = convId;
+            this.debugLogger.info('ORCHESTRATOR', `Detected conversation ${convId} for ${phase.fileName}`, {
+              phaseIndex: i,
+              fileName: phase.fileName,
+              conversationId: convId
+            });
+          }
+
+          if (this.isAborted) break;
           if (this.isSkippingCurrentPhase) {
+            this.stopStallWatchdog();
             phase.status = 'Skipped';
             phase.endTime = Date.now();
+            this.debugLogger.logPhaseEvent(
+              this.toPhaseDiagnosticInfo(phase),
+              'SKIP',
+              `Phase ${phase.phaseNumber || i + 1} (${phase.fileName}) skipped by user`,
+              { phaseIndex: i }
+            );
             this.emit('skipped', phase);
             this.isSkippingCurrentPhase = false;
             continue;
           }
-          if (this.isAborted) break;
-          convId = 'current_conversation';
-        }
 
-        if (this.isAborted) break;
-        if (this.isSkippingCurrentPhase) {
-          phase.status = 'Skipped';
-          phase.endTime = Date.now();
-          this.emit('skipped', phase);
-          this.isSkippingCurrentPhase = false;
-          continue;
-        }
-
-        // 7. Strict Completion Await
-        let completionResult: CompletionResult;
-        if (convId !== 'current_conversation') {
-          const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, convId);
-          const transcriptPath = getTranscriptPath(convDir);
-          if (transcriptPath) {
-            completionResult = await this.transcriptWatcher.watchFile(transcriptPath, convId);
+          // 7. Strict Completion Await
+          if (convId !== 'current_conversation') {
+            const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, convId);
+            const transcriptPath = getTranscriptPath(convDir);
+            if (transcriptPath) {
+              completionResult = await this.transcriptWatcher.watchFile(transcriptPath, convId);
+            } else {
+              completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime - 1000, this.lastConversationId);
+            }
           } else {
             completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime - 1000, this.lastConversationId);
           }
-        } else {
-          completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime - 1000, this.lastConversationId);
+        } finally {
+          this.transcriptWatcher.removeListener('conversationRebound', onPhaseRebound);
         }
+
+        this.stopStallWatchdog();
 
         if (this.isSkippingCurrentPhase) {
           phase.status = 'Skipped';
           phase.endTime = Date.now();
+          this.debugLogger.logPhaseEvent(
+            this.toPhaseDiagnosticInfo(phase),
+            'SKIP',
+            `Phase ${phase.phaseNumber || i + 1} (${phase.fileName}) skipped by user`,
+            { phaseIndex: i }
+          );
           this.emit('skipped', phase);
           this.isSkippingCurrentPhase = false;
           continue;
@@ -629,11 +1016,20 @@ export class Orchestrator extends EventEmitter {
           phase.status = 'Failed';
           phase.endTime = Date.now();
           phase.error = completionResult.error || `Phase ${phase.fileName} failed`;
+          this.debugLogger.logPhaseEvent(
+            this.toPhaseDiagnosticInfo(phase),
+            'FAIL',
+            `Phase ${phase.fileName} failed: ${phase.error}`,
+            { phaseIndex: i, error: phase.error }
+          );
+          this.diagnoseSubsequentPhasesOnFailure(i, phase.error);
           throw new Error(phase.error);
         }
 
-        // 8. Update Tracking
-        this.lastConversationId = convId !== 'current_conversation' ? convId : completionResult.conversationId || this.lastConversationId;
+        // 8. Update Tracking & Log Phase Completion
+        this.lastConversationId =
+          completionResult.conversationId ||
+          (convId !== 'current_conversation' ? convId : this.lastConversationId);
         phase.conversationId = this.lastConversationId;
         phase.status = 'Completed';
         phase.endTime = Date.now();
@@ -644,6 +1040,21 @@ export class Orchestrator extends EventEmitter {
             dispatch: dispatchResult
           }
         };
+
+        const phaseDuration = phase.endTime - (phase.startTime || phaseStartTime);
+        const keywordMatched = completionResult.matchedContent || config.completionKeyword;
+        this.debugLogger.logPhaseEvent(
+          this.toPhaseDiagnosticInfo(phase),
+          'COMPLETE',
+          `Phase ${phase.phaseNumber || i + 1} (${phase.fileName}) completed in ${(phaseDuration / 1000).toFixed(1)}s (keyword: "${keywordMatched}")`,
+          {
+            phaseIndex: i,
+            fileName: phase.fileName,
+            durationMs: phaseDuration,
+            conversationId: phase.conversationId,
+            matchedKeyword: keywordMatched
+          }
+        );
 
         this.emit('phaseComplete', phase, completionResult, i, this.phases.length);
         this.emit('iterationComplete', i + 1, this.phases.length, completionResult);
@@ -662,22 +1073,30 @@ export class Orchestrator extends EventEmitter {
         }
       }
 
+      this.stopStallWatchdog();
+
       if (this.isAborted) {
         this.setState('stopped', 'Stopped by user');
+        this.debugLogger.info('ORCHESTRATOR', 'Orchestration execution stopped by user');
         this.emit('stopped');
         return false;
       }
 
       this.setState('completed', 'All phases completed');
+      this.debugLogger.info('ORCHESTRATOR', `All ${this.phases.length} phases completed successfully`);
       this.emit('allComplete', this.phases.length);
       return true;
     } catch (err: any) {
+      this.stopStallWatchdog();
       if (this.isAborted) {
         this.setState('stopped', 'Stopped by user');
+        this.debugLogger.info('ORCHESTRATOR', 'Orchestration execution stopped by user');
         this.emit('stopped');
         return false;
       }
-      this.setState('error', err.message || String(err));
+      const errMsg = err.message || String(err);
+      this.setState('error', errMsg);
+      this.debugLogger.error('ORCHESTRATOR', `Orchestrator sequence error: ${errMsg}`, undefined, err);
       this.emit('error', err instanceof Error ? err : new Error(String(err)));
       return false;
     }
@@ -716,6 +1135,11 @@ export class Orchestrator extends EventEmitter {
       const mode = config.executionMode || 'auto';
       const detail = readiness.errorMessage || 'No usable prompt transport available.';
       const errorMsg = `Pre-flight check failed for selected mode '${mode}'. ${detail}`;
+      this.debugLogger.warn('DISPATCHER', errorMsg, {
+        stallCode: 'PREFLIGHT_TRANSPORT_FAILURE',
+        executionMode: mode,
+        readiness
+      });
       this.setState('error', errorMsg);
       this.emit('error', new Error(errorMsg));
       await this.showPreflightActionableNotification(errorMsg);
@@ -723,6 +1147,7 @@ export class Orchestrator extends EventEmitter {
     }
 
     if (readiness.warningMessage && readiness.requiresForegroundFocus) {
+      this.debugLogger.warn('DISPATCHER', readiness.warningMessage);
       this.emit('warning', readiness.warningMessage);
     }
 
@@ -739,6 +1164,7 @@ export class Orchestrator extends EventEmitter {
 
         // Step 1: Sending prompt via PromptDispatcher
         this.setState('sending', 'Sending Prompt...');
+        this.debugLogger.info('ORCHESTRATOR', `Sending prompt for iteration ${i}/${this.totalIterations}`);
         const timestampBeforeSend = Date.now();
 
         const dispatchOptions: DispatchOptions = {
@@ -756,42 +1182,70 @@ export class Orchestrator extends EventEmitter {
 
         // Step 2: Listening for completion keyword
         this.setState('waiting', 'Waiting for Agent...');
+        this.debugLogger.info('ORCHESTRATOR', `Waiting for agent response for iteration ${i}/${this.totalIterations}`);
+
+        const onIterationRebound = (oldConvId: string, newConvId: string, newFilePath: string) => {
+          this.lastConversationId = newConvId;
+          this.debugLogger.info(
+            'ORCHESTRATOR',
+            `Dynamic conversation rebound in loop ${i}: ${oldConvId} -> ${newConvId} (${newFilePath})`,
+            {
+              iteration: i,
+              oldConvId,
+              newConvId,
+              newFilePath
+            }
+          );
+          this.setState(this.state, undefined, newConvId);
+        };
+        this.transcriptWatcher.on('conversationRebound', onIterationRebound);
 
         let convId: string;
-        try {
-          convId = await this.transcriptWatcher.waitForNewConversation(
-            timestampBeforeSend - 1000,
-            this.lastConversationId,
-            5000,
-            100
-          );
-        } catch {
-          convId = 'current_conversation';
-        }
-
-        if (this.isAborted) break;
-
-        // Watch conversation transcript
         let completionResult: CompletionResult;
-        if (convId !== 'current_conversation') {
-          const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, convId);
-          const transcriptPath = getTranscriptPath(convDir);
-          if (transcriptPath) {
-            completionResult = await this.transcriptWatcher.watchFile(transcriptPath, convId);
+
+        try {
+          try {
+            convId = await this.transcriptWatcher.waitForNewConversation(
+              timestampBeforeSend - 1000,
+              this.lastConversationId,
+              5000,
+              100
+            );
+          } catch {
+            convId = 'current_conversation';
+          }
+
+          if (this.isAborted) break;
+
+          // Watch conversation transcript
+          if (convId !== 'current_conversation') {
+            const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, convId);
+            const transcriptPath = getTranscriptPath(convDir);
+            if (transcriptPath) {
+              completionResult = await this.transcriptWatcher.watchFile(transcriptPath, convId);
+            } else {
+              completionResult = await this.transcriptWatcher.watchLatest(timestampBeforeSend - 1000, this.lastConversationId);
+            }
           } else {
             completionResult = await this.transcriptWatcher.watchLatest(timestampBeforeSend - 1000, this.lastConversationId);
           }
-        } else {
-          completionResult = await this.transcriptWatcher.watchLatest(timestampBeforeSend - 1000, this.lastConversationId);
+        } finally {
+          this.transcriptWatcher.removeListener('conversationRebound', onIterationRebound);
         }
 
         if (this.isAborted) break;
 
         if (!completionResult.success) {
+          this.debugLogger.error('ORCHESTRATOR', `Iteration ${i}/${this.totalIterations} failed`, {
+            error: completionResult.error
+          });
           throw new Error(completionResult.error || 'Loop iteration failed or timed out');
         }
 
-        this.lastConversationId = convId !== 'current_conversation' ? convId : completionResult.conversationId || this.lastConversationId;
+        this.lastConversationId =
+          completionResult.conversationId ||
+          (convId !== 'current_conversation' ? convId : this.lastConversationId);
+        this.debugLogger.info('ORCHESTRATOR', `Iteration ${i}/${this.totalIterations} completed successfully`);
         this.emit('iterationComplete', i, this.totalIterations, completionResult);
 
         // Step 3: Check if further iterations remain and delay
@@ -807,20 +1261,25 @@ export class Orchestrator extends EventEmitter {
 
       if (this.isAborted) {
         this.setState('stopped', 'Stopped by user');
+        this.debugLogger.info('ORCHESTRATOR', 'Loop execution stopped by user');
         this.emit('stopped');
         return false;
       }
 
       this.setState('completed', 'All iterations completed');
+      this.debugLogger.info('ORCHESTRATOR', 'All iterations completed successfully');
       this.emit('allComplete', this.totalIterations);
       return true;
     } catch (err: any) {
       if (this.isAborted) {
         this.setState('stopped', 'Stopped by user');
+        this.debugLogger.info('ORCHESTRATOR', 'Loop execution stopped by user');
         this.emit('stopped');
         return false;
       }
-      this.setState('error', err.message || String(err));
+      const errMsg = err.message || String(err);
+      this.setState('error', errMsg);
+      this.debugLogger.error('ORCHESTRATOR', `Loop iteration error: ${errMsg}`, undefined, err);
       this.emit('error', err instanceof Error ? err : new Error(String(err)));
       return false;
     }
@@ -831,6 +1290,7 @@ export class Orchestrator extends EventEmitter {
    */
   public stop(): void {
     this.isAborted = true;
+    this.stopStallWatchdog();
 
     if (this.delayTimer) {
       clearTimeout(this.delayTimer);

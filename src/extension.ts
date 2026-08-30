@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { getConfig, setPromptText, writeConfigJson } from './config';
 import { orchestrator, OrchestratorProgressInfo } from './orchestrator';
-import { scanPlanFolder, scanPlanFolderAsync, sortPhaseFiles, getPhasesFrom, normalizePath, PhaseFile } from './planScanner';
+import { scanPlanFolder, scanPlanFolderAsync, sortPhaseFiles, getPhasesFrom, normalizePath, PhaseFile, auditPlanPhases } from './planScanner';
 import { getDefaultBrainDir, getTranscriptPath, findLatestConversation, transcriptWatcher } from './transcriptWatcher';
 import { bridgeServer, BRIDGE_PROTOCOL_VERSION } from './bridgeServer';
 import { isBridgeInstalled, installBridgeScript, uninstallBridgeScript, getWorkbenchPath } from './workbenchInjector';
@@ -1075,7 +1075,15 @@ export async function showBridgeDiagnosticDialog(): Promise<BridgeDiagnosticRepo
  * Compiles full environment report + DOM bridge telemetry + in-memory log buffer and copies to clipboard.
  */
 export async function copyDebugLog(): Promise<string> {
-  const report = debugLogger.exportDiagnosticReportToString();
+  let auditReport: any = undefined;
+  if (currentPlanFolder) {
+    try {
+      auditReport = orchestrator.isRunning()
+        ? orchestrator.getPhaseAuditReport()
+        : auditPlanPhases(currentPlanFolder);
+    } catch {}
+  }
+  const report = debugLogger.exportDiagnosticReportToString(100, undefined, auditReport);
   try {
     if (vscode.env?.clipboard?.writeText) {
       await vscode.env.clipboard.writeText(report);
@@ -1112,7 +1120,16 @@ export async function exportDebugLog(targetPath?: string): Promise<string | unde
     }
   }
 
-  await debugLogger.exportLogToFile(filePath);
+  let auditReport: any = undefined;
+  if (currentPlanFolder) {
+    try {
+      auditReport = orchestrator.isRunning()
+        ? orchestrator.getPhaseAuditReport()
+        : auditPlanPhases(currentPlanFolder);
+    } catch {}
+  }
+
+  await debugLogger.exportLogToFile(filePath, 100, undefined, auditReport);
   try {
     if (vscode.workspace && typeof vscode.workspace.openTextDocument === 'function' && vscode.window && typeof vscode.window.showTextDocument === 'function') {
       const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
@@ -1145,19 +1162,41 @@ export function showOutputChannel(): void {
 }
 
 /**
- * Actionable failure notification offering 1-click diagnostic log copy and settings.
+ * Actionable failure notification offering 1-click diagnostic log copy, settings, and retry.
  */
-export async function showFailureNotificationWithDiagnostics(errorMessage: string): Promise<string | undefined> {
+export async function showFailureNotificationWithDiagnostics(
+  errorMessage: string,
+  failedPhaseIndex?: number
+): Promise<string | undefined> {
+  const actions: string[] = ['📋 Copy Diagnostic Log', '⚙️ Open Settings'];
+  const phases = orchestrator.getPhases();
+  if (phases && phases.length > 0) {
+    actions.push('🔄 Retry Failed Phase');
+  }
+  actions.push('Dismiss');
+
   const selection = await vscode.window.showErrorMessage(
     `Auto-Plan Error: ${errorMessage}`,
-    '📋 Copy Diagnostic Log',
-    '⚙️ Open Settings',
-    'Dismiss'
+    ...actions
   );
   if (selection === '📋 Copy Diagnostic Log') {
     await vscode.commands.executeCommand('autoplan.copyDebugLog');
   } else if (selection === '⚙️ Open Settings') {
     await vscode.commands.executeCommand('autoplan.openSettings');
+  } else if (selection === '🔄 Retry Failed Phase') {
+    let retryIdx = failedPhaseIndex !== undefined ? failedPhaseIndex : 0;
+    if (failedPhaseIndex === undefined) {
+      const foundIdx = phases.findIndex(p => p.status === 'Failed' || p.status === 'Pending');
+      if (foundIdx !== -1) {
+        retryIdx = foundIdx;
+      }
+    }
+    if (phases.length > 0 && retryIdx >= 0 && retryIdx < phases.length) {
+      const phasesToRetry = phases.slice(retryIdx).map(p => p.filePath);
+      if (phasesToRetry.length > 0) {
+        await orchestrator.startPhases(phasesToRetry);
+      }
+    }
   }
   return selection;
 }

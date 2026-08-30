@@ -969,3 +969,72 @@ input:checked + .toggle-slider:before {
   padding: 40px 10px;
 }
 
+/* ==========================================================================
+   Plan & Phase Diagnostics Telemetry Card
+   ========================================================================== */
+.phase-telemetry-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.telemetry-stat-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.stat-box {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stat-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0.6;
+}
+
+.stat-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stat-value.status-ok {
+  color: var(--success-color);
+}
+
+.stat-value.status-warning {
+  color: var(--warning-color);
+}
+
+.stall-warning-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--warning-bg);
+  border: 1px solid rgba(206, 145, 120, 0.35);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--warning-color);
+}
+
+.stall-warning-icon {
+  font-size: 14px;
+}
+
+.stall-warning-text {
+  flex: 1;
+}
+

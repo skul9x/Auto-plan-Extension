@@ -1,72 +1,77 @@
 # Antigravity Auto-Plan Extension
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/skul9x/Auto-plan-Extension/main/docs/assets/banner.png" alt="Antigravity Auto-Plan Extension Banner" width="100%" onerror="this.style.display='none'"/>
-</p>
-
-<p align="center">
-  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/ph%C3%AAn_b%E1%BA%A3n-1.2.0-blue.svg?style=flat-square" alt="Phiên bản"></a>
-  <a href="https://code.visualstudio.com/"><img src="https://img.shields.io/badge/T%C6%B0%C6%A1ng_th%C3%ADch-VS_Code_^1.80.0-informational.svg?style=flat-square" alt="Độ tương thích VS Code"></a>
+  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/version-1.4.0-blue.svg?style=flat-square" alt="Version"></a>
+  <a href="https://code.visualstudio.com/"><img src="https://img.shields.io/badge/VS_Code-^1.80.0-informational.svg?style=flat-square" alt="VS Code Compatibility"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.3.3-3178C6.svg?style=flat-square" alt="TypeScript"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/gi%E1%BA%A5y_ph%C3%A9p-MIT-green.svg?style=flat-square" alt="Giấy phép"></a>
-  <img src="https://img.shields.io/badge/n%E1%BB%81n_t%E1%BA%A3ng-Linux_%7C_macOS_%7C_Windows-lightgrey.svg?style=flat-square" alt="Hỗ trợ nền tảng">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg?style=flat-square" alt="License"></a>
+  <img src="https://img.shields.io/badge/platforms-Linux_%7C_macOS_%7C_Windows-lightgrey.svg?style=flat-square" alt="Platform Support">
 </p>
 
 ---
 
-## 📖 Tổng quan
+## Overview
 
-**Antigravity Auto-Plan Extension** (`antigravity-auto-plan`) là công cụ tự động hóa và điều phối kế hoạch phát triển phần mềm nâng cao dành cho **Antigravity IDE** và **Visual Studio Code**. 
+**Antigravity Auto-Plan Extension** (`antigravity-auto-plan`) is an advanced automation orchestrator for **Antigravity IDE** and **Visual Studio Code**. It enables hands-free execution of multi-phase development plans (`phase-01-*.md`, `phase-02-*.md`, etc.), streams real-time AI conversation logs directly into a responsive sidebar dashboard, and automatically advances between execution phases upon detecting completion keywords (such as `"Done skul9x."`).
 
-Extension cho phép tự động hóa việc thực thi các kế hoạch phát triển nhiều giai đoạn (multi-phase plans với các file `phase-01-*.md`, `phase-02-*.md`,...), stream trực tiếp nhật ký hội thoại AI (transcript) theo thời gian thực và tự động chuyển sang phase tiếp theo ngay khi nhận được tín hiệu hoàn thành (`"Done skul9x."`).
-
----
-
-## ✨ Các tính năng nổi bật
-
-### 🖼️ Trung tâm điều khiển Sidebar (Sidebar Control Center)
-- Giao diện trực quan tích hợp sẵn tại Activity Bar (`autoplan-sidebar-container`) mang tên **Plan Execution Dashboard**.
-- Hỗ trợ tự động phát hiện danh sách thư mục chứa plan, chọn plan đang hoạt động, xem danh sách phase với khả năng bật/tắt từng phase linh hoạt và stream log transcript trực tiếp.
-- Hiển thị trạng thái theo thời gian thực (Đang chạy, Tạm dừng, Lỗi, Hoàn thành) kèm bộ đếm tiến độ và các nút thao tác nhanh.
-
-### ⚡ DOM Bridge không cần Focus (Focus-Free DOM Bridge)
-- Truyền lệnh prompt ngầm qua cơ chế IPC trực tiếp vào ngữ cảnh Electron Renderer HTML (`workbench.html`) của VS Code / Antigravity Workbench.
-- Tự động điền nội dung prompt và kích hoạt nút gửi chat trực tiếp trên cây DOM, giúp bạn **vừa lướt web vừa để extension tự chạy** mà không sợ bị cướp tiêu điểm (focus) bàn phím/chuột.
-- Tích hợp HTTP server tự động dò cổng (`127.0.0.1:49200-49220`) để giao tiếp IPC đáng tin cậy giữa Extension Host và script DOM đã chèn.
-
-### 🎯 Cơ chế vận chuyển 3 tầng linh hoạt (3-Tier Resilient Transport)
-- **Tier 1 (DOM Bridge):** Tốc độ cao, chạy ngầm không cần focus, không ảnh hưởng đến trải nghiệm thao tác của người dùng.
-- **Tier 2 (VS Code Native Commands):** Tự động chuyển đổi sang các lệnh nội bộ của VS Code khi môi trường hỗ trợ.
-- **Tier 3 (OS Keyboard Simulation):** Sử dụng công cụ tự động hóa phím bấm ở cấp hệ điều hành (`xdotool` trên Linux, PowerShell `WScript.Shell` trên Windows) làm giải pháp dự phòng cuối cùng.
-
-### ⚡ Kiểm tra sẵn sàng tức thì (Zero-Timeout Pre-Flight Guard)
-- Kiểm tra sức khỏe môi trường thực thi và trạng thái transport trong chưa đầy **100ms** trước khi bắt đầu plan.
-- Ngăn chặn vòng lặp thực thi vô tận bằng cách xác minh tính khả dụng của transport trước khi chạy từng giai đoạn.
-- Đưa ra thông báo chẩn đoán lỗi rõ ràng cùng các hành động khắc phục 1-click (như gợi ý chạy 1-Click Bridge Setup).
-
-### 🔍 Bộ theo dõi Transcript chống nhiễu (Anti-Pollution Transcript Watcher)
-- Đọc và phân tích file nhật ký JSONL thời gian thực tại thư mục `~/.gemini/antigravity-ide/brain/`.
-- Đọc tăng tiến theo byte offset và có cơ chế bảo vệ dựa trên mtime thư mục gốc.
-- Bộ lọc chống nhiễu phát hiện khoảng lặng (quiet-period debounce) giúp tránh nhận diện nhầm các tin nhắn trung gian của người dùng hoặc các cập nhật log thông thường.
+With in-process DOM injection and a 3-tier resilient transport engine, Auto-Plan submits prompts seamlessly in the background without stealing your window focus or interrupting active typing.
 
 ---
 
-## 📥 Hướng dẫn cài đặt & Thiết lập
+## Features
 
-### Thiết lập DOM Bridge 1-Click (Khuyến nghị)
-Mở Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) và chạy lệnh:
-`Auto-Plan: 1-Click DOM Bridge Setup` (`autoplan.oneClickSetup`)
+### ⚙️ Settings Panel
+- Modern, full-featured Webview Settings Panel (`autoplan.openSettings`) supporting light, dark, and high-contrast VS Code themes.
+- Visual control over dispatch tier strategies, fallback policies, phase timeouts, loop delays, and dynamic prompt formatting templates with real-time two-way synchronization to VS Code configuration.
 
-Lệnh này sẽ tự động kiểm tra môi trường, chèn script DOM bridge vào file `workbench.html` và xác minh kết nối heartbeat giữa client và server.
+### 🖼️ Sidebar Control Center
+- Integrated Activity Bar container (`autoplan.sidebarView`) named **Plan Execution Dashboard**.
+- Automatic workspace plan discovery, phase checklist toggling, live transcript streaming, and execution state monitoring (`IDLE`, `RUNNING`, `PAUSED`, `ERROR`, `COMPLETED`).
+- Quick-action buttons for starting, stopping, pausing, and resuming automated execution.
 
-### Quyền quản trị trên Linux (Polkit `pkexec`)
-Trên các hệ điều hành Linux, việc ghi vào file `workbench.html` nằm trong các thư mục hệ thống (như `/usr/share/code/` hoặc `/opt/Antigravity/`) yêu cầu quyền quản trị viên:
-- Auto-Plan sử dụng cơ chế Polkit (`pkexec`) để yêu cầu xác thực root một cách an toàn.
-- Sau khi chạy lệnh setup, hãy nhập mật khẩu người dùng khi cửa sổ Polkit xuất hiện.
-- Nếu không cấp quyền hoặc bị hủy, Auto-Plan sẽ tự động chuyển sang chế độ không cần quyền quản trị hoặc giả lập phím bấm.
+### ⚡ Focus-Free DOM Bridge
+- In-process DOM injection directly into the Electron Renderer context (`workbench.html`).
+- Submits prompts and triggers chat submission buttons in the background without stealing keyboard or cursor focus.
+- Embedded local REST HTTP bridge server dynamically binding to safe localhost ports (`48860-48900` / `49200-49220`).
 
-### Cài đặt `xdotool` dự phòng trên Linux
-Nếu không sử dụng chế độ DOM Bridge trên Linux, cơ chế Tier 3 (Giả lập phím bấm OS) sẽ cần `xdotool`:
+### 🎯 3-Tier Resilient Transport
+- **Tier 1 (DOM Bridge):** High-speed, focus-free background DOM injection via embedded HTTP IPC.
+- **Tier 2 (VS Code Native Commands):** Fallback using native editor commands (`antigravity.sendTextToChat`).
+- **Tier 3 (OS Keyboard Simulation):** Synthetic keystroke dispatch via OS automation (`xdotool` on Linux, PowerShell `WScript.Shell` on Windows, AppleScript on macOS).
+- Dynamic tier fallback with configurable override preferences (`autoplan.executionMode`, `autoplan.allowTierFallback`).
+
+### ⚡ Zero-Timeout Pre-Flight Guard
+- Sub-100ms environment health check and transport validation executed before each phase loop.
+- Prevents infinite loops and silent failures by ensuring transport prerequisites are met before execution begins.
+- Provides actionable notifications with 1-click resolution buttons (`⚙️ Open Settings`, `⚡ 1-Click DOM Bridge Setup`).
+
+### 🔍 Anti-Pollution Transcript Watcher
+- Real-time incremental JSONL conversation log streaming from `~/.gemini/antigravity-ide/brain/`.
+- Byte-offset tracking and root directory `mtime` modification guards to prevent stale log reads.
+- Quiet-period debounce filter preventing false completion triggers on intermediate assistant chunks.
+
+### 🩺 Phase Diagnostics & Stall Analyzer
+- Detects phase stalls and provides root-cause classifications (*Sequence Dependency*, *Pre-Flight Transport Failure*, *AI Response Timeout*, *Malformed Header Syntax*).
+- 1-click clipboard export (`autoplan.copyDebugLog`) and file export (`autoplan.exportDebugLog`) for diagnostic reports.
+
+---
+
+## Installation & Setup
+
+### 1-Click DOM Bridge Setup (Recommended)
+Open the VS Code Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and execute:
+```
+Auto-Plan: 1-Click DOM Bridge Setup (autoplan.oneClickSetup)
+```
+This command checks your installation, injects the DOM bridge script into `workbench.html`, and verifies client-server heartbeat connectivity.
+
+### Linux Elevation (`pkexec`)
+On Linux distributions, modifying system-installed `workbench.html` (e.g., `/usr/share/code/` or `/opt/Antigravity/`) requires elevated permissions:
+- Auto-Plan utilizes Polkit (`pkexec`) for secure, graphical password prompting.
+- When prompted, enter your administrator credentials to authorize the bridge installation.
+
+### Linux `xdotool` Fallback
+If using Tier 3 OS Keyboard Simulation on Linux, install `xdotool`:
 ```bash
 # Ubuntu / Debian
 sudo apt-get install xdotool
@@ -78,172 +83,199 @@ sudo pacman -S xdotool
 sudo dnf install xdotool
 ```
 
-### Cài đặt Extension VSIX
+### VSIX Installation
 ```bash
-# Cài đặt vào Antigravity IDE
-antigravity --install-extension antigravity-auto-plan-1.1.0.vsix
+# Install to Antigravity IDE
+antigravity --install-extension antigravity-auto-plan-1.4.0.vsix
 
-# Cài đặt vào VS Code
-code --install-extension antigravity-auto-plan-1.1.0.vsix
+# Install to VS Code
+code --install-extension antigravity-auto-plan-1.4.0.vsix
 ```
 
 ---
 
-## 🎮 Hướng dẫn giao diện người dùng
+## Configuration Reference
 
-### Nút Status Bar thông minh (`🚀 Auto-Plan`)
-- Hiển thị tiến độ theo thời gian thực: `$(sync~spin) Auto-Plan: [2/5] phase-02-readme.md`
-- Di chuột qua nút Status Bar để xem tooltip định dạng Markdown chi tiết: thư mục hiện tại, tiến độ các phase, thời gian đã chạy và chế độ transport đang dùng.
-- Bấm vào nút Status Bar để mở **Action Menu tác vụ**:
-  - 🛑 **Stop Auto-Plan**: Dừng ngay lập tức quá trình tự động hóa.
-  - ⏭️ **Skip Current Phase**: Bỏ qua phase đang chạy và chuyển sang phase tiếp theo.
-  - ⚙️ **Open Settings Panel**: Mở nhanh Bảng Điều Khiển Cấu Hình Toàn Màn Hình.
-  - 📄 **Open Active Transcript Log**: Mở trực tiếp file `transcript.jsonl` đang hoạt động trong trình biên soạn.
+All settings are available under the `autoplan.*` namespace in VS Code Settings (`Ctrl+,` or `Cmd+,`):
 
-### Control Dashboard ở Sidebar
-- Truy cập từ biểu tượng Auto-Plan tại Activity Bar.
-- Xem toàn bộ cây phase plan, bật/tắt từng phase độc lập, bắt đầu/dừng tự động hóa và theo dõi log live stream mà không cần rời khỏi giao diện IDE.
-
-### 🖼️ Bảng Điều Khiển Cấu Hình Toàn Màn Hình (Settings Panel)
-Auto-Plan cung cấp bảng điều khiển cấu hình toàn màn hình trực quan và hiện đại dạng Webview tab để quản lý toàn diện các tham số và chiến lược vận chuyển prompt:
-- **Cách mở Settings Panel**:
-  - Chạy lệnh `Auto-Plan: Open Settings Panel` (`autoplan.openSettings`) từ Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`).
-  - Nhấp vào nút **⚙️ Settings** trên thanh công cụ tiêu đề của Sidebar Control Center.
-  - Bấm vào nút Status Bar `🚀 Auto-Plan` và chọn mục **⚙️ Open Settings Panel** trong Action Menu.
-- **Quản lý Chế độ Vận chuyển & Phân cấp Tầng (Tier Management)**:
-  - **Tier 1 (Focus-Free DOM Bridge)**: Tốc độ siêu tốc, chạy nền không cần tiêu điểm giao diện, chèn trực tiếp qua Electron DOM Bridge.
-  - **Tier 2 (VS Code Native Commands)**: Chuyển tiếp prompt thông qua lệnh nội bộ VS Code (`antigravity.sendTextToChat`).
-  - **Tier 3 (OS Keyboard Simulation)**: Mô phỏng phím bấm cấp hệ điều hành qua `xdotool` (Linux) hoặc PowerShell `WScript.Shell` (Windows).
-  - **Chính sách Tự động Dự phòng (Fallback Policy)**: Công tắc cho phép/chặn tự động hạ cấp tầng khi tầng được chọn không sẵn sàng (`allowTierFallback`).
-- **Xử lý Lỗi Tầng Nghiêm ngặt (Strict Tier Error Handling)**:
-  - Khi bật chế độ nghiêm ngặt (Strict Tier) mà tầng đó chưa đáp ứng điều kiện tiên quyết (ví dụ: Strict Tier 1 nhưng DOM Bridge ngắt kết nối, hoặc Strict Tier 3 trên Linux mà chưa cài `xdotool`):
-  - Bộ điều phối **Orchestrator** sẽ chặn thực thi ngay tại bước pre-flight trong < 100ms, chuyển trạng thái sang `'error'`.
-  - Hiển thị hộp thoại thông báo lỗi hành động (Actionable Notification) với các tùy chọn trực tiếp: `⚙️ Open Settings Panel`, `⚡ 1-Click DOM Bridge Setup`, hoặc `Install Guide`.
+| Setting Key | Type | Default | Description |
+| :--- | :---: | :---: | :--- |
+| `autoplan.defaultPromptTemplate` | `string` | *(Template)* | Default prompt template for each phase (using `{xxx}`, `{path}`, or `{file}`). |
+| `autoplan.promptTemplate` | `string` | *(Template)* | Dynamic prompt template applied to individual phase files. |
+| `autoplan.promptText` | `string` | `"Hãy trả lời tôi..."` | Static fallback prompt content pasted into chat. |
+| `autoplan.defaultPlanFolder` | `string` | `""` | Default folder path containing phase markdown plan files. |
+| `autoplan.repeatCount` | `number` | `5` | Repetition count for static prompt execution cycles. |
+| `autoplan.completionKeyword` | `string` | `"Done skul9x."` | Completion keyword in AI response marking phase completion. |
+| `autoplan.delayBetweenLoopsMs` | `number` | `2000` | Inter-loop delay in milliseconds between consecutive phase runs. |
+| `autoplan.timeoutPerLoopMinutes` | `number` | `15` | Maximum timeout in minutes per individual phase execution. |
+| `autoplan.focusDelayMs` | `number` | `800` | Delay in milliseconds after opening chat before focusing input field. |
+| `autoplan.executionMode` | `string` | `"auto"` | Transport mode: `"auto"`, `"domBridge"`, `"nativeCommand"`, or `"keyboard"`. |
+| `autoplan.allowTierFallback` | `boolean` | `true` | Allow automated fallback to secondary tiers when primary tier encounters errors. |
+| `autoplan.bridgeTimeoutMs` | `number` | `5000` | Timeout in milliseconds for DOM Bridge command acknowledgment. |
+| `autoplan.staleClientMs` | `number` | `120000` | Timeout in milliseconds before an inactive DOM bridge client is marked stale. |
+| `autoplan.autoApprovePermissions` | `boolean` | `true` | Automatically approve execution permissions via DOM bridge. |
+| `autoplan.autoInjectWorkbench` | `boolean` | `true` | Automatically ensure workbench is injected with DOM bridge script on startup. |
+| `autoplan.suppressFallbackWarnings` | `boolean` | `true` | Suppress warning toast popups when falling back between prompt dispatch tiers. |
 
 ---
 
-## ⚙️ Cấu hình (Settings)
+## Commands Reference
 
-Extension có thể được tùy chỉnh thông qua VS Code Settings (`Ctrl+,` hoặc `Cmd+,`). Tất cả cài đặt nằm dưới tiền tố `autoplan`:
+The extension registers the following commands in the Command Palette:
 
-| Tên cài đặt | Kiểu dữ liệu | Giá trị mặc định | Mô tả |
-|---|---|---|---|
-| `autoplan.defaultPromptTemplate` | `string` | *(Mẫu chuẩn)* | Mẫu prompt mặc định cho từng phase (hỗ trợ `{xxx}`, `{path}`, hoặc `{file}`). |
-| `autoplan.promptTemplate` | `string` | *(Mẫu chuẩn)* | Mẫu prompt động cho từng file phase riêng biệt. |
-| `autoplan.promptText` | `string` | `"Hãy trả lời tôi..."` | Nội dung prompt tĩnh tự động dán vào ô chat. |
-| `autoplan.defaultPlanFolder` | `string` | `""` | Đường dẫn thư mục mặc định chứa các file Markdown plan phase. |
-| `autoplan.repeatCount` | `number` | `5` | Số lần lặp lại cho việc gửi prompt tĩnh. |
-| `autoplan.completionKeyword` | `string` | `"Done skul9x."` | Từ khóa trong câu trả lời của AI đánh dấu phase đã hoàn thành. |
-| `autoplan.delayBetweenLoopsMs` | `number` | `2000` | Thời gian chờ (mili-giây) giữa các vòng lặp phase plan. |
-| `autoplan.timeoutPerLoopMinutes` | `number` | `15` | Thời gian chờ tối đa (phút) cho mỗi phase. |
-| `autoplan.focusDelayMs` | `number` | `800` | Thời gian chờ (mili-giây) sau khi mở chat trước khi focus vào ô nhập. |
-| `autoplan.executionMode` | `string` | `"auto"` | Chế độ transport gửi prompt (`auto`, `domBridge`, `nativeCommand`, `keyboard`). |
-| `autoplan.allowTierFallback` | `boolean` | `true` | Cho phép tự động chuyển tầng dự phòng khi tầng ưu tiên gặp sự cố. |
-| `autoplan.strictMode` | `boolean` | `false` | Bật chế độ cưỡng chế nghiêm ngặt không cho phép fallback khi chạy tier cụ thể. |
-| `autoplan.bridgeTimeoutMs` | `number` | `5000` | Thời gian chờ tối đa (mili-giây) phản hồi từ DOM Bridge. |
-| `autoplan.autoApprovePermissions` | `boolean` | `true` | Tự động phê duyệt các quyền thực thi thông qua DOM bridge. |
-| `autoplan.autoInjectWorkbench` | `boolean` | `true` | Tự động đảm bảo workbench được chèn script DOM bridge khi khởi động. |
-
----
-
-## 🛠️ Danh sách Lệnh (Command Reference)
-
-| Command ID | Tên lệnh | Mô tả |
-|---|---|---|
-| `autoplan.start` | `Auto-Plan: Start Automation` | Mở danh sách chọn plan và bắt đầu tự động chạy các phase. |
-| `autoplan.stop` | `Auto-Plan: Stop Automation` | Dừng ngay lập tức tiến trình tự động hóa. |
-| `autoplan.skipPhase` | `Auto-Plan: Skip Current Phase` | Bỏ qua phase hiện tại và chuyển sang phase tiếp theo trong hàng chờ. |
-| `autoplan.actionMenu` | `Auto-Plan: Show Running Action Menu` | Hiển thị menu tác vụ (Dừng, Bỏ qua, Xem Transcript). |
-| `autoplan.openSettings` | `Auto-Plan: Open Settings Panel` | Mở bảng điều khiển cấu hình toàn màn hình trực quan (Settings Panel). |
-| `autoplan.openTranscript` | `Auto-Plan: Open Active Transcript Log` | Mở file transcript `transcript.jsonl` đang active trong trình biên soạn. |
-| `autoplan.setPrompt` | `Auto-Plan: Set Prompt` | Thay đổi nội dung prompt đang hoạt động một cách linh hoạt. |
-| `autoplan.installBridge` | `Auto-Plan: Install / Update DOM Automation Bridge` | Chèn script tự động hóa DOM vào file `workbench.html`. |
-| `autoplan.uninstallBridge` | `Auto-Plan: Uninstall DOM Automation Bridge` | Gỡ bỏ script tự động hóa DOM khỏi file `workbench.html`. |
-| `autoplan.checkBridgeStatus` | `Auto-Plan: Check Bridge Status & Run Diagnostic` | Kiểm tra sức khỏe HTTP server và client của DOM bridge. |
-| `autoplan.openSidebar` | `Auto-Plan: Open Auto-Plan Control Center` | Mở giao diện điều khiển Sidebar trên Activity Bar. |
-| `autoplan.oneClickSetup` | `Auto-Plan: 1-Click DOM Bridge Setup` | Tự động cài đặt và kiểm tra kết nối DOM bridge chỉ với 1 click. |
-| `autoplan.checkStatus` | `Auto-Plan: Check Status & Diagnostics` | Thao tác kiểm tra toàn diện sức khỏe hệ thống và transport pre-flight. |
+| Command ID | Title | Description |
+| :--- | :--- | :--- |
+| `autoplan.start` | `Auto-Plan: Start Automation` | Scan plan phases and begin automated execution loop. |
+| `autoplan.stop` | `Auto-Plan: Stop Automation` | Immediately abort active automation workflow. |
+| `autoplan.skipPhase` | `Auto-Plan: Skip Current Phase` | Skip active phase and advance to next phase in queue. |
+| `autoplan.actionMenu` | `Auto-Plan: Show Running Action Menu` | Display interactive action menu (Stop, Skip, Open Transcript). |
+| `autoplan.openTranscript` | `Auto-Plan: Open Active Transcript Log` | Open active `transcript.jsonl` log file in editor. |
+| `autoplan.setPrompt` | `Auto-Plan: Set Prompt` | Dynamically update active prompt content. |
+| `autoplan.installBridge` | `Auto-Plan: Install / Update DOM Automation Bridge` | Inject DOM automation script into `workbench.html`. |
+| `autoplan.uninstallBridge` | `Auto-Plan: Uninstall DOM Automation Bridge` | Restore clean backup of `workbench.html`. |
+| `autoplan.checkBridgeStatus` | `Auto-Plan: Check Bridge Status & Run Diagnostic` | Check HTTP server and DOM bridge client connectivity. |
+| `autoplan.openSidebar` | `Auto-Plan: Open Auto-Plan Control Center` | Open Sidebar Activity Bar control dashboard. |
+| `autoplan.oneClickSetup` | `Auto-Plan: 1-Click DOM Bridge Setup` | 1-Click installation and health verification of DOM bridge. |
+| `autoplan.checkStatus` | `Auto-Plan: Check Status & Diagnostics` | Run pre-flight health diagnostic check across all tiers. |
+| `autoplan.openSettings` | `Auto-Plan: Open Settings Panel` | Open dedicated Settings Webview Panel. |
+| `autoplan.copyDebugLog` | `Auto-Plan: Copy DOM Bridge Debug Log to Clipboard` | Copy diagnostic debug logs and stall report to clipboard. |
+| `autoplan.exportDebugLog` | `Auto-Plan: Export DOM Bridge Diagnostic Log to File` | Save diagnostic log buffer to Markdown/text file. |
+| `autoplan.clearDebugLog` | `Auto-Plan: Clear DOM Bridge Log Buffer` | Flush memory log buffer. |
+| `autoplan.showOutputChannel` | `Auto-Plan: Show DOM Bridge Output Channel` | Reveal dedicated extension Output Channel. |
 
 ---
 
-## 🐛 Xử lý sự cố (Troubleshooting)
+## Architecture Overview
+
+```
+ +-----------------------------------------------------------------------------------+
+ |                               VS Code Extension Host                              |
+ |                                                                                   |
+ |  +-----------------------+     Trigger      +----------------------------------+  |
+ |  |  Sidebar / Commands   | ---------------> |         src/orchestrator.ts      |  |
+ |  +-----------------------+                  +----------------------------------+  |
+ |              |                                                |                   |
+ |              | Reads Phases                                   | Dispatches Phase  |
+ |              v                                                v                   |
+ |  +-----------------------+                  +----------------------------------+  |
+ |  |   src/planScanner.ts  |                  |     src/promptDispatcher.ts      |  |
+ |  +-----------------------+                  +----------------------------------+  |
+ |                                                               |                   |
+ |              +------------------------------------------------+                   |
+ |              |                               |                                    |
+ |     (Tier 1: DOM Bridge)            (Tier 2: VS Code API)          (Tier 3: OS)   |
+ |              v                               v                               v    |
+ |  +-----------------------+          +-----------------+            +-----------+  |
+ |  |  src/bridgeServer.ts  |          | VS Code Command |            |  Keyboard |  |
+ |  +-----------------------+          +-----------------+            |  Manager  |  |
+ |              ^                                                     +-----------+  |
+ |              | HTTP REST IPC                                                      |
+ +--------------|--------------------------------------------------------------------+
+                v
+ +-----------------------------------------------------------------------------------+
+ |                            Electron Renderer / Webview                            |
+ |                                                                                   |
+ |   +------------------------------------+      Submits Text       +-------------+  |
+ |   |    media/autoplan-dom-bridge.js    | ----------------------> | Chat Editor |  |
+ |   +------------------------------------+ (Focus-Free Double-Tap) | Input (DOM) |  |
+ |                                                                  +-------------+  |
+ +-------------------------------------------------------------------------|---------+
+                                                                           |
+                                                                           | Produces
+                                                                           v Logs
+ +-----------------------------------------------------------------------------------+
+ |                             Filesystem / Brain Storage                            |
+ |                                                                                   |
+ |   +------------------------------------+      Streams To         +-------------+  |
+ |   |    src/transcriptWatcher.ts        | <---------------------- | JSONL Logs  |  |
+ |   | (Detects "Done skul9x." Keyword)   |                         | Transcript  |  |
+ |   +------------------------------------+                         +-------------+  |
+ |                    |                                                              |
+ |                    v Signals Phase Completion                                     |
+ |   +------------------------------------+                                          |
+ |   |  Orchestrator advances to next     |                                          |
+ |   |  phase or completes run loop       |                                          |
+ |   +------------------------------------+                                          |
+ +-----------------------------------------------------------------------------------+
+```
+
+---
+
+## Troubleshooting
 
 ### "Linux Pre-Flight Failed"
-**Nguyên nhân:** DOM Bridge bị mất kết nối và công cụ `xdotool` chưa được cài đặt trên Linux.  
-**Cách xử lý:**
-1. Chạy lệnh `Auto-Plan: 1-Click DOM Bridge Setup` (`autoplan.oneClickSetup`) để kích hoạt chế độ DOM Bridge không cần focus.
-2. Hoặc cài đặt `xdotool` thủ công bằng trình quản lý gói của hệ điều hành (`sudo apt-get install xdotool`).
+- **Cause:** DOM Bridge is disconnected and `xdotool` is missing from the Linux environment.
+- **Resolution:**
+  1. Run `Auto-Plan: 1-Click DOM Bridge Setup` (`autoplan.oneClickSetup`) to enable Tier 1 Focus-Free DOM Bridge.
+  2. Or install `xdotool` using your system package manager (`sudo apt-get install xdotool`).
 
-### Sửa lỗi popup reload liên tục do thay đổi Workbench
-**Nguyên nhân:** Sau khi sửa đổi file cấu trúc `workbench.html` của VS Code / Antigravity IDE, cơ chế kiểm tra tính toàn vẹn của Electron có thể phát cảnh báo.  
-**Cách xử lý:** Chạy lệnh `Developer: Reload Window` (`Ctrl+R` / `Cmd+R`) trong VS Code sau khi hoàn tất thiết lập 1-Click setup.
+### Infinite Reload Popup Prevention
+- **Cause:** Electron integrity checks detecting modifications to `workbench.html`.
+- **Resolution:** Execute `Developer: Reload Window` (`Reload Window`) in VS Code after running the 1-Click setup. Auto-Plan automatically manages backup files (`workbench.html.backup`) and repairs checksums.
 
-### CSP & Lỗi dò cổng Localhost
-**Nguyên nhân:** Chính sách bảo mật Content Security Policy (CSP) chặn kết nối HTTP localhost giữa Extension Host và Renderer.  
-**Cách xử lý:** Auto-Plan tự động cập nhật thẻ meta CSP cho phép kết nối tới `http://127.0.0.1:49200-49220`. Nếu vẫn gặp lỗi kết nối, hãy kiểm tra lại cấu hình tường lửa (firewall) hoặc phần mềm diệt virus cá nhân.
+### Port Conflicts & CSP Configuration
+- **Cause:** Content Security Policy (CSP) or local port collisions.
+- **Resolution:** Auto-Plan dynamically scans and selects free ports within `48860-48900` / `49200-49220` and automatically updates CSP meta tags in `workbench.html` to allow localhost IPC traffic.
+
+### Status Bar Status Indicators
+- `🚀 Auto-Plan` indicates idle/ready state.
+- `$(sync~spin) Auto-Plan: [1/4] phase-01.md` indicates active phase execution.
+- Click the Status Bar item at any time to open the **Action Menu** for instant pause, stop, or skip actions.
 
 ---
 
-## 💻 Hướng dẫn phát triển (Development)
+## Development & Testing
 
-### Cấu trúc thư mục dự án
+### Project Directory Layout
 ```text
 Auto-plan-Extension/
-├── media/                     # Giao diện Webview Sidebar & script DOM Bridge
-│   ├── bridge/                # Script DOM bridge chèn vào Workbench
-│   └── sidebar/               # HTML/CSS/JS cho dashboard điều khiển Sidebar
-├── src/                       # Mã nguồn TypeScript của Extension
-│   ├── bridgeServer.ts        # HTTP IPC Server nội bộ cho DOM Bridge
-│   ├── keyboardManager.ts     # Mô phỏng phím bấm cấp hệ điều hành Tier 3
-│   ├── orchestrator.ts        # Bộ điều phối tự động chạy các phase plan
-│   ├── promptDispatcher.ts    # Bộ vận chuyển prompt 3 tầng linh hoạt
-│   ├── sidebarViewProvider.ts # Provider cung cấp webview trên Activity Bar
-│   ├── transcriptWatcher.ts   # Bộ theo dõi log JSONL chống nhiễu
-│   └── test/                  # Thư mục chứa các bộ test kiểm thử
-├── package.json               # Manifest extension & định nghĩa cấu hình
-├── tsconfig.json              # Cấu hình biên dịch TypeScript
-└── README.md                  # Tài liệu hướng dẫn sử dụng tiếng Việt
+├── media/                          # Webview front-end assets & DOM bridge script
+│   ├── autoplan-dom-bridge.js      # Injected renderer DOM script
+│   ├── settings/                   # Settings Webview UI (HTML, CSS, JS)
+│   └── sidebar/                    # Sidebar Activity Bar UI (HTML, CSS, JS)
+├── src/                            # TypeScript source codebase
+│   ├── bridgeServer.ts             # Embedded HTTP REST IPC server
+│   ├── config.ts                   # Centralized typed settings reader
+│   ├── debugLogger.ts              # Diagnostic logging subsystem
+│   ├── extension.ts                # Entrypoint, Status Bar, command registry
+│   ├── keyboardManager.ts          # Tier 3 OS keystroke simulation
+│   ├── orchestrator.ts             # Phase loop engine & state machine
+│   ├── planScanner.ts              # Natural alphanumeric plan sorter
+│   ├── promptDispatcher.ts         # 3-Tier resilient prompt dispatcher
+│   ├── settingsProvider.ts         # Settings Webview panel provider
+│   ├── sidebarProvider.ts          # Sidebar WebviewViewProvider
+│   ├── transcriptWatcher.ts        # JSONL stream watcher & keyword detector
+│   ├── workbenchInjector.ts        # Privileged workbench patcher & manager
+│   └── test/                       # Automated test suites
+├── package.json                    # Extension manifest & configuration schema
+├── tsconfig.json                   # TypeScript compiler configuration
+├── structure.md                    # Architecture and codebase reference
+└── README.md                       # Comprehensive user and developer manual
 ```
 
-### Biệt dịch & Đóng gói VSIX
+### Build & Package Commands
 ```bash
-# Clone repository
-git clone https://github.com/skul9x/Auto-plan-Extension.git
-cd Auto-plan-Extension
-
-# Cài đặt dependencies
+# Install dependencies
 npm install
 
-# Biên dịch TypeScript
+# Compile TypeScript
 npm run compile
 
-# Đóng gói file cài đặt VSIX
+# Package VSIX extension bundle
 npm run package
 ```
 
-### Chạy các bộ kiểm thử (Test Suites)
+### Running Automated Test Suites
 ```bash
-# Chạy bộ test Phase 01: Elevation & Keyboard
-npm run test:phase01
+# Run Phase 01 Architecture & Structure documentation test
+npx tsc; node out/test/phase01_structure_documentation.test.js
 
-# Chạy bộ test Phase 02: Fail-Fast Pre-Flight & Documentation
-npm run test:phase02
-
-# Chạy bộ test Phase 03: Sidebar Webview
-npm run test:phase03
-
-# Chạy bộ test Phase 04: Actionable Notifications
-npm run test:phase04
-
-# Chạy bộ test Phase 05: E2E Cross-Platform Release
-npm run test:phase05
-
-# Chạy riêng lẻ test Documentation Phase 02
-npx tsc && node out/test/phase02_readme_documentation.test.js
+# Run Phase 02 README & Configuration validation test
+npx tsc; node out/test/phase02_readme_documentation.test.js
 ```
 
 ---
 
-## 📜 Giấy phép (License)
+## License
 
-Dự án được phân phối theo **MIT License**. Xem file `LICENSE` để biết thêm chi tiết.
+This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for details.

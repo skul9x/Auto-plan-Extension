@@ -212,6 +212,11 @@ body {
   opacity: 0.75;
 }
 
+.phase-item.failed {
+  border-color: rgba(241, 76, 76, 0.4);
+  background: rgba(241, 76, 76, 0.08);
+}
+
 .phase-name {
   flex: 1;
   white-space: nowrap;
@@ -223,14 +228,15 @@ body {
   font-size: 9px;
   padding: 1px 5px;
   border-radius: 3px;
-  text-transform: uppercase;
   font-weight: bold;
+  letter-spacing: 0.2px;
 }
 
 .tag-done { background: var(--success-color); color: #000; }
 .tag-running { background: var(--info-color); color: #fff; }
-.tag-pending { background: var(--badge-bg); color: var(--badge-fg); }
+.tag-pending { background: var(--badge-bg); color: var(--badge-fg); opacity: 0.85; }
 .tag-failed { background: var(--danger-bg); color: #fff; }
+.tag-skipped { background: rgba(255, 255, 255, 0.1); color: var(--text-color); }
 
 .empty-state {
   text-align: center;

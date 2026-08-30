@@ -867,7 +867,7 @@
    */
   async function injectPromptAndSubmit(promptText, options = {}) {
     const doc = options.document || (typeof document !== 'undefined' ? document : null);
-    const win = options.window || (typeof win !== 'undefined' ? win : (typeof window !== 'undefined' ? window : null));
+    const win = options.window || (typeof window !== 'undefined' ? window : null);
     if (!doc) {
       const err = new Error('DOM document not available for prompt injection');
       logBridge('ERROR', err.message);
@@ -1197,97 +1197,104 @@
       buttonWaitDurationMs = Date.now() - pollStart;
     }
 
-    // Upgraded Keyboard Enter Event Dispatching on inputElem (composed: true for Lexical & web components)
-    try {
-      const KbEventClass = (win && win.KeyboardEvent) || (typeof KeyboardEvent !== 'undefined' ? KeyboardEvent : null);
-      if (KbEventClass) {
-        const kbEventInit = {
-          key: 'Enter',
-          code: 'Enter',
-          keyCode: 13,
-          which: 13,
-          charCode: 13,
-          bubbles: true,
-          cancelable: true,
-          composed: true
-        };
-
-        // 1. keydown
-        try {
-          const kd = new KbEventClass('keydown', kbEventInit);
-          inputElem.dispatchEvent(kd);
-        } catch (_) {}
-
-        // 2. keypress (critical for Lexical & ProseMirror input handlers)
-        try {
-          const kp = new KbEventClass('keypress', kbEventInit);
-          inputElem.dispatchEvent(kp);
-        } catch (_) {}
-
-        // 3. keyup
-        try {
-          const ku = new KbEventClass('keyup', kbEventInit);
-          inputElem.dispatchEvent(ku);
-        } catch (_) {}
-
-        enterDispatched = true;
-      }
-    } catch (kbErr) {
-      logBridge('WARN', `KeyboardEvent dispatch failed: ${kbErr?.message || kbErr}`, {}, kbErr);
-    }
-
-    // Native Button Click & Pointer Event Cascade
-    if (sendBtn) {
+    // Mutually Exclusive Triggering Strategy:
+    // 1. Primary Strategy (buttonClick): If sendBtn is found and is not disabled, dispatch button click cascade only.
+    if (sendBtn && !isButtonDisabled(sendBtn)) {
       dispatchButtonClickCascade(sendBtn, win);
       sendButtonClicked = true;
       submitStrategy = 'buttonClick';
+      enterDispatched = false;
 
-      // Double-Tap Submission Guard (asynchronous retry after 50ms if disabled or state-transitioning)
+      // Double-Tap Submission Guard (asynchronous retry only if explicitly requested or transitionally disabled)
       const isStillDisabled = isButtonDisabled(sendBtn);
-      if (initialDisabled || isStillDisabled || options.doubleTapRetry || options.doubleTap) {
+      const shouldDoubleTap = Boolean(
+        options.doubleTap === true ||
+        options.doubleTapRetry === true ||
+        (initialDisabled && isStillDisabled)
+      );
+
+      if (shouldDoubleTap) {
         const retryDelay = options.doubleTapDelayMs !== undefined ? options.doubleTapDelayMs : 50;
         if (retryDelay > 0) {
           await new Promise(r => setTimeout(r, retryDelay));
         }
         const recheckedBtn = options.sendButton || findSendButton(inputElem || doc) || sendBtn;
-        if (recheckedBtn) {
+        if (recheckedBtn && !isButtonDisabled(recheckedBtn)) {
           dispatchButtonClickCascade(recheckedBtn, win);
           doubleTapExecuted = true;
           sendBtn = recheckedBtn;
         }
       }
-    }
-
-    // Form Submission Fallback
-    const form = (sendBtn && (sendBtn.form || (typeof sendBtn.closest === 'function' && sendBtn.closest('form')))) ||
-      (inputElem && (inputElem.form || (typeof inputElem.closest === 'function' && inputElem.closest('form'))));
-
-    if (form) {
+    } else {
+      // 2. Fallback Strategy (enterKey): Only if sendBtn is NOT present or disabled
       try {
-        if (typeof form.requestSubmit === 'function') {
-          if (sendBtn && (sendBtn.form === form || (typeof sendBtn.closest === 'function' && sendBtn.closest('form') === form))) {
-            form.requestSubmit(sendBtn);
-          } else {
-            form.requestSubmit();
-          }
-          formSubmitted = true;
-        } else {
-          const EventClass = (win && win.Event) || (typeof Event !== 'undefined' ? Event : null);
-          if (EventClass) {
-            form.dispatchEvent(new EventClass('submit', { bubbles: true, cancelable: true }));
-            formSubmitted = true;
-          }
-        }
-        if (!sendButtonClicked) {
-          submitStrategy = 'formSubmit';
-        }
-      } catch (formErr) {
-        logBridge('WARN', `Form submission fallback failed: ${formErr?.message || formErr}`, {}, formErr);
-      }
-    }
+        const KbEventClass = (win && win.KeyboardEvent) || (typeof KeyboardEvent !== 'undefined' ? KeyboardEvent : null);
+        if (KbEventClass) {
+          const kbEventInit = {
+            key: 'Enter',
+            code: 'Enter',
+            keyCode: 13,
+            which: 13,
+            charCode: 13,
+            bubbles: true,
+            cancelable: true,
+            composed: true
+          };
 
-    if (!sendButtonClicked && !formSubmitted && enterDispatched) {
-      submitStrategy = 'enterKey';
+          // 1. keydown
+          try {
+            const kd = new KbEventClass('keydown', kbEventInit);
+            inputElem.dispatchEvent(kd);
+          } catch (_) {}
+
+          // 2. keypress (critical for Lexical & ProseMirror input handlers)
+          try {
+            const kp = new KbEventClass('keypress', kbEventInit);
+            inputElem.dispatchEvent(kp);
+          } catch (_) {}
+
+          // 3. keyup
+          try {
+            const ku = new KbEventClass('keyup', kbEventInit);
+            inputElem.dispatchEvent(ku);
+          } catch (_) {}
+
+          enterDispatched = true;
+          submitStrategy = 'enterKey';
+        }
+      } catch (kbErr) {
+        logBridge('WARN', `KeyboardEvent dispatch failed: ${kbErr?.message || kbErr}`, {}, kbErr);
+      }
+
+      // 3. Form Fallback Strategy (formSubmit): If neither buttonClick nor enterKey succeeded
+      if (!sendButtonClicked && !enterDispatched) {
+        const form = (sendBtn && (sendBtn.form || (typeof sendBtn.closest === 'function' && sendBtn.closest('form')))) ||
+          (inputElem && (inputElem.form || (typeof inputElem.closest === 'function' && inputElem.closest('form'))));
+
+        if (form) {
+          try {
+            if (typeof form.requestSubmit === 'function') {
+              if (sendBtn && (sendBtn.form === form || (typeof sendBtn.closest === 'function' && sendBtn.closest('form') === form))) {
+                form.requestSubmit(sendBtn);
+              } else {
+                form.requestSubmit();
+              }
+              formSubmitted = true;
+            } else {
+              const EventClass = (win && win.Event) || (typeof Event !== 'undefined' ? Event : null);
+              if (EventClass) {
+                form.dispatchEvent(new EventClass('submit', { bubbles: true, cancelable: true }));
+                formSubmitted = true;
+              }
+            }
+            if (formSubmitted) {
+              submitStrategy = 'formSubmit';
+            }
+          } catch (formErr) {
+            logBridge('WARN', `Form submission fallback failed: ${formErr?.message || formErr}`, {}, formErr);
+          }
+        }
+      }
     }
 
     const isDocHidden = Boolean(doc?.hidden || (typeof document !== 'undefined' && document.hidden));
@@ -1622,6 +1629,8 @@
       this.customBlob = options.Blob;
       this.customURL = options.URL;
       this.isRunning = false;
+      this.isSubmitting = false;
+      this.lastSubmissionTime = 0;
       this.autoApprovalEnabled = options.autoApproval !== false;
       this.customDocument = options.document;
       this.customWindow = options.window;
@@ -1914,6 +1923,41 @@
     }
 
     /**
+     * Injects prompt text and triggers submission guarded by in-memory concurrency mutex and 500ms debounce
+     */
+    async injectPrompt(promptText, options = {}) {
+      const bypassLock = Boolean(options.force === true || options.bypassLock === true);
+      const minInterval = options.debounceMs !== undefined ? options.debounceMs : 500;
+      const now = Date.now();
+
+      if (!bypassLock) {
+        if (this.isSubmitting) {
+          const err = new Error('Submission blocked: concurrent submission in progress');
+          err.code = 'CONCURRENT_SUBMISSION_BLOCKED';
+          throw err;
+        }
+        if (now - this.lastSubmissionTime < minInterval) {
+          const err = new Error(`Submission debounced: throttled within ${minInterval}ms window`);
+          err.code = 'SUBMISSION_DEBOUNCED';
+          throw err;
+        }
+      }
+
+      this.isSubmitting = true;
+      try {
+        const result = await injectPromptAndSubmit(promptText, {
+          document: this.customDocument,
+          window: this.customWindow,
+          ...options
+        });
+        this.lastSubmissionTime = Date.now();
+        return result;
+      } finally {
+        this.isSubmitting = false;
+      }
+    }
+
+    /**
      * Executes a received command
      */
     async handleCommand(cmd) {
@@ -1921,11 +1965,7 @@
 
       try {
         if (cmd.type === 'sendPrompt') {
-          const result = await injectPromptAndSubmit(cmd.text || '', {
-            document: this.customDocument,
-            window: this.customWindow,
-            ...cmd.options
-          });
+          const result = await this.injectPrompt(cmd.text || '', cmd.options || {});
 
           await this.sendAck(cmd.id, 'submitClicked', null, {
             ...result,

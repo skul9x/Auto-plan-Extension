@@ -252,6 +252,7 @@
     "test:phase03": "node out/test/phase03_sidebar_webview_provider.test.js",
     "test:phase04": "node out/test/phase04_actionable_notifications_integration.test.js",
     "test:phase05": "node out/test/phase05_e2e_cross_platform_release.test.js",
+    "test:tdz": "node out/test/phase01_dom_bridge_tdz_fix.test.js",
     "test:bridge": "node out/test/phase05_full_e2e_regression.test.js",
     "test:modernize": "node out/test/phase02_test_suite_modernization.test.js",
     "test:all": "node out/test/phase05_e2e_cross_platform_release.test.js"

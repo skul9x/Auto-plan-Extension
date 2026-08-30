@@ -18,7 +18,18 @@ export interface InjectorOptions {
   scriptFileName?: string;
   timestamp?: number | string;
   forceBackup?: boolean;
+  forceReinject?: boolean;
   updateChecksums?: boolean;
+  context?: any;
+}
+
+export interface InjectionStatus {
+  isInstalled: boolean;
+  tagPresent: boolean;
+  scriptFileExists: boolean;
+  workbenchPath: string | null;
+  scriptPath: string | null;
+  versionTimestamp?: string | number;
 }
 
 export interface InjectionResult {
@@ -133,14 +144,18 @@ export function getWorkbenchPath(customAppRoot?: string): string | null {
  * Builds the Linux Polkit elevation command string using pkexec
  */
 export function buildLinuxElevationCommand(tmpPath: string, targetPath: string): string {
-  return `pkexec bash -c "cp '${tmpPath}' '${targetPath}' && chmod 644 '${targetPath}'"`;
+  const safeTmp = tmpPath.replace(/'/g, "'\\''");
+  const safeTarget = targetPath.replace(/'/g, "'\\''");
+  return `pkexec bash -c "cp '${safeTmp}' '${safeTarget}' && chmod 644 '${safeTarget}'"`;
 }
 
 /**
  * Builds the Windows UAC elevation command string using PowerShell Start-Process -Verb runAs
  */
 export function buildWindowsElevationCommand(tmpPath: string, targetPath: string): string {
-  return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Start-Process powershell -Verb runAs -ArgumentList '-NoProfile -NonInteractive -Command Copy-Item -LiteralPath \\\"${tmpPath}\\\" -Destination \\\"${targetPath}\\\" -Force' -Wait"`;
+  const safeTmp = tmpPath.replace(/"/g, '`"');
+  const safeTarget = targetPath.replace(/"/g, '`"');
+  return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Start-Process powershell -Verb runAs -ArgumentList '-NoProfile -NonInteractive -Command Copy-Item -LiteralPath \\\"${safeTmp}\\\" -Destination \\\"${safeTarget}\\\" -Force' -Wait"`;
 }
 
 /**
@@ -171,8 +186,10 @@ export function writeFileElevated(filePath: string, content: string): void {
         const cmd = buildLinuxElevationCommand(tmpPath, filePath);
         execSync(cmd, { timeout: 30000 });
       } else if (process.platform === 'darwin') {
-        const cmd = `cp '${tmpPath}' '${filePath}' && chmod 644 '${filePath}'`;
-        execSync(`osascript -e 'do shell script "${cmd}" with administrator privileges'`, { timeout: 30000 });
+        const safeTmp = tmpPath.replace(/'/g, "'\\''");
+        const safeTarget = filePath.replace(/'/g, "'\\''");
+        const cmd = `cp '${safeTmp}' '${safeTarget}' && chmod 644 '${safeTarget}'`;
+        execSync(`osascript -e 'do shell script "${cmd.replace(/"/g, '\\"')}" with administrator privileges'`, { timeout: 30000 });
       } else if (process.platform === 'win32') {
         const cmd = buildWindowsElevationCommand(tmpPath, filePath);
         execSync(cmd, { timeout: 30000 });
@@ -332,10 +349,20 @@ export function updateProductChecksums(workbenchPath?: string): boolean {
 
     const wb = workbenchPath || getWorkbenchPath();
     if (wb && fs.existsSync(wb)) {
-      const standardKey = 'vs/code/electron-sandbox/workbench/workbench.html';
       const fileData = fs.readFileSync(wb);
       const hash = computeSha256Base64(fileData);
-      if (productJson.checksums[standardKey] !== undefined && productJson.checksums[standardKey] !== hash) {
+
+      const relToOut = path.relative(outDir, wb).replace(/\\/g, '/');
+      const relToApp = path.relative(appRoot, wb).replace(/\\/g, '/');
+      const standardKey = 'vs/code/electron-sandbox/workbench/workbench.html';
+
+      if (productJson.checksums[relToOut] !== undefined && productJson.checksums[relToOut] !== hash) {
+        productJson.checksums[relToOut] = hash;
+        updated = true;
+      } else if (productJson.checksums[relToApp] !== undefined && productJson.checksums[relToApp] !== hash) {
+        productJson.checksums[relToApp] = hash;
+        updated = true;
+      } else if (productJson.checksums[standardKey] !== undefined && productJson.checksums[standardKey] !== hash) {
         productJson.checksums[standardKey] = hash;
         updated = true;
       }
@@ -363,11 +390,15 @@ export function removeBridgeTagsFromHtml(html: string): string {
  * Builds bridge script content boilerplate or loads from media file if available
  */
 export function buildBridgeScriptContent(_context?: any): string {
-  const candidatePaths = [
+  const candidatePaths: string[] = [];
+  if (_context?.extensionPath) {
+    candidatePaths.push(path.join(_context.extensionPath, 'media', 'autoplan-dom-bridge.js'));
+  }
+  candidatePaths.push(
     path.resolve(__dirname, '../media/autoplan-dom-bridge.js'),
     path.resolve(__dirname, '../../media/autoplan-dom-bridge.js'),
     path.resolve(process.cwd(), 'media/autoplan-dom-bridge.js')
-  ];
+  );
   for (const p of candidatePaths) {
     if (fs.existsSync(p)) {
       try {
@@ -402,7 +433,7 @@ export function installBridgeScript(options: InjectorOptions = {}): InjectionRes
     const scriptFileName = options.scriptFileName || DEFAULT_BRIDGE_SCRIPT_NAME;
     const scriptFilePath = path.join(wbDir, scriptFileName);
 
-    const scriptContent = buildBridgeScriptContent();
+    const scriptContent = buildBridgeScriptContent(options.context);
     let scriptNeedsUpdate = true;
     if (fs.existsSync(scriptFilePath)) {
       try {
@@ -413,8 +444,11 @@ export function installBridgeScript(options: InjectorOptions = {}): InjectionRes
       }
     }
 
-    // Idempotency check: avoid redundant file writes when bridge is already injected and script is up to date
-    if (isBridgeInstalled(rawContent) && !scriptNeedsUpdate && !options.forceBackup) {
+    // Idempotency check: avoid redundant file writes when bridge is already injected, timestamp matches, and script is up to date
+    const timestampSpecified = options.timestamp !== undefined;
+    const tagMatchesCurrentTimestamp = timestampSpecified ? rawContent.includes(`?v=${options.timestamp}`) : true;
+
+    if (!options.forceReinject && isBridgeInstalled(rawContent) && !scriptNeedsUpdate && tagMatchesCurrentTimestamp && !options.forceBackup) {
       return {
         success: true,
         path: wbPath
@@ -464,8 +498,61 @@ export function installBridgeScript(options: InjectorOptions = {}): InjectionRes
 }
 
 /**
+ * Injects DOM bridge script into workbench.html (alias for installBridgeScript with cache-busting support).
+ */
+export function injectWorkbenchHtml(options: InjectorOptions = {}): InjectionResult {
+  return installBridgeScript(options);
+}
+
+/**
+ * Diagnostic check for DOM Bridge injection status.
+ * Verifies both the HTML script tag and physical script existence in the workbench directory.
+ */
+export function getInjectionStatus(options: InjectorOptions = {}): InjectionStatus {
+  const wbPath = options.workbenchPath || getWorkbenchPath(options.customAppRoot);
+  if (!wbPath || !fs.existsSync(wbPath)) {
+    return {
+      isInstalled: false,
+      tagPresent: false,
+      scriptFileExists: false,
+      workbenchPath: wbPath || null,
+      scriptPath: null
+    };
+  }
+
+  let tagPresent = false;
+  let versionTimestamp: string | number | undefined = undefined;
+  try {
+    const content = fs.readFileSync(wbPath, 'utf8');
+    tagPresent = content.includes(TAG_START) && content.includes(TAG_END);
+    if (tagPresent) {
+      const match = content.match(/autoplan-dom-bridge\.js\?v=([^\s"']+)/);
+      if (match) {
+        versionTimestamp = match[1];
+      }
+    }
+  } catch {
+    tagPresent = false;
+  }
+
+  const wbDir = path.dirname(wbPath);
+  const scriptFileName = options.scriptFileName || DEFAULT_BRIDGE_SCRIPT_NAME;
+  const scriptPath = path.join(wbDir, scriptFileName);
+  const scriptFileExists = fs.existsSync(scriptPath);
+
+  return {
+    isInstalled: tagPresent && scriptFileExists,
+    tagPresent,
+    scriptFileExists,
+    workbenchPath: wbPath,
+    scriptPath: scriptPath,
+    versionTimestamp
+  };
+}
+
+/**
  * Uninstalls the DOM bridge script tag from workbench.html.
- * Restores original content and cleans up tag markers and sidecar script file if present.
+ * Restores original content and cleans up tag markers, backup file, and sidecar script file if present.
  */
 export function uninstallBridgeScript(options: InjectorOptions = {}): UninstallationResult {
   const wbPath = options.workbenchPath || getWorkbenchPath(options.customAppRoot);
@@ -483,6 +570,11 @@ export function uninstallBridgeScript(options: InjectorOptions = {}): Uninstalla
     if (fs.existsSync(backupPath)) {
       const backupRaw = fs.readFileSync(backupPath, 'utf8');
       restoredContent = removeBridgeTagsFromHtml(backupRaw);
+      try {
+        fs.unlinkSync(backupPath);
+      } catch {
+        // Ignore unlink error
+      }
     } else {
       const currentRaw = fs.readFileSync(wbPath, 'utf8');
       restoredContent = removeBridgeTagsFromHtml(currentRaw);

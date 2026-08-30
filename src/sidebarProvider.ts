@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import { scanPlanFolder, scanPlanFolderAsync, PhaseFile, sortPhaseFiles } from './planScanner';
+import { scanPlanFolder, scanPlanFolderAsync, PhaseFile, sortPhaseFiles, auditPlanPhasesAsync, PlanPhasesAuditReport, PhaseDiagnosticInfo } from './planScanner';
 import { discoverWorkspacePlanFolders, discoverWorkspacePlanFoldersAsync, executePhases, promptAndStartAutoPlan, showBridgeDiagnosticDialog, getCurrentPlanFolder, setCurrentPlanFolder } from './extension';
 import { orchestrator } from './orchestrator';
 import { bridgeServer } from './bridgeServer';
@@ -12,7 +12,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   private _view?: vscode.WebviewView;
   private _activePlanPath?: string;
-  private _phases: PhaseFile[] = [];
+  private _rawPhases: PhaseFile[] = [];
+  private _phases: (PhaseFile | PhaseDiagnosticInfo)[] = [];
   private _selectedPhaseIndices: Set<number> = new Set();
   private _transcriptLogs: string[] = [];
   private _pendingLogQueue: string[] = [];
@@ -58,20 +59,42 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       this._activePlanPath = getCurrentPlanFolder();
     }
 
+    let auditReport: PlanPhasesAuditReport | undefined = undefined;
+
     if (this._activePlanPath) {
       try {
         const stat = await fs.promises.stat(this._activePlanPath);
         if (stat.isDirectory()) {
-          this._phases = await scanPlanFolderAsync(this._activePlanPath);
-          if (this._selectedPhaseIndices.size === 0 && this._phases.length > 0) {
-            this._phases.forEach((p, idx) => {
+          const rawPhases = await scanPlanFolderAsync(this._activePlanPath);
+          this._rawPhases = rawPhases;
+          if (this._selectedPhaseIndices.size === 0 && rawPhases.length > 0) {
+            rawPhases.forEach((p, idx) => {
               if (!p.isCompleted) {
                 this._selectedPhaseIndices.add(idx);
               }
             });
             if (this._selectedPhaseIndices.size === 0) {
-              this._phases.forEach((_, idx) => this._selectedPhaseIndices.add(idx));
+              rawPhases.forEach((_, idx) => this._selectedPhaseIndices.add(idx));
             }
+          }
+
+          const isRunning = orchestrator.isRunning();
+          const currentPhase = orchestrator.getCurrentPhase();
+          const currentIdx = currentPhase ? rawPhases.findIndex(p => p.fileName === currentPhase.fileName) : 0;
+
+          if (isRunning) {
+            auditReport = orchestrator.getPhaseAuditReport();
+          } else {
+            auditReport = await auditPlanPhasesAsync(this._activePlanPath, {
+              selectedIndices: this._selectedPhaseIndices,
+              orchestratorState: 'idle'
+            });
+          }
+
+          if (auditReport && auditReport.phases && auditReport.phases.length > 0) {
+            this._phases = auditReport.phases;
+          } else {
+            this._phases = rawPhases;
           }
         }
       } catch {
@@ -96,7 +119,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       selectedIndices: Array.from(this._selectedPhaseIndices),
       currentPhaseIndex: currentIdx >= 0 ? currentIdx : 0,
       progressPercentage: (orchestrator as any).getProgressPercentage ? (orchestrator as any).getProgressPercentage() : 0,
-      plans
+      plans,
+      auditReport
     };
 
     this.updateState(state);
@@ -274,7 +298,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
 
     const phasesToRun: PhaseFile[] = [];
-    this._phases.forEach((phase, idx) => {
+    this._rawPhases.forEach((phase, idx) => {
       if (this._selectedPhaseIndices.has(idx)) {
         phasesToRun.push(phase);
       }

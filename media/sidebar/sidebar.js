@@ -189,10 +189,13 @@
       const isSelected = selectedSet.has(index);
       if (isSelected) selectedCount++;
 
-      const isCurrent = index === currentIdx && currentState === 'running';
+      const isCurrent = (index === currentIdx && currentState === 'running') || phase.status === 'Running';
+      const isDone = phase.isCompleted || phase.status === 'Completed';
+      const isFailed = phase.status === 'Failed' || phase.status === 'failed';
+      const isSkipped = phase.status === 'Skipped' || phase.status === 'skipped';
 
       const item = document.createElement('div');
-      item.className = `phase-item ${isCurrent ? 'running' : ''} ${phase.isCompleted ? 'completed' : ''}`;
+      item.className = `phase-item ${isCurrent ? 'running' : ''} ${isDone ? 'completed' : ''} ${isFailed ? 'failed' : ''}`;
 
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
@@ -204,24 +207,45 @@
       const nameSpan = document.createElement('span');
       nameSpan.className = 'phase-name';
       nameSpan.textContent = phase.fileName;
-      nameSpan.title = phase.filePath || phase.fileName;
 
       const tagSpan = document.createElement('span');
       tagSpan.className = 'status-tag ';
 
+      let tooltipText = '';
+
       if (isCurrent) {
         tagSpan.className += 'tag-running';
-        tagSpan.textContent = 'RUNNING';
-      } else if (phase.isCompleted) {
+        tagSpan.textContent = '🔄 Running';
+        tooltipText = 'Phase is currently executing...';
+      } else if (isDone) {
         tagSpan.className += 'tag-done';
-        tagSpan.textContent = 'DONE';
-      } else if (phase.status === 'failed') {
+        tagSpan.textContent = '✅ Completed';
+        tooltipText = 'Phase marked as completed.';
+      } else if (isFailed) {
         tagSpan.className += 'tag-failed';
-        tagSpan.textContent = 'FAILED';
+        tagSpan.textContent = '❌ Failed';
+        tooltipText = phase.error || (phase.stallReason ? phase.stallReason.description : 'Phase execution failed.');
+      } else if (isSkipped) {
+        tagSpan.className += 'tag-skipped';
+        tagSpan.textContent = '⏭️ Skipped';
+        tooltipText = phase.stallReason ? phase.stallReason.description : 'Phase was skipped.';
       } else {
         tagSpan.className += 'tag-pending';
-        tagSpan.textContent = 'PENDING';
+        tagSpan.textContent = '⏳ Pending';
+        if (phase.stallReason && phase.stallReason.description) {
+          tooltipText = phase.stallReason.description;
+        } else {
+          tooltipText = 'Waiting for execution.';
+        }
       }
+
+      if (phase.stallReason && phase.stallReason.remediationAction && !isDone && !isCurrent) {
+        tooltipText += ` (${phase.stallReason.remediationAction})`;
+      }
+
+      tagSpan.title = tooltipText;
+      nameSpan.title = `${phase.filePath || phase.fileName}\n${tooltipText}`;
+      item.title = tooltipText;
 
       item.appendChild(checkbox);
       item.appendChild(nameSpan);

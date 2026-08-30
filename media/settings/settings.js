@@ -65,6 +65,14 @@
   const btnSetupBridge = document.getElementById('btnSetupBridge');
   const btnUninstallBridge = document.getElementById('btnUninstallBridge');
 
+  // DOM Elements - Phase Diagnostics Telemetry
+  const btnRefreshPhaseDiagnostics = document.getElementById('btnRefreshPhaseDiagnostics');
+  const diagPlanFolder = document.getElementById('diagPlanFolder');
+  const diagPhaseRatio = document.getElementById('diagPhaseRatio');
+  const diagBlockerStatus = document.getElementById('diagBlockerStatus');
+  const diagStallWarningBox = document.getElementById('diagStallWarningBox');
+  const diagStallWarningText = document.getElementById('diagStallWarningText');
+
   // DOM Elements - Diagnostics & Live Log Viewer
   const btnCopyDebugLog = document.getElementById('btnCopyDebugLog');
   const btnExportDebugLog = document.getElementById('btnExportDebugLog');
@@ -381,6 +389,61 @@
     });
   }
 
+  // Phase Diagnostics Refresh Button
+  if (btnRefreshPhaseDiagnostics) {
+    btnRefreshPhaseDiagnostics.addEventListener('click', (e) => {
+      e.preventDefault();
+      vscode.postMessage({ command: 'requestPhaseDiagnostics' });
+    });
+  }
+
+  /**
+   * Updates Plan & Phase Diagnostics UI card with live telemetry.
+   */
+  function updatePhaseDiagnostics(planPhases) {
+    if (!planPhases) {
+      if (diagPlanFolder) diagPlanFolder.textContent = 'None';
+      if (diagPhaseRatio) diagPhaseRatio.textContent = '0 / 0 Completed';
+      if (diagBlockerStatus) {
+        diagBlockerStatus.textContent = 'No Plan Loaded';
+        diagBlockerStatus.className = 'stat-value';
+      }
+      if (diagStallWarningBox) diagStallWarningBox.classList.add('hidden');
+      return;
+    }
+
+    if (diagPlanFolder) {
+      const raw = planPhases.folderPath || '';
+      const base = raw ? raw.replace(/\\/g, '/').split('/').pop() : 'None';
+      diagPlanFolder.textContent = base || raw || 'None';
+      diagPlanFolder.title = raw;
+    }
+
+    if (diagPhaseRatio) {
+      diagPhaseRatio.textContent = `${planPhases.completedCount || 0} / ${planPhases.totalPhases || 0} Completed`;
+    }
+
+    const hasBlockers = planPhases.hasBlockers || (planPhases.failedCount && planPhases.failedCount > 0);
+    if (diagBlockerStatus) {
+      if (hasBlockers) {
+        diagBlockerStatus.textContent = '⚠️ Stall / Blocker Detected';
+        diagBlockerStatus.className = 'stat-value status-warning';
+      } else {
+        diagBlockerStatus.textContent = '✅ Normal (No Blockers)';
+        diagBlockerStatus.className = 'stat-value status-ok';
+      }
+    }
+
+    if (diagStallWarningBox && diagStallWarningText) {
+      if (hasBlockers && planPhases.primaryBlockerReason) {
+        diagStallWarningText.textContent = planPhases.primaryBlockerReason;
+        diagStallWarningBox.classList.remove('hidden');
+      } else {
+        diagStallWarningBox.classList.add('hidden');
+      }
+    }
+  }
+
   // Diagnostic Log Action buttons
   if (btnCopyDebugLog) {
     btnCopyDebugLog.addEventListener('click', (e) => {
@@ -572,6 +635,16 @@
       case 'initSettings': {
         const config = message.settings || message.config || {};
         applySettingsToForm(config);
+        if (message.planPhases) {
+          updatePhaseDiagnostics(message.planPhases);
+        }
+        break;
+      }
+
+      case 'phaseDiagnostics': {
+        if (message.planPhases) {
+          updatePhaseDiagnostics(message.planPhases);
+        }
         break;
       }
 
@@ -594,6 +667,10 @@
         }
         if (message.toolchain !== undefined && healthToolchain) {
           healthToolchain.textContent = message.toolchain;
+        }
+
+        if (message.planPhases) {
+          updatePhaseDiagnostics(message.planPhases);
         }
 
         // Sub-indicators in tier cards
@@ -683,6 +760,7 @@
       createLogRow,
       renderLogConsole,
       appendSingleLogEntry,
+      updatePhaseDiagnostics,
       getLogBuffer: () => logBuffer,
       setLogBuffer: (buf) => { logBuffer = buf; }
     };

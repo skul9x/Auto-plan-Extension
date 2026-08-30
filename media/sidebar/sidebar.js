@@ -189,13 +189,14 @@
       const isSelected = selectedSet.has(index);
       if (isSelected) selectedCount++;
 
-      const isCurrent = (index === currentIdx && currentState === 'running') || phase.status === 'Running';
+      const isCurrent = currentState === 'running' && (index === currentIdx || phase.status === 'Running');
       const isDone = phase.isCompleted || phase.status === 'Completed';
       const isFailed = phase.status === 'Failed' || phase.status === 'failed';
+      const isStopped = phase.status === 'Stopped' || phase.status === 'stopped';
       const isSkipped = phase.status === 'Skipped' || phase.status === 'skipped';
 
       const item = document.createElement('div');
-      item.className = `phase-item ${isCurrent ? 'running' : ''} ${isDone ? 'completed' : ''} ${isFailed ? 'failed' : ''}`;
+      item.className = `phase-item ${isCurrent ? 'running' : ''} ${isDone ? 'completed' : ''} ${isFailed ? 'failed' : ''} ${isStopped ? 'stopped' : ''}`;
 
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
@@ -225,6 +226,10 @@
         tagSpan.className += 'tag-failed';
         tagSpan.textContent = '❌ Failed';
         tooltipText = phase.error || (phase.stallReason ? phase.stallReason.description : 'Phase execution failed.');
+      } else if (isStopped) {
+        tagSpan.className += 'tag-stopped';
+        tagSpan.textContent = '⏹️ Stopped';
+        tooltipText = 'Execution was stopped.';
       } else if (isSkipped) {
         tagSpan.className += 'tag-skipped';
         tagSpan.textContent = '⏭️ Skipped';

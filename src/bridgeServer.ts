@@ -1,5 +1,4 @@
 import * as http from 'http';
-import * as url from 'url';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -509,15 +508,16 @@ export class BridgeServer {
       return;
     }
 
-    const parsedUrl = url.parse(req.url || '', true);
+    const parsedUrl = new URL(req.url || '', 'http://127.0.0.1');
     const pathname = parsedUrl.pathname || '';
     const headerKey = req.headers['x-window-key'];
-    const queryKey = parsedUrl.query.windowKey;
+    const queryKey = parsedUrl.searchParams.get('windowKey');
     const reqWindowKey = (typeof queryKey === 'string' ? queryKey : (typeof headerKey === 'string' ? headerKey : '')).trim();
 
     // 4. Routing
     if (req.method === 'GET' && pathname === '/autoplan-status') {
-      this.handleGetStatus(reqWindowKey, parsedUrl.query, res);
+      const queryParams: Record<string, string> = Object.fromEntries(parsedUrl.searchParams.entries());
+      this.handleGetStatus(reqWindowKey, queryParams, res);
     } else if (req.method === 'POST' && pathname === '/autoplan-log') {
       this.handlePostLog(req, res, reqWindowKey);
     } else if (req.method === 'POST' && pathname === '/autoplan-ack') {

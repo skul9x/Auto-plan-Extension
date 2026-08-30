@@ -1,39 +1,62 @@
-# Logs
-logs
+# Logs & Debug Output
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 
-# Runtime data
+# Runtime, Temporary & Session Data
 pids
 *.pid
 *.seed
 *.pid.lock
+tmp/
+temp/
+*.tmp
 .brain/
 
 # Dependency directories
 node_modules/
+.pnpm-store/
+jspm_packages/
 
-# TypeScript / Build output
+# TypeScript / Build & Distribution Output
 out/
 dist/
+build/
 *.tsbuildinfo
-
-# VSIX extension package files
 *.vsix
 
 # VS Code test and local runtime
 .vscode-test/
+.vscode-test-web/
 .vscode/
 
-# OS metadata
+# OS & Editor metadata
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
+# Windows
 Thumbs.db
+ehthumbs.db
 Desktop.ini
+*.stackdump
+# Linux / Editors
+*~
+*.swp
+*.swo
+.directory
 
-# Environment variables
+# Environment variables & Secrets
 .env
 .env.local
 .env.*.local
+*.pem
+*.key
 
+# Coverage & Diagnostics
+coverage/
+.nyc_output/

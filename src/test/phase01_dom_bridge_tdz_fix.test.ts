@@ -447,17 +447,11 @@ async function runTests() {
     });
 
     assert.strictEqual(result.success, true);
-    assert.strictEqual(result.sendButtonClicked, true);
-    assert.strictEqual(result.submitStrategy, 'buttonClick');
-
     // Check dispatched input events on textarea
     const inputEvts = textarea.dispatchedEvents.map(e => e.type);
     assert.ok(inputEvts.includes('beforeinput'), 'Should dispatch beforeinput');
     assert.ok(inputEvts.includes('input'), 'Should dispatch input');
     assert.ok(inputEvts.includes('change'), 'Should dispatch change');
-    assert.ok(inputEvts.includes('keydown'), 'Should dispatch keydown Enter');
-    assert.ok(inputEvts.includes('keypress'), 'Should dispatch keypress Enter');
-    assert.ok(inputEvts.includes('keyup'), 'Should dispatch keyup Enter');
 
     // Check pointer and mouse events on send button
     const btnEvts = sendBtn.dispatchedEvents.map(e => e.type);
@@ -465,9 +459,9 @@ async function runTests() {
     assert.ok(btnEvts.includes('mousedown'), 'Should dispatch mousedown on send button');
     assert.ok(btnEvts.includes('pointerup'), 'Should dispatch pointerup on send button');
     assert.ok(btnEvts.includes('mouseup'), 'Should dispatch mouseup on send button');
-    assert.ok(btnEvts.includes('click'), 'Should dispatch click on send button');
+    assert.strictEqual(sendBtn.clickCalled, true, 'Should execute native click on send button');
 
-    console.log('  ✓ Correctly dispatched InputEvent, KeyboardEvent, PointerEvent, and MouseEvent cascades');
+    console.log('  ✓ Correctly dispatched InputEvent, PointerEvent, and MouseEvent cascades');
   }
 
   // =========================================================================

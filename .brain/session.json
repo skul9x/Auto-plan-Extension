@@ -1,96 +1,87 @@
 {
-  "updated_at": "2026-08-29T20:05:00+07:00",
+  "updated_at": "2026-08-30T10:25:00+07:00",
   "working_on": {
-    "feature": "DOM Bridge Diagnostic & Debug Logger Subsystem",
-    "task": "Completed Phase 04: Export Diagnostics Commands & Webview 1-Click Integration",
+    "feature": "WHATWG URL Migration, Async Scanner, and DOM Bridge Single Submit Fix",
+    "task": "Completed WHATWG URL Migration ([DEP0169] fix), Async Plan Folder Scanner, and DOM Bridge Duplicate Submit Click Fix",
     "status": "completed",
     "files": [
-      "src/debugLogger.ts",
-      "src/config.ts",
       "src/bridgeServer.ts",
-      "src/promptDispatcher.ts",
-      "media/autoplan-dom-bridge.js",
-      "src/workbenchInjector.ts",
+      "src/planScanner.ts",
+      "src/orchestrator.ts",
       "src/extension.ts",
-      "src/settingsProvider.ts",
-      "src/sidebarProvider.ts",
-      "media/settings/settings.html",
-      "media/settings/settings.js",
-      "media/settings/settings.css",
-      "media/sidebar/sidebar.html",
-      "media/sidebar/sidebar.js",
-      "package.json",
-      "src/test/phase04_export_diagnostics_e2e.test.ts"
+      "media/autoplan-dom-bridge.js",
+      "src/test/phase01_whatwg_url_bridge_server.test.ts",
+      "src/test/phase02_async_orchestrator_scanner.test.ts",
+      "src/test/phase03_dep0169_async_scanner_regression.test.ts",
+      "src/test/phase02_lexical_submit_cascade_fix.test.ts",
+      "src/test/phase03_direct_submission_doubletap.test.ts",
+      "src/test/phase01_dom_bridge_tdz_fix.test.ts",
+      "plans/260830-1015-dep0169-url-parse-and-async-plan-scanner/plan.md"
     ],
     "blockers": [],
-    "notes": "All 4 phases of DOM Bridge Diagnostic & Debug Logger Subsystem fully implemented and verified with single file-based test suites."
+    "notes": "All 3 phases in plan 260830-1015 completed with 100% tests passing and zero [DEP0169] deprecation warnings. Resolved duplicate prompt submit bug in DOM Bridge client."
   },
   "pending_tasks": [],
   "recent_changes": [
     {
-      "timestamp": "2026-08-29T20:03:00+07:00",
-      "type": "feature",
-      "description": "Completed Phase 04: Export Diagnostics Commands & Webview 1-Click Integration. Added autoplan.copyDebugLog, autoplan.exportDebugLog, autoplan.clearDebugLog, autoplan.showOutputChannel, Live Log Viewer Console in Settings Panel, quick-copy in Sidebar footer, and direct diagnostic copy in failure toasts.",
-      "files": [
-        "src/extension.ts",
-        "src/settingsProvider.ts",
-        "src/sidebarProvider.ts",
-        "media/settings/settings.html",
-        "media/settings/settings.js",
-        "media/settings/settings.css",
-        "media/sidebar/sidebar.html",
-        "media/sidebar/sidebar.js",
-        "package.json",
-        "src/test/phase04_export_diagnostics_e2e.test.ts"
-      ]
-    },
-    {
-      "timestamp": "2026-08-29T19:56:00+07:00",
-      "type": "feature",
-      "description": "Completed Phase 03: Deep Electron DOM Diagnostic Engine in media/autoplan-dom-bridge.js and src/workbenchInjector.ts.",
+      "timestamp": "2026-08-30T10:25:00+07:00",
+      "type": "bugfix",
+      "description": "Fixed duplicate prompt submission bug in media/autoplan-dom-bridge.js by eliminating duplicate synthetic MouseEvent('click') when native button.click() is already executed, and enforced strict single mutually exclusive submit.",
       "files": [
         "media/autoplan-dom-bridge.js",
-        "src/workbenchInjector.ts",
-        "src/test/phase03_renderer_dom_diagnostics.test.ts"
+        "src/test/phase02_lexical_submit_cascade_fix.test.ts",
+        "src/test/phase03_direct_submission_doubletap.test.ts",
+        "src/test/phase01_dom_bridge_tdz_fix.test.ts"
       ]
     },
     {
-      "timestamp": "2026-08-29T19:53:00+07:00",
+      "timestamp": "2026-08-30T10:24:00+07:00",
       "type": "feature",
-      "description": "Completed Phase 02: BridgeServer Log Ingestion API (/log) and IPC multi-tier tracing.",
+      "description": "Completed Phase 03: End-to-End Regression & Zero-Deprecation Verification with global warning trap tests.",
+      "files": [
+        "src/test/phase03_dep0169_async_scanner_regression.test.ts",
+        "package.json",
+        "plans/260830-1015-dep0169-url-parse-and-async-plan-scanner/phase-03-e2e-regression-verification.md"
+      ]
+    },
+    {
+      "timestamp": "2026-08-30T10:18:00+07:00",
+      "type": "feature",
+      "description": "Completed Phase 02: Migrated Orchestrator and Extension workflows to use scanPlanFolderAsync.",
+      "files": [
+        "src/planScanner.ts",
+        "src/orchestrator.ts",
+        "src/extension.ts",
+        "src/test/phase02_async_orchestrator_scanner.test.ts",
+        "plans/260830-1015-dep0169-url-parse-and-async-plan-scanner/phase-02-async-plan-scanning-orchestrator.md"
+      ]
+    },
+    {
+      "timestamp": "2026-08-30T10:16:00+07:00",
+      "type": "feature",
+      "description": "Completed Phase 01: Replaced deprecated url.parse() with modern WHATWG URL API in BridgeServer.",
       "files": [
         "src/bridgeServer.ts",
-        "src/promptDispatcher.ts",
-        "src/test/phase02_bridgeserver_log_tracing.test.ts"
-      ]
-    },
-    {
-      "timestamp": "2026-08-29T19:49:00+07:00",
-      "type": "feature",
-      "description": "Completed Phase 01: Core DebugLogger subsystem and dedicated VS Code Log Output Channel.",
-      "files": [
-        "src/debugLogger.ts",
-        "src/config.ts",
-        "src/test/phase01_debug_logger_subsystem.test.ts"
+        "src/test/phase01_whatwg_url_bridge_server.test.ts",
+        "plans/260830-1015-dep0169-url-parse-and-async-plan-scanner/phase-01-whatwg-url-migration.md"
       ]
     }
   ],
   "errors_encountered": [
     {
-      "error": "ReferenceError: document is not defined when requiring media/settings/settings.js in Node.js test runner",
-      "solution": "Added safe fallback mock for document and window at the head of settings.js when running in headless Node.js environment.",
+      "error": "[DEP0169] DeprecationWarning: url.parse() behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead.",
+      "solution": "Replaced legacy url.parse() with WHATWG new URL(req.url, 'http://127.0.0.1') in BridgeServer; verified zero deprecation warnings with process.on('warning') trap.",
       "resolved": true
     },
     {
-      "error": "SettingsProvider clearDebugLog only cleared global logger instance instead of injected instance",
-      "solution": "Updated handleMessage clearDebugLog case to clear this._logger, send updated buffer, and dispatch command.",
+      "error": "Prompt dispatched twice into chat during phase execution due to duplicate click events.",
+      "solution": "Eliminated redundant button.dispatchEvent(new MouseEvent('click')) after native button.click() in dispatchButtonClickCascade, re-injected DOM bridge into workbench.",
       "resolved": true
     }
   ],
   "decisions_made": [
-    "Use bounded ring buffer (500 entries) in memory to prevent memory bloat while allowing instant report compilation",
-    "Provide dedicated VS Code Log Output Channel ('Auto-Plan DOM Bridge') for live trace streaming",
-    "Support 1-click clipboard copy from failure notification toasts without navigating away",
-    "Add collapsible full-width live log viewer console in Settings Panel with level filtering and auto-scroll"
+    "Use WHATWG URL API across all HTTP request parsing in BridgeServer",
+    "Enforce single mutually exclusive submit strategy (buttonClick OR enterKey OR formSubmit) to prevent double chat messages",
+    "Use scanPlanFolderAsync across all orchestrator execution and quickpick workflows"
   ]
 }

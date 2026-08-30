@@ -7,6 +7,10 @@
   "engines": {
     "vscode": "^1.80.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/skul9x/Auto-plan-Extension.git"
+  },
   "categories": [
     "Other",
     "Automation"
@@ -255,6 +259,7 @@
     "test:tdz": "node out/test/phase01_dom_bridge_tdz_fix.test.js",
     "test:bridge": "node out/test/phase05_full_e2e_regression.test.js",
     "test:modernize": "node out/test/phase02_test_suite_modernization.test.js",
+    "test:dep0169": "node out/test/phase03_dep0169_async_scanner_regression.test.js",
     "test:all": "node out/test/phase05_e2e_cross_platform_release.test.js"
   },
   "devDependencies": {

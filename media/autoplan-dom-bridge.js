@@ -816,17 +816,7 @@
       }
     } catch (_) {}
 
-    // 3. Native button.click()
-    try {
-      if (typeof button.click === 'function') {
-        button.click();
-        anyDispatched = true;
-      }
-    } catch (clickErr) {
-      logBridge('WARN', `button.click() failed: ${clickErr?.message || clickErr}`, {}, clickErr);
-    }
-
-    // 4. Pointerup
+    // 3. Pointerup
     try {
       if (targetWin && typeof targetWin.PointerEvent === 'function') {
         button.dispatchEvent(new targetWin.PointerEvent('pointerup', { bubbles: true, cancelable: true, button: 0, composed: true }));
@@ -837,7 +827,7 @@
       }
     } catch (_) {}
 
-    // 5. Mouseup
+    // 4. Mouseup
     try {
       if (targetWin && typeof targetWin.MouseEvent === 'function') {
         button.dispatchEvent(new targetWin.MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, composed: true }));
@@ -848,16 +838,29 @@
       }
     } catch (_) {}
 
-    // 6. Click
+    // 5. Single Click Execution (Native button.click() OR synthetic MouseEvent click fallback)
+    let clickExecuted = false;
     try {
-      if (targetWin && typeof targetWin.MouseEvent === 'function') {
-        button.dispatchEvent(new targetWin.MouseEvent('click', { bubbles: true, cancelable: true, button: 0, composed: true }));
-        anyDispatched = true;
-      } else if (typeof MouseEvent !== 'undefined') {
-        button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, composed: true }));
+      if (typeof button.click === 'function') {
+        button.click();
+        clickExecuted = true;
         anyDispatched = true;
       }
-    } catch (_) {}
+    } catch (clickErr) {
+      logBridge('WARN', `button.click() failed: ${clickErr?.message || clickErr}`, {}, clickErr);
+    }
+
+    if (!clickExecuted) {
+      try {
+        if (targetWin && typeof targetWin.MouseEvent === 'function') {
+          button.dispatchEvent(new targetWin.MouseEvent('click', { bubbles: true, cancelable: true, button: 0, composed: true }));
+          anyDispatched = true;
+        } else if (typeof MouseEvent !== 'undefined') {
+          button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, composed: true }));
+          anyDispatched = true;
+        }
+      } catch (_) {}
+    }
 
     return anyDispatched;
   }

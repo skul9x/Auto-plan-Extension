@@ -236,6 +236,7 @@ body {
 .tag-running { background: var(--info-color); color: #fff; }
 .tag-pending { background: var(--badge-bg); color: var(--badge-fg); opacity: 0.85; }
 .tag-failed { background: var(--danger-bg); color: #fff; }
+.tag-stopped { background: rgba(255, 165, 0, 0.2); color: #ffa500; border: 1px solid rgba(255, 165, 0, 0.4); }
 .tag-skipped { background: rgba(255, 255, 255, 0.1); color: var(--text-color); }
 
 .empty-state {

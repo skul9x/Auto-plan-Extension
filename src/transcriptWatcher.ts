@@ -165,10 +165,6 @@ export async function getCandidateConversationsAsync(
         continue;
       }
 
-      if (sinceTimestamp !== undefined && sinceTimestamp > 0 && dirTime < sinceTimestamp) {
-        continue;
-      }
-
       const transcriptPath = getTranscriptPath(fullPath);
       let transcriptMtime = 0;
       let transcriptSize = 0;
@@ -181,6 +177,11 @@ export async function getCandidateConversationsAsync(
         } catch {
           // File might not exist yet
         }
+      }
+
+      const effectiveTime = Math.max(dirTime, transcriptMtime);
+      if (sinceTimestamp !== undefined && sinceTimestamp > 0 && effectiveTime < sinceTimestamp) {
+        continue;
       }
 
       candidates.push({
@@ -267,10 +268,6 @@ export function findLatestConversation(
         continue;
       }
 
-      if (sinceTimestamp !== undefined && sinceTimestamp > 0 && dirTime < sinceTimestamp) {
-        continue;
-      }
-
       const transcriptPath = getTranscriptPath(fullPath);
       let transcriptMtime = 0;
       let transcriptSize = 0;
@@ -281,6 +278,11 @@ export function findLatestConversation(
           transcriptMtime = tStats.mtimeMs;
           transcriptSize = tStats.size;
         } catch {}
+      }
+
+      const effectiveTime = Math.max(dirTime, transcriptMtime);
+      if (sinceTimestamp !== undefined && sinceTimestamp > 0 && effectiveTime < sinceTimestamp) {
+        continue;
       }
 
       candidates.push({
@@ -448,7 +450,7 @@ export class TranscriptWatcher extends EventEmitter {
   public async waitForNewConversation(
     sinceTimestamp: number,
     excludeConvIdOrTimeout?: string | number,
-    timeoutMs: number = 10000,
+    timeoutMs: number = 3000,
     pollIntervalMs: number = 300
   ): Promise<string> {
     let excludeConvId: string | undefined;
@@ -843,7 +845,7 @@ export class TranscriptWatcher extends EventEmitter {
       convId = candidates[0].convId;
       transcriptPath = candidates[0].transcriptPath || getTranscriptPath(candidates[0].fullPath);
     } else {
-      convId = await findLatestConversationAsync(this.options.brainDir, sinceTimestamp, excludeConvId);
+      convId = await findLatestConversationAsync(this.options.brainDir, undefined, excludeConvId);
       if (convId) {
         transcriptPath = getTranscriptPath(path.join(this.options.brainDir, convId));
       }

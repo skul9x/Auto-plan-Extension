@@ -460,16 +460,15 @@ async function runPhase03Tests() {
     assert.strictEqual(result.success, true, 'Result must indicate success');
     assert.strictEqual(result.submitStrategy, 'buttonClick', 'submitStrategy must be buttonClick');
     assert.strictEqual(result.sendButtonClicked, true, 'sendButtonClicked must be true');
-    assert.strictEqual(result.enterDispatched, true, 'enterDispatched must be true');
+    assert.strictEqual(result.enterDispatched, false, 'enterDispatched must be false on buttonClick');
     assert.strictEqual(result.charsInjected, prompt.length, 'charsInjected must match prompt length');
 
-    // Verify 6-step event cascade on sendBtn:
+    // Verify pointer & mouse event cascade on sendBtn:
     // 1. pointerdown (button 0)
     // 2. mousedown (button 0)
-    // 3. native click
-    // 4. pointerup (button 0)
-    // 5. mouseup (button 0)
-    // 6. synthetic click (MouseEvent)
+    // 3. pointerup (button 0)
+    // 4. mouseup (button 0)
+    // 5. native click
     const events = sendBtn.dispatchedEvents;
     const types = events.map(e => e.type);
 
@@ -478,7 +477,6 @@ async function runPhase03Tests() {
     assert.ok(types.includes('native-click'), 'Cascade must include native click()');
     assert.ok(types.includes('pointerup'), 'Cascade must include pointerup');
     assert.ok(types.includes('mouseup'), 'Cascade must include mouseup');
-    assert.ok(types.includes('click'), 'Cascade must include click');
 
     const pointerDown = events.find(e => e.type === 'pointerdown');
     assert.strictEqual(pointerDown?.bubbles, true);
@@ -561,7 +559,9 @@ async function runPhase03Tests() {
       document: doc,
       window: win,
       targetElement: input,
-      sendButton: sendBtn
+      sendButton: sendBtn,
+      syncDelayMs: 0,
+      doubleTapRetry: true
     });
 
     assert.strictEqual(result.success, true);
@@ -577,39 +577,35 @@ async function runPhase03Tests() {
   // ==========================================================================
   console.log('\n[Test 4] Verifying Form Submission Fallbacks...');
   {
-    // Sub-case 4A: form.requestSubmit(btn)
+    // Sub-case 4A: form.requestSubmit(btn) when KeyboardEvent unavailable and button is submit
     {
       const doc = new MockDocument();
       const win = createMockWindow(doc);
+      (win as any).KeyboardEvent = undefined;
 
       const form = doc.createElement('form');
       const input = doc.createElement('textarea');
-      const sendBtn = doc.createElement('button');
-      sendBtn.setAttribute('type', 'submit');
-      sendBtn.form = form;
       input.form = form;
       form.appendChild(input);
-      form.appendChild(sendBtn);
       doc.body.appendChild(form);
 
       const result = await domBridge.injectPromptAndSubmit('Form prompt A', {
         document: doc,
         window: win,
-        targetElement: input,
-        sendButton: sendBtn
+        targetElement: input
       });
 
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.formSubmitted, true, 'formSubmitted should be true');
       assert.strictEqual(form.requestSubmitCalls.length, 1, 'form.requestSubmit must be invoked');
-      assert.strictEqual(form.requestSubmitCalls[0], sendBtn, 'form.requestSubmit should pass sendBtn');
-      console.log('  ✓ form.requestSubmit(sendBtn) executed successfully.');
+      console.log('  ✓ form.requestSubmit() executed successfully.');
     }
 
     // Sub-case 4B: form submit event fallback when requestSubmit is unavailable
     {
       const doc = new MockDocument();
       const win = createMockWindow(doc);
+      (win as any).KeyboardEvent = undefined;
 
       const form = doc.createElement('form');
       // Remove requestSubmit method to test Event('submit') fallback
@@ -645,6 +641,7 @@ async function runPhase03Tests() {
     const input = doc.createElement('textarea');
     input.setAttribute('placeholder', 'Ask...');
     const sendBtn = doc.createElement('button', 'codicon-send');
+    sendBtn.setAttribute('data-testid', 'send-button');
     doc.body.appendChild(input);
     doc.body.appendChild(sendBtn);
 
@@ -685,7 +682,7 @@ async function runPhase03Tests() {
     assert.ok(meta, 'Metadata must be included in ACK payload');
     assert.strictEqual(meta.submitStrategy, 'buttonClick', 'submitStrategy must be buttonClick');
     assert.strictEqual(meta.sendButtonClicked, true, 'sendButtonClicked must be true');
-    assert.strictEqual(meta.enterDispatched, true, 'enterDispatched must be true');
+    assert.strictEqual(meta.enterDispatched, false, 'enterDispatched must be false on buttonClick');
     assert.strictEqual(meta.charsInjected, 'Generate end-to-end integration test suite'.length);
     assert.strictEqual(typeof meta.buttonSelector, 'string');
     assert.ok(Array.isArray(meta.steps), 'steps must be an array');

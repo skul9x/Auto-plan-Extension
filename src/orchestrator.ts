@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { AutoPlanConfig, getConfig, DEFAULT_PROMPT_TEMPLATE } from './config';
@@ -19,6 +20,7 @@ import {
 import {
   PhaseFile,
   scanPlanFolder,
+  scanPlanFolderAsync,
   renderPromptTemplate,
   normalizePath,
   analyzePhaseStallReason,
@@ -39,7 +41,7 @@ export type OrchestratorState =
   | 'completed'
   | 'error';
 
-export type PhaseStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Skipped';
+export type PhaseStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Skipped' | 'Stopped';
 
 export interface PhaseItem {
   /** 0-based sequence index */
@@ -58,6 +60,8 @@ export interface PhaseItem {
   status: PhaseStatus;
   /** Associated conversation ID if detected */
   conversationId?: string;
+  /** Initial file byte offset before prompt dispatch */
+  startOffset?: number;
   /** Execution start timestamp */
   startTime?: number;
   /** Execution end timestamp */
@@ -550,7 +554,7 @@ export class Orchestrator extends EventEmitter {
     this.setState('scanning', `Scanning plan folder: ${folderPath}`);
     this.debugLogger.info('ORCHESTRATOR', `Scanning plan folder: ${folderPath}`);
 
-    const phaseFiles = scanPlanFolder(folderPath);
+    const phaseFiles = await scanPlanFolderAsync(folderPath);
 
     this.phases = phaseFiles.map((pf, idx) => ({
       index: idx,
@@ -564,6 +568,16 @@ export class Orchestrator extends EventEmitter {
 
     const startIndex = options?.startFromIndex ?? 0;
     return this.runPhaseSequence(startIndex, options?.overrideConfig);
+  }
+
+  /**
+   * Alias for startFolder for discovering and executing a plan folder asynchronously.
+   */
+  public async startPlanFolder(
+    folderPath: string,
+    options?: { startFromIndex?: number; overrideConfig?: Partial<AutoPlanConfig> }
+  ): Promise<boolean> {
+    return this.startFolder(folderPath, options);
   }
 
   /**
@@ -771,6 +785,7 @@ export class Orchestrator extends EventEmitter {
       this.phases[i].error = undefined;
       this.phases[i].result = undefined;
       this.phases[i].dispatchResult = undefined;
+      this.phases[i].startOffset = undefined;
     }
 
     try {
@@ -782,6 +797,21 @@ export class Orchestrator extends EventEmitter {
         this.currentIteration = i + 1;
         phase.status = 'Running';
         phase.startTime = Date.now();
+
+        // Measure pre-dispatch offset if lastConversationId is known
+        let initialOffset = 0;
+        if (this.lastConversationId && this.lastConversationId !== 'current_conversation') {
+          const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, this.lastConversationId);
+          const transcriptPath = getTranscriptPath(convDir);
+          if (transcriptPath && fs.existsSync(transcriptPath)) {
+            try {
+              initialOffset = fs.statSync(transcriptPath).size;
+            } catch {
+              initialOffset = 0;
+            }
+          }
+        }
+        phase.startOffset = initialOffset;
 
         // 1. Render Prompt Template & Emit Phase Start Event
         const template = config.promptTemplate || config.promptText || DEFAULT_PROMPT_TEMPLATE;
@@ -931,7 +961,7 @@ export class Orchestrator extends EventEmitter {
             convId = await this.transcriptWatcher.waitForNewConversation(
               phaseStartTime - 1000,
               this.lastConversationId,
-              config.timeoutPerLoopMinutes * 60 * 1000,
+              3000,
               this.transcriptWatcher.getOptions().pollIntervalMs
             );
           } catch (err: any) {
@@ -950,7 +980,7 @@ export class Orchestrator extends EventEmitter {
               continue;
             }
             if (this.isAborted) break;
-            convId = 'current_conversation';
+            convId = this.lastConversationId || 'current_conversation';
           }
 
           if (convId && convId !== 'current_conversation') {
@@ -982,13 +1012,32 @@ export class Orchestrator extends EventEmitter {
           if (convId !== 'current_conversation') {
             const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, convId);
             const transcriptPath = getTranscriptPath(convDir);
+            const offsetToUse =
+              convId === this.lastConversationId && phase.startOffset !== undefined
+                ? phase.startOffset
+                : 0;
             if (transcriptPath) {
-              completionResult = await this.transcriptWatcher.watchFile(transcriptPath, convId);
+              completionResult = await this.transcriptWatcher.watchFile(transcriptPath, convId, offsetToUse, phaseStartTime - 1000);
             } else {
               completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime - 1000, this.lastConversationId);
             }
           } else {
-            completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime - 1000, this.lastConversationId);
+            if (this.lastConversationId) {
+              const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, this.lastConversationId);
+              const transcriptPath = getTranscriptPath(convDir);
+              if (transcriptPath && fs.existsSync(transcriptPath)) {
+                completionResult = await this.transcriptWatcher.watchFile(
+                  transcriptPath,
+                  this.lastConversationId,
+                  phase.startOffset || 0,
+                  phaseStartTime - 1000
+                );
+              } else {
+                completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime - 1000, this.lastConversationId);
+              }
+            } else {
+              completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime - 1000, this.lastConversationId);
+            }
           }
         } finally {
           this.transcriptWatcher.removeListener('conversationRebound', onPhaseRebound);
@@ -1076,6 +1125,12 @@ export class Orchestrator extends EventEmitter {
       this.stopStallWatchdog();
 
       if (this.isAborted) {
+        for (const phase of this.phases) {
+          if (phase.status === 'Running') {
+            phase.status = 'Stopped';
+            phase.endTime = Date.now();
+          }
+        }
         this.setState('stopped', 'Stopped by user');
         this.debugLogger.info('ORCHESTRATOR', 'Orchestration execution stopped by user');
         this.emit('stopped');
@@ -1089,10 +1144,24 @@ export class Orchestrator extends EventEmitter {
     } catch (err: any) {
       this.stopStallWatchdog();
       if (this.isAborted) {
+        for (const phase of this.phases) {
+          if (phase.status === 'Running') {
+            phase.status = 'Stopped';
+            phase.endTime = Date.now();
+          }
+        }
         this.setState('stopped', 'Stopped by user');
         this.debugLogger.info('ORCHESTRATOR', 'Orchestration execution stopped by user');
         this.emit('stopped');
         return false;
+      }
+      if (this.currentPhaseIndex >= 0 && this.currentPhaseIndex < this.phases.length) {
+        const curPhase = this.phases[this.currentPhaseIndex];
+        if (curPhase.status === 'Running') {
+          curPhase.status = 'Failed';
+          curPhase.endTime = Date.now();
+          curPhase.error = err?.message || String(err);
+        }
       }
       const errMsg = err.message || String(err);
       this.setState('error', errMsg);
@@ -1162,6 +1231,20 @@ export class Orchestrator extends EventEmitter {
 
         this.currentIteration = i;
 
+        // Measure pre-dispatch offset if lastConversationId is known
+        let preDispatchOffset = 0;
+        if (this.lastConversationId && this.lastConversationId !== 'current_conversation') {
+          const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, this.lastConversationId);
+          const transcriptPath = getTranscriptPath(convDir);
+          if (transcriptPath && fs.existsSync(transcriptPath)) {
+            try {
+              preDispatchOffset = fs.statSync(transcriptPath).size;
+            } catch {
+              preDispatchOffset = 0;
+            }
+          }
+        }
+
         // Step 1: Sending prompt via PromptDispatcher
         this.setState('sending', 'Sending Prompt...');
         this.debugLogger.info('ORCHESTRATOR', `Sending prompt for iteration ${i}/${this.totalIterations}`);
@@ -1208,11 +1291,11 @@ export class Orchestrator extends EventEmitter {
             convId = await this.transcriptWatcher.waitForNewConversation(
               timestampBeforeSend - 1000,
               this.lastConversationId,
-              5000,
+              3000,
               100
             );
           } catch {
-            convId = 'current_conversation';
+            convId = this.lastConversationId || 'current_conversation';
           }
 
           if (this.isAborted) break;
@@ -1221,13 +1304,29 @@ export class Orchestrator extends EventEmitter {
           if (convId !== 'current_conversation') {
             const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, convId);
             const transcriptPath = getTranscriptPath(convDir);
+            const offsetToUse = convId === this.lastConversationId ? preDispatchOffset : 0;
             if (transcriptPath) {
-              completionResult = await this.transcriptWatcher.watchFile(transcriptPath, convId);
+              completionResult = await this.transcriptWatcher.watchFile(transcriptPath, convId, offsetToUse, timestampBeforeSend - 1000);
             } else {
               completionResult = await this.transcriptWatcher.watchLatest(timestampBeforeSend - 1000, this.lastConversationId);
             }
           } else {
-            completionResult = await this.transcriptWatcher.watchLatest(timestampBeforeSend - 1000, this.lastConversationId);
+            if (this.lastConversationId) {
+              const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, this.lastConversationId);
+              const transcriptPath = getTranscriptPath(convDir);
+              if (transcriptPath && fs.existsSync(transcriptPath)) {
+                completionResult = await this.transcriptWatcher.watchFile(
+                  transcriptPath,
+                  this.lastConversationId,
+                  preDispatchOffset,
+                  timestampBeforeSend - 1000
+                );
+              } else {
+                completionResult = await this.transcriptWatcher.watchLatest(timestampBeforeSend - 1000, this.lastConversationId);
+              }
+            } else {
+              completionResult = await this.transcriptWatcher.watchLatest(timestampBeforeSend - 1000, this.lastConversationId);
+            }
           }
         } finally {
           this.transcriptWatcher.removeListener('conversationRebound', onIterationRebound);
@@ -1291,6 +1390,13 @@ export class Orchestrator extends EventEmitter {
   public stop(): void {
     this.isAborted = true;
     this.stopStallWatchdog();
+
+    for (const phase of this.phases) {
+      if (phase.status === 'Running') {
+        phase.status = 'Stopped';
+        phase.endTime = Date.now();
+      }
+    }
 
     if (this.delayTimer) {
       clearTimeout(this.delayTimer);

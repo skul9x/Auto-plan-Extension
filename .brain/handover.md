@@ -1,55 +1,54 @@
-# HANDOVER DOCUMENT
+# Handover Document - Auto-Plan Extension
 
-**Date**: 2026-08-29 20:05  
-**Project**: Antigravity Auto-Plan Runner (`antigravity-auto-plan`)  
-**Status**: 🚀 All Subsystems Completed & Verified (Cross-Platform, Settings Panel, DOM Bridge Diagnostic Logger)  
-
----
-
-## 1. Summary of Completed Work
-
-### A. Cross-Platform & Sidebar UI (`plans/260829-1100-cross-platform-ui-sidebar/`) - ✅ Completed
-- Linux `pkexec` & Windows PowerShell UAC 1-Click elevation and `product.json` checksum patching.
-- Zero-Timeout pre-flight fail-fast check (< 100ms) with actionable error notifications.
-- Activity Bar Sidebar Control Center (`SidebarProvider` & `media/sidebar/`) with live progress and AI transcript feed.
-- Cross-platform verification test suite passed.
-
-### B. Execution Settings Panel (`plans/260829-1900-execution-settings-panel/`) - ✅ Completed
-- Full-Screen Settings Panel (`SettingsProvider` & `media/settings/`).
-- Interactive Tier Dispatch selection (Tier 1 DOM Bridge, Tier 2 Native Commands, Tier 3 OS Keyboard).
-- Fallback policy switches, timing controls, prompt template variable injection, and default plan folder browser.
-- Real-time diagnostic latency test and live health pills.
-
-### C. DOM Bridge Diagnostic & Debug Logger Subsystem (`plans/260829-1940-dom-bridge-debug-logger/`) - ✅ Completed
-- **Phase 01**: Core `DebugLogger` module with bounded ring buffer (default 500 entries), dedicated VS Code Log Output Channel (`Auto-Plan DOM Bridge`), formatted environment report, and file export.
-- **Phase 02**: BridgeServer HTTP Log Ingestion endpoint (`POST /log`) and multi-tier tracing across Extension Host and Renderer contexts.
-- **Phase 03**: Deep Electron DOM inspection engine in `media/autoplan-dom-bridge.js` capturing evaluated selectors, match counts, shadowRoot boundaries, and container trees upon selector discovery failures.
-- **Phase 04**: User-facing diagnostic commands (`autoplan.copyDebugLog`, `autoplan.exportDebugLog`, `autoplan.clearDebugLog`, `autoplan.showOutputChannel`), Live Log Viewer Console in Settings Panel, Sidebar quick-copy button, and 1-click diagnostic copy in failure toasts.
+**Date:** 2026-08-30T10:25:00+07:00  
+**Version:** v1.4.0  
+**Status:** ✅ Stable & Zero Warnings
 
 ---
 
-## 2. Key Architecture Decisions
-- **Unified Diagnostic Logging**: Ring-buffer memory storage prevents memory growth while allowing instant (< 100ms) report generation for AI chat pastes.
-- **Dedicated Output Channel**: Streaming formatted logs to VS Code `Auto-Plan DOM Bridge` channel preserves visibility without console polling.
-- **Actionable Error Toasts**: Failure toasts directly provide `📋 Copy Diagnostic Log` and `⚙️ Open Settings` buttons without requiring navigation.
-- **Collapsible Live Console**: Real-time log streaming in the Full-Screen Settings Panel with level filtering (`All`, `Warn/Error`, `Info+`, `Debug`) and auto-scroll.
+## 📍 Đang làm & Trạng thái hiện tại
+- **Kế hoạch vừa hoàn thành:** `plans/260830-1015-dep0169-url-parse-and-async-plan-scanner/` (3/3 phases completed).
+- **Tình trạng:** Toàn bộ test suite pass 100%, không còn cảnh báo `[DEP0169]`, không còn hiện tượng gửi đúp prompt.
 
 ---
 
-## 3. Important Files
-- `src/debugLogger.ts` - Core logger subsystem and diagnostic report builder.
-- `src/bridgeServer.ts` - Bridge HTTP server and `/log` ingestion endpoint.
-- `src/promptDispatcher.ts` - Tier dispatch orchestration, latency logging, and fallback tracing.
-- `src/workbenchInjector.ts` - Electron `workbench.html` injector and checksum updater.
-- `media/autoplan-dom-bridge.js` - Injected DOM client script with deep selector diagnostics.
-- `src/settingsProvider.ts` & `media/settings/*` - Settings Panel and Live Log Viewer Console.
-- `src/sidebarProvider.ts` & `media/sidebar/*` - Sidebar Control Center dashboard.
-- `src/extension.ts` - Main extension entry point, status bars, and command handlers.
-- `CHANGELOG.md` - Complete version history up to v1.3.0.
+## ✅ ĐÃ XONG:
+1. **WHATWG URL Migration (`src/bridgeServer.ts`):**
+   - Thay thế hoàn toàn `url.parse(req.url, true)` bằng `new URL(req.url || '', 'http://127.0.0.1')`.
+   - Triệt tiêu 100% cảnh báo `[DEP0169] DeprecationWarning` trên Node.js 20+ (VS Code runtime).
+2. **Asynchronous Plan Scanner Migration (`src/planScanner.ts`, `src/orchestrator.ts`, `src/extension.ts`):**
+   - Chuyển đổi toàn bộ `orchestrator.startPlanFolder` và `findActivePlanFolderAsync` sang `scanPlanFolderAsync`.
+   - Gắn cờ `@deprecated` cho hàm đồng bộ cũ `scanPlanFolder`.
+3. **Sửa lỗi Double Click / Gửi đúp Prompt (`media/autoplan-dom-bridge.js`):**
+   - Loại bỏ sự kiện `click` nhân tạo bị phát thừa sau khi gọi `button.click()`.
+   - Đảm bảo cơ chế submit loại trừ (mutually exclusive) duy nhất: `buttonClick` -> `enterKey` -> `formSubmit`.
+   - Re-inject script mới vào `workbench.html`.
+4. **End-to-End Regression Test Suite:**
+   - Tạo `src/test/phase03_dep0169_async_scanner_regression.test.ts` với global `process.on('warning')` trap.
+   - Thêm script `npm run test:dep0169` vào `package.json`.
 
 ---
 
-## 4. Quick Resume / Next Steps
-- To inspect project status: `/recap`
-- To run or test the extension: `/test` or `npm run test`
-- To package VSIX for release: `npm run package`
+## ⏳ CÒN LẠI / TIẾP THEO:
+- Không còn blocker hay pending task kỹ thuật tồn đọng.
+- Dự án sẵn sàng để đóng gói release hoặc tiếp tục mở rộng tính năng mới theo nhu cầu.
+
+---
+
+## 🔧 QUYẾT ĐỊNH QUAN TRỌNG:
+- **HTTP URL Parsing:** Dùng WHATWG `new URL()` chuẩn thay vì `url.parse`.
+- **Submit Cascade:** Luôn ưu tiên native `button.click()` và không dispatch thêm synthetic click event.
+- **Disk I/O:** Luôn dùng `scanPlanFolderAsync` trong mọi workflow để bảo vệ UI thread.
+
+---
+
+## 📁 FILES QUAN TRỌNG:
+- `.brain/brain.json` (Static knowledge)
+- `.brain/session.json` (Dynamic session state)
+- `src/bridgeServer.ts` (HTTP Bridge Server with WHATWG URL)
+- `src/orchestrator.ts` (Plan Orchestrator)
+- `media/autoplan-dom-bridge.js` (DOM Bridge Client)
+- `plans/260830-1015-dep0169-url-parse-and-async-plan-scanner/` (Plan files)
+
+---
+*Để khôi phục ngữ cảnh cho phiên làm việc tiếp theo, hãy gõ `/recap`.*

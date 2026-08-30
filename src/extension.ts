@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { getConfig, setPromptText, writeConfigJson } from './config';
 import { orchestrator, OrchestratorProgressInfo } from './orchestrator';
-import { scanPlanFolder, scanPlanFolderAsync, sortPhaseFiles, getPhasesFrom, normalizePath, PhaseFile, auditPlanPhases } from './planScanner';
+import { scanPlanFolder, scanPlanFolderAsync, sortPhaseFiles, getPhasesFrom, normalizePath, PhaseFile, auditPlanPhases, auditPlanPhasesAsync } from './planScanner';
 import { getDefaultBrainDir, getTranscriptPath, findLatestConversation, transcriptWatcher } from './transcriptWatcher';
 import { bridgeServer, BRIDGE_PROTOCOL_VERSION } from './bridgeServer';
 import { isBridgeInstalled, installBridgeScript, uninstallBridgeScript, getWorkbenchPath } from './workbenchInjector';
@@ -143,6 +143,27 @@ export function findActivePlanFolder(): string | null {
   const parentDir = path.dirname(activePath);
   try {
     const phases = scanPlanFolder(parentDir);
+    if (phases && phases.length > 0) {
+      return parentDir;
+    }
+  } catch {
+    // Parent folder is not a valid plan folder
+  }
+  return null;
+}
+
+/**
+ * Asynchronously detects if active editor is currently viewing a markdown phase file within a plan directory.
+ */
+export async function findActivePlanFolderAsync(): Promise<string | null> {
+  const activeEditor = vscode.window.activeTextEditor;
+  if (!activeEditor) return null;
+  const activePath = activeEditor.document?.uri?.fsPath;
+  if (!activePath || !activePath.toLowerCase().endsWith('.md')) return null;
+
+  const parentDir = path.dirname(activePath);
+  try {
+    const phases = await scanPlanFolderAsync(parentDir);
     if (phases && phases.length > 0) {
       return parentDir;
     }
@@ -384,6 +405,87 @@ export function buildFolderQuickPickItems(context: vscode.ExtensionContext): Pla
   return items;
 }
 
+/**
+ * Asynchronously builds the 2-Tier QuickPick item list for plan selection.
+ */
+export async function buildFolderQuickPickItemsAsync(context: vscode.ExtensionContext): Promise<PlanFolderItem[]> {
+  const items: PlanFolderItem[] = [];
+  const seenPaths = new Set<string>();
+
+  // 1. Active Editor Detection
+  const activePlanDir = await findActivePlanFolderAsync();
+  if (activePlanDir) {
+    const norm = path.normalize(activePlanDir);
+    seenPaths.add(norm);
+    try {
+      const phases = await scanPlanFolderAsync(activePlanDir);
+      items.push({
+        label: `$(star) Active Plan: ${path.basename(activePlanDir)} (${phases.length} phases)`,
+        description: activePlanDir,
+        detail: 'Currently open in editor',
+        type: 'active',
+        folderPath: activePlanDir
+      });
+    } catch {}
+  }
+
+  // 2. Workspace Discovery
+  const wsFolders = await discoverWorkspacePlanFoldersAsync();
+  for (const wf of wsFolders) {
+    const norm = path.normalize(wf.folderPath);
+    if (!seenPaths.has(norm)) {
+      seenPaths.add(norm);
+      items.push({
+        label: `$(folder) ${wf.relName} (${wf.phaseCount} phases)`,
+        description: wf.folderPath,
+        type: 'workspace',
+        folderPath: wf.folderPath
+      });
+    }
+  }
+
+  // 3. Recent History
+  const recents = getRecentPlanFolders(context);
+  for (const rPath of recents) {
+    const norm = path.normalize(rPath);
+    if (!seenPaths.has(norm)) {
+      seenPaths.add(norm);
+      try {
+        const phases = await scanPlanFolderAsync(rPath);
+        items.push({
+          label: `$(history) ${path.basename(rPath)} (${phases.length} phases)`,
+          description: rPath,
+          type: 'recent',
+          folderPath: rPath
+        });
+      } catch {
+        items.push({
+          label: `$(history) ${path.basename(rPath)}`,
+          description: rPath,
+          type: 'recent',
+          folderPath: rPath
+        });
+      }
+    }
+  }
+
+  // 4. Native File Browser
+  items.push({
+    label: '$(folder-opened) Browse Folder from Disk...',
+    detail: 'Select a plan folder using native file dialog',
+    type: 'browse'
+  });
+
+  // 5. Manual Entry Fallback
+  items.push({
+    label: '$(edit) Enter Path Manually...',
+    detail: 'Type or paste a custom folder path',
+    type: 'manual'
+  });
+
+  return items;
+}
+
 export function setMainStatusBarItem(item: vscode.StatusBarItem): void {
   mainStatusBarItem = item;
 }
@@ -483,7 +585,7 @@ export async function promptAndStartAutoPlan(context: vscode.ExtensionContext): 
     return;
   }
 
-  const items = buildFolderQuickPickItems(context);
+  const items = await buildFolderQuickPickItemsAsync(context);
   const selected = await vscode.window.showQuickPick(items, {
     placeHolder: 'Select a Plan Folder to execute',
     matchOnDescription: true,
@@ -525,7 +627,7 @@ export async function promptAndStartAutoPlan(context: vscode.ExtensionContext): 
   // Pre-flight scan
   let phases: PhaseFile[];
   try {
-    phases = scanPlanFolder(folderPath);
+    phases = await scanPlanFolderAsync(folderPath);
   } catch (err: any) {
     vscode.window.showErrorMessage(`Auto-Plan: ${err.message || 'No executable phase files found.'}`);
     return;
@@ -537,6 +639,13 @@ export async function promptAndStartAutoPlan(context: vscode.ExtensionContext): 
   }
 
   showPlanActionMenu(context, folderPath, phases);
+}
+
+/**
+ * Prompts user to select a plan folder asynchronously and begins execution flow.
+ */
+export async function selectPlanFolder(context: vscode.ExtensionContext): Promise<void> {
+  return promptAndStartAutoPlan(context);
 }
 
 /**
@@ -1125,7 +1234,7 @@ export async function exportDebugLog(targetPath?: string): Promise<string | unde
     try {
       auditReport = orchestrator.isRunning()
         ? orchestrator.getPhaseAuditReport()
-        : auditPlanPhases(currentPlanFolder);
+        : await auditPlanPhasesAsync(currentPlanFolder);
     } catch {}
   }
 
@@ -1294,7 +1403,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   orchestrator.on('stopped', () => {
     stopElapsedTimer();
-    updateStatusBar();
+    updateStatusBar({ state: 'stopped', currentIteration: 0, totalIterations: 0 });
     sidebarProvider?.refreshAndSendState();
     vscode.window.showInformationMessage('Auto-Plan: Stopped by user.');
   });

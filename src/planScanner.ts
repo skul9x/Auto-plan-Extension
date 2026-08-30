@@ -120,7 +120,7 @@ export interface PhaseDiagnosticInfo {
   phaseNumber: number;
   fileName: string;
   filePath: string;
-  status: 'Completed' | 'Running' | 'Pending' | 'Failed' | 'Skipped';
+  status: 'Completed' | 'Running' | 'Pending' | 'Failed' | 'Skipped' | 'Stopped';
   isCompleted: boolean;
   isSelected: boolean;
   stallReason?: PhaseStallReason;
@@ -158,7 +158,7 @@ export interface PhaseExecutionContext {
     index: number;
     phaseNumber?: number;
     fileName?: string;
-    status: 'Completed' | 'Running' | 'Pending' | 'Failed' | 'Skipped';
+    status: 'Completed' | 'Running' | 'Pending' | 'Failed' | 'Skipped' | 'Stopped';
     error?: string;
     conversationId?: string;
     startTime?: number;
@@ -453,6 +453,7 @@ export function getPhasesFrom(
 /**
  * Scans a target folder and returns an ordered list of executable phase markdown files.
  *
+ * @deprecated Use `scanPlanFolderAsync` instead to prevent synchronous event loop blocking.
  * @param folderPath Target directory containing phase markdown files.
  * @param options Scanning options.
  * @returns Sorted list of PhaseFile objects with status metadata.
@@ -832,6 +833,7 @@ export function analyzePhaseStallReason(
 /**
  * Synchronously audits all phase files in a target directory and returns an aggregated diagnostic report.
  *
+ * @deprecated Use `auditPlanPhasesAsync` instead to prevent synchronous event loop blocking.
  * @param folderPath Target directory containing phase markdown files.
  * @param executionContext Optional execution and runtime state context.
  * @returns PlanPhasesAuditReport containing phase diagnostic details and aggregate health.

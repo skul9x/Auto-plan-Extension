@@ -2,13 +2,13 @@
   "meta": {
     "schema_version": "1.1.0",
     "awf_version": "4.0.2",
-    "updated_at": "2026-08-29T20:05:00+07:00"
+    "updated_at": "2026-08-30T10:25:00+07:00"
   },
   "project": {
     "name": "Auto-Plan_Extension",
     "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan, inject prompt focus-free qua DOM Renderer Bridge hoặc OS Keyboard Simulation, theo dõi log transcript AI sinh code, tự động chuyển tiếp phase, kèm hệ thống Full-Screen Settings Panel và DOM Bridge Diagnostic Logger.",
     "created_at": "2026-08-27T23:51:00+07:00",
-    "active_plan": "plans/260829-1940-dom-bridge-debug-logger/plan.md"
+    "active_plan": "plans/260830-1015-dep0169-url-parse-and-async-plan-scanner/plan.md"
   },
   "tech_stack": {
     "language": "TypeScript / JavaScript",
@@ -19,11 +19,12 @@
     "ui_components": "Activity Bar Sidebar Control Center (WebviewViewProvider), Full-Screen Settings Panel (WebviewPanel), Modern Dark Glassmorphic CSS",
     "log_watcher": "Transcript JSONL Stream Watcher (~/.gemini/antigravity-ide/brain/)",
     "debug_logger": "In-memory Ring Buffer (DebugLogger), VS Code Log Output Channel (Auto-Plan DOM Bridge), Multi-tier Telemetry Tracing",
-    "dom_diagnostics": "Structured DOM snapshot evaluation, ShadowRoot boundary traversal, Container tree discovery"
+    "dom_diagnostics": "Structured DOM snapshot evaluation, ShadowRoot boundary traversal, Container tree discovery",
+    "performance_engine": "Webview IPC Log Batching (100ms throttle), 200-line DOM Pruning, Bounded 4KB Async Header I/O, Adaptive Polling (1200ms Relaxed Watcher)"
   },
   "features": [
-    "Quét và phân tích thư mục plans/*.md tự động",
-    "Điều phối vòng lặp Orchestrator theo từng Phase",
+    "Quét và phân tích thư mục plans/*.md tự động với bounded async I/O 4KB",
+    "Điều phối vòng lặp Orchestrator theo từng Phase với Multi-Phase Continuous Sync",
     "Tier 1: Focus-Free DOM Renderer Bridge qua HTTP IPC (Port 48860-48900)",
     "Tier 2: VS Code Native Command API fallback",
     "Tier 3: OS Keyboard Simulation fallback (PowerShell trên Windows, xdotool trên Linux)",
@@ -46,7 +47,10 @@
     "Pre-flight check < 100ms ngắt ngay khi thiếu điều kiện kèm Actionable Notification thay vì để treo 15 phút",
     "Xây dựng Sidebar Control Center Webview trên Activity Bar để nâng tầm UI/UX cho người dùng cuối",
     "Tách biệt giao diện cấu hình chuyên sâu vào Full-Screen Settings Panel để tránh rối Sidebar",
-    "Tích hợp Debug Logger chuyên sâu với ring-buffer và VS Code Output Channel để giải quyết triệt để lỗi silent fail khi DOM Bridge mất kết nối"
+    "Tích hợp Debug Logger chuyên sâu với ring-buffer và VS Code Output Channel để giải quyết triệt để lỗi silent fail khi DOM Bridge mất kết nối",
+    "Áp dụng Webview IPC Batching (100ms) kết hợp DOM pruning (200 dòng) và Bounded async file reads (4KB) để đảm bảo Extension Host và Webview luôn phản hồi dưới 16ms",
+    "Sử dụng WHATWG new URL() chuẩn cho HTTP Bridge Server để triệt tiêu hoàn toàn cảnh báo runtime [DEP0169] trên Node.js 20+",
+    "Loại trừ hoàn toàn việc dispatch đúp sự kiện click trong dispatchButtonClickCascade và bảo đảm tính loại trừ giữa buttonClick / enterKey / formSubmit"
   ],
   "knowledge_items": {
     "reports": [
@@ -54,9 +58,10 @@
       "2.md: Đánh giá khả năng hoạt động của Auto-Plan trên Linux",
       "3.md: Báo cáo nguyên nhân lỗi v1.0.5 trên Linux và cách khắc phục",
       "6.md: Kế hoạch kỹ thuật chi tiết nâng cấp đa nền tảng (Windows & Linux) và tối ưu UI/UX",
-      "plans/260829-1100-cross-platform-ui-sidebar/plan.md: Kế hoạch 5 Phase chi tiết với test file-based",
-      "plans/260829-1900-execution-settings-panel/plan.md: Kế hoạch 4 Phase cho Full-Screen Settings Panel",
-      "plans/260829-1940-dom-bridge-debug-logger/plan.md: Kế hoạch 4 Phase cho DOM Bridge Debug Logger Subsystem"
+      "docs/reports/audit_20260829.md: Báo cáo kiểm tra hiệu năng 29/08/2026",
+      "docs/reports/audit_20260830.md: Báo cáo kiểm tra hiệu năng 30/08/2026 (1 Critical url.parse, 2 Warnings)",
+      "plans/260830-0950-multi-phase-continuous-sync-and-state-cleanup/plan.md: Multi-Phase Continuous Sync & State Cleanup Plan",
+      "plans/260830-1015-dep0169-url-parse-and-async-plan-scanner/plan.md: WHATWG URL Migration & Async Plan Scanner Plan"
     ],
     "gotchas": [
       "Linux /usr/share/antigravity thuộc root, cần pkexec hoặc chown để sửa workbench.html",
@@ -64,7 +69,9 @@
       "keyboardManager trên Linux cần xdotool nếu chạy ở Tier 3 fallback",
       "Pre-flight check phải chạy trước khi khởi tạo timers trong orchestrator",
       "Webview client scripts cần mock fallback cho document/window trong Node.js unit test environment",
-      "DebugLogger cần bounded capacity để tránh rò rỉ bộ nhớ trong các session dài"
+      "DebugLogger cần bounded capacity để tránh rò rỉ bộ nhớ trong các session dài",
+      "Node.js 20+ runtime yêu cầu WHATWG new URL() thay vì url.parse() để tránh [DEP0169] DeprecationWarning",
+      "dispatchButtonClickCascade chỉ gọi native button.click() (hoặc synthetic MouseEvent nếu không có native click), không gọi cả hai để tránh gửi đúp prompt"
     ]
   }
 }

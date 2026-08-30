@@ -2,6 +2,25 @@
 
 All notable changes to the **Antigravity Auto-Plan Runner** extension will be documented in this file.
 
+## [1.4.0] - 2026-08-30
+
+### 🚀 Added
+- **Asynchronous Plan Scanner**:
+  - Added `scanPlanFolderAsync` and `findActivePlanFolderAsync` with non-blocking async disk I/O.
+  - Added `@deprecated` tag to legacy synchronous `scanPlanFolder`.
+- **Zero-Deprecation Verification**:
+  - Dedicated automated regression test suite (`test:dep0169`) verifying zero Node.js deprecation warnings with `process.on('warning')` trap.
+
+### ⚡ Enhanced & Fixed
+- **WHATWG URL Migration ([DEP0169] Fix)**:
+  - Replaced legacy `url.parse(req.url, true)` with the standardized WHATWG `new URL(req.url, 'http://127.0.0.1')` API in `BridgeServer`.
+  - Completely eliminated `[DEP0169] DeprecationWarning` on Node.js 20+ (VS Code runtime).
+- **DOM Bridge Single Submit Fix**:
+  - Fixed duplicate prompt submission in `media/autoplan-dom-bridge.js` by eliminating duplicate synthetic `MouseEvent('click')` events when native `button.click()` has executed.
+  - Enforced strict mutually exclusive submission strategy (`buttonClick` -> `enterKey` -> `formSubmit`).
+
+---
+
 ## [1.3.0] - 2026-08-29
 
 ### 🚀 Added

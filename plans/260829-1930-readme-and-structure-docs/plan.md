@@ -1,7 +1,7 @@
 # Plan: Documentation Overhaul (structure.md & README.md)
 
 Created: 2026-08-29 19:30  
-Status: ✅ Completed  
+Status: ⬜ Pending  
 Target: Establish comprehensive, production-grade architectural documentation in `structure.md` and complete user/developer manual in `README.md` reflecting the latest v1.2.0 features (3-Tier Transport Engine, Settings Webview Panel, Sidebar Control Center, Focus-Free DOM Bridge, Anti-Pollution Watcher).
 
 ---
@@ -22,17 +22,23 @@ Target: Establish comprehensive, production-grade architectural documentation in
      - Linux elevation (`pkexec`), `xdotool` fallback, CSP troubleshooting, and test execution.
    - Include exactly one comprehensive file-based test suite `src/test/phase02_readme_documentation.test.ts` verifying complete documentation coverage against `package.json` configurations, commands, and feature keywords.
 
+3. **Phase 03: Gitignore Standards & Hygiene Configuration (`.gitignore`)**
+   - Refactor and standardize `.gitignore` for VS Code TypeScript extension best practices (build artifacts, dependencies, test caches, OS metadata, runtime session logs, and environment files).
+   - Include exactly one comprehensive file-based test suite `src/test/phase03_gitignore_standards.test.ts` verifying that all essential pattern categories are covered and properly ignored.
+
 ---
 
 ## 📅 Phase Summary
 
 | Phase | Name | Status | Test File |
 |-------|------|--------|-----------|
-| 01 | Structure Documentation (`structure.md`) | ✅ Completed | `src/test/phase01_structure_documentation.test.ts` |
-| 02 | Extension Guide & Settings Documentation (`README.md`) | ✅ Completed | `src/test/phase02_readme_documentation.test.ts` |
+| 01 | Structure Documentation (`structure.md`) | ⬜ Pending | `src/test/phase01_structure_documentation.test.ts` |
+| 02 | Extension Guide & Settings Documentation (`README.md`) | ⬜ Pending | `src/test/phase02_readme_documentation.test.ts` |
+| 03 | Gitignore Standards & Hygiene (`.gitignore`) | ⬜ Pending | `src/test/phase03_gitignore_standards.test.ts` |
 
 ---
 
 ## 🚀 Quick Commands
 - Start Phase 01: `/code phase-01`
 - Start Phase 02: `/code phase-02`
+- Start Phase 03: `/code phase-03`

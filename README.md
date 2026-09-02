@@ -1,7 +1,7 @@
 # Antigravity Auto-Plan Extension
 
 <p align="center">
-  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/version-1.4.0-blue.svg?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/version-1.5.0-blue.svg?style=flat-square" alt="Version"></a>
   <a href="https://code.visualstudio.com/"><img src="https://img.shields.io/badge/VS_Code-^1.80.0-informational.svg?style=flat-square" alt="VS Code Compatibility"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.3.3-3178C6.svg?style=flat-square" alt="TypeScript"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg?style=flat-square" alt="License"></a>
@@ -86,10 +86,10 @@ sudo dnf install xdotool
 ### VSIX Installation
 ```bash
 # Install to Antigravity IDE
-antigravity --install-extension antigravity-auto-plan-1.4.0.vsix
+antigravity --install-extension antigravity-auto-plan-1.5.0.vsix
 
 # Install to VS Code
-code --install-extension antigravity-auto-plan-1.4.0.vsix
+code --install-extension antigravity-auto-plan-1.5.0.vsix
 ```
 
 ---

@@ -1020,6 +1020,16 @@
         if (typeof inputElem.focus === 'function') {
           inputElem.focus({ preventScroll: true });
         }
+        // Force selection to cover all child node contents inside Lexical / ContentEditable container
+        try {
+          const sel = (win && typeof win.getSelection === 'function') ? win.getSelection() : (doc.defaultView?.getSelection() || null);
+          if (sel && typeof doc.createRange === 'function') {
+            const range = doc.createRange();
+            range.selectNodeContents(inputElem);
+            sel.removeAllRanges();
+            sel.addRange(range);
+          }
+        } catch (_) {}
         doc.execCommand('selectAll', false, null);
         const execSuccess = doc.execCommand('insertText', false, promptText);
         if (execSuccess) {

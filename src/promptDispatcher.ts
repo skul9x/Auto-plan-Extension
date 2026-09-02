@@ -416,9 +416,21 @@ export class PromptDispatcher {
     const config = this.configProvider();
     const mode = options?.mode || config.executionMode || 'auto';
     const timeoutMs = options?.timeoutMs ?? config.bridgeTimeoutMs ?? 5000;
+    let openedViaCommand = false;
 
-    // Chat Reveal Hook: Guarantee chat DOM tree is mounted before prompt dispatching
-    if (options?.revealChat !== false) {
+    // Chat Reveal & New Conversation Hook: Guarantee fresh conversation thread and chat DOM tree
+    if (options?.openNewConversation !== false) {
+      try {
+        await this.commandExecutor('antigravity.prioritized.chat.openNewConversation');
+        openedViaCommand = true;
+      } catch {
+        try {
+          await this.commandExecutor('workbench.action.chat.open');
+        } catch {
+          // Non-fatal if chat view is already open or command is unavailable
+        }
+      }
+    } else if (options?.revealChat !== false) {
       try {
         await this.commandExecutor('workbench.action.chat.open');
       } catch {
@@ -464,6 +476,21 @@ export class PromptDispatcher {
 
     if (this.bridgeServer.getConnectedClients().length === 0) {
       throw new Error('DOM Bridge has no active connected clients');
+    }
+
+    // Fallback: If command API was unavailable, trigger openNewConversation via DOM Bridge client
+    if (options?.openNewConversation !== false && !openedViaCommand) {
+      try {
+        this.logger.debug('DISPATCHER', 'Command API unavailable for openNewConversation, triggering via DOM Bridge client...');
+        await this.bridgeServer.dispatchPromptCommand('', {
+          type: 'openNewConversation',
+          timeoutMs: Math.min(timeoutMs, 3000),
+          windowKey: options?.windowKey
+        });
+        await new Promise((r) => setTimeout(r, 100));
+      } catch (convErr: any) {
+        this.logger.warn('DISPATCHER', `DOM Bridge openNewConversation command warning: ${convErr?.message || convErr}`);
+      }
     }
 
     const commandOpts: CommandOptions = {

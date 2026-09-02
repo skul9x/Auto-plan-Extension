@@ -125,6 +125,7 @@ class MockElement {
   public clicked: boolean = false;
   public clickCount: number = 0;
   public isFocused: boolean = false;
+  public nodeType: number = 1;
 
   constructor(tagName: string, className: string = '') {
     this.tagName = tagName.toUpperCase();
@@ -202,6 +203,9 @@ class MockElement {
 
   focus() {
     this.isFocused = true;
+    if (this.ownerDocument) {
+      this.ownerDocument.activeElement = this;
+    }
   }
 
   blur() {
@@ -299,6 +303,8 @@ class MockElement {
 class MockDocument {
   public body: MockElement;
   public documentElement: MockElement;
+  public activeElement: MockElement | null = null;
+  public nodeType: number = 9;
   public execCommandCalls: Array<{ aCommandName: string; aShowDefaultUI: boolean; aValueArgument: any }> = [];
 
   constructor() {
@@ -331,6 +337,9 @@ class MockDocument {
 
   execCommand(aCommandName: string, aShowDefaultUI: boolean = false, aValueArgument: any = null): boolean {
     this.execCommandCalls.push({ aCommandName, aShowDefaultUI, aValueArgument });
+    if (aCommandName === 'insertText' && this.activeElement) {
+      this.activeElement.value = aValueArgument;
+    }
     return true;
   }
 }
@@ -497,19 +506,24 @@ async function runPhase03Tests() {
   const foundSendBtn = domBridge.findSendButton(docButtons);
   assert.strictEqual(foundSendBtn, sendButton, 'findSendButton should locate Send button');
 
-  // Test findNewConversationButton
-  const foundNewBtn = domBridge.findNewConversationButton(docButtons);
-  assert.strictEqual(foundNewBtn, newChatButton, 'findNewConversationButton should locate New Conversation button');
+  // Test findNewConversationButton with real Antigravity IDE DOM structure (body.txt)
+  const docAntigravity = new MockDocument();
+  const antigravityNewConvAnchor = docAntigravity.createElement('a');
+  antigravityNewConvAnchor.setAttribute('data-tooltip-id', 'new-conversation-tooltip');
+  antigravityNewConvAnchor.className = 'group relative text-sm text-foreground font-medium';
+  docAntigravity.body.appendChild(antigravityNewConvAnchor);
 
-  // Test triggerNewConversation
-  const newChatTriggered = await domBridge.triggerNewConversation({
-    document: docButtons,
-    button: newChatButton
+  const foundAntigravityBtn = domBridge.findNewConversationButton(docAntigravity);
+  assert.strictEqual(foundAntigravityBtn, antigravityNewConvAnchor, 'findNewConversationButton should locate a[data-tooltip-id="new-conversation-tooltip"]');
+
+  const antigravityTriggered = await domBridge.triggerNewConversation({
+    document: docAntigravity,
+    button: antigravityNewConvAnchor
   });
-  assert.strictEqual(newChatTriggered, true, 'triggerNewConversation should return true');
-  assert.strictEqual(newChatButton.clicked, true, 'New Conversation button should be clicked');
+  assert.strictEqual(antigravityTriggered, true, 'triggerNewConversation on Antigravity anchor should return true');
+  assert.strictEqual(antigravityNewConvAnchor.clicked, true, 'Antigravity anchor should be clicked');
 
-  console.log('  -> Passed: Send button and New Conversation button located and triggered.');
+  console.log('  -> Passed: Send button and New Conversation button located and triggered (including Antigravity IDE anchor).');
 
   // ----------------------------------------------------------------------
   // Test 4: Background Permission Auto-Approval Scanner

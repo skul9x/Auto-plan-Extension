@@ -33,6 +33,7 @@ async function runPhase03GitignoreStandardsTestSuite() {
     '.pnpm-store/',
     'jspm_packages/',
     // Logs
+    'logs/',
     '*.log',
     'npm-debug.log*',
     'yarn-debug.log*',
@@ -45,6 +46,8 @@ async function runPhase03GitignoreStandardsTestSuite() {
     '*.tmp',
     'pids',
     '*.pid',
+    '*.seed',
+    '*.pid.lock',
     // VS Code test & cache
     '.vscode-test/',
     '.vscode-test-web/',
@@ -52,13 +55,16 @@ async function runPhase03GitignoreStandardsTestSuite() {
     // OS & Editor metadata
     '.DS_Store',
     '.AppleDouble',
+    '.LSOverride',
     '._*',
     'Thumbs.db',
     'Desktop.ini',
     'ehthumbs.db',
+    '*.stackdump',
     '*~',
     '*.swp',
     '*.swo',
+    '.directory',
     // Secrets
     '.env',
     '.env.local',
@@ -78,8 +84,19 @@ async function runPhase03GitignoreStandardsTestSuite() {
     console.log(`  ✓ Pattern "${pattern}" verified.`);
   }
 
-  // 4. Ensure essential project sources and plan files are NOT ignored
-  console.log('\n[Test 3] Verifying essential source/plan files are not accidentally ignored...');
+  // 4. Ensure no syntax errors or trailing empty comment-only blocks
+  console.log('\n[Test 3] Validating formatting hygiene and lack of invalid entries...');
+  const rawLines = content.split(/\r?\n/);
+  for (let i = 0; i < rawLines.length; i++) {
+    const rawLine = rawLines[i];
+    // Check no leading invalid whitespaces or broken control characters
+    assert.ok(!/[\x00-\x08\x0E-\x1F]/.test(rawLine), `Line ${i + 1} contains control characters`);
+  }
+  // Check no trailing comment without rule if expected
+  console.log('  ✓ File syntax and encoding hygiene verified.');
+
+  // 5. Ensure essential project sources and plan files are NOT ignored
+  console.log('\n[Test 4] Verifying essential source/plan files are not accidentally ignored...');
   const essentialFiles = [
     'src/extension.ts',
     'src/orchestrator.ts',

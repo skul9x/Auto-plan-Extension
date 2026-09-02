@@ -840,6 +840,7 @@ export class Orchestrator extends EventEmitter {
           mode: config.executionMode,
           allowFallback: config.allowTierFallback,
           timeoutMs: config.bridgeTimeoutMs,
+          openNewConversation: true,
           keyboardOptions: {
             focusDelayMs: config.focusDelayMs
           }
@@ -1254,6 +1255,7 @@ export class Orchestrator extends EventEmitter {
           mode: config.executionMode,
           allowFallback: config.allowTierFallback,
           timeoutMs: config.bridgeTimeoutMs,
+          openNewConversation: true,
           keyboardOptions: {
             focusDelayMs: config.focusDelayMs
           }

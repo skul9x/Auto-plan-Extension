@@ -486,6 +486,7 @@
       '.interactive-session .monaco-editor textarea.inputarea',
       '.interactive-input .monaco-editor textarea.inputarea',
       'div.interactive-input-editor textarea',
+      'textarea.interactive-input-editor',
       'div.monaco-editor textarea.inputarea',
       'div.monaco-editor[role="textbox"]',
       'div.ProseMirror[contenteditable="true"]',
@@ -753,6 +754,10 @@
     if (!root) return null;
 
     const selectors = [
+      'a[data-tooltip-id="new-conversation-tooltip"]',
+      'a[data-tooltip-id*="new-conversation"]',
+      '[data-tooltip-id="new-conversation-tooltip"]',
+      '[data-tooltip-id*="new-conversation"]',
       'button[aria-label*="New Chat"]',
       'button[aria-label*="New Conversation"]',
       'button[title*="New Chat"]',
@@ -770,8 +775,8 @@
       for (let j = 0; j < candidates.length; j++) {
         const el = candidates[j];
         if (el) {
-          if (el.classList && (el.classList.contains('codicon-plus') || el.classList.contains('codicon-add')) && el.tagName !== 'BUTTON') {
-            const parentBtn = el.closest ? el.closest('button, [role="button"]') : el.parentElement;
+          if (el.classList && (el.classList.contains('codicon-plus') || el.classList.contains('codicon-add')) && el.tagName !== 'BUTTON' && el.tagName !== 'A') {
+            const parentBtn = el.closest ? el.closest('a, button, [role="button"]') : el.parentElement;
             if (parentBtn && isElementVisible(parentBtn, { allowDisabled: true })) {
               return parentBtn;
             }
@@ -782,6 +787,21 @@
         }
       }
     }
+
+    // Fallback: Scan SVG paths for the plus icon in titlebar/toolbar
+    try {
+      const svgs = queryDeep('svg path', root);
+      for (let k = 0; k < svgs.length; k++) {
+        const p = svgs[k];
+        const d = p?.getAttribute?.('d') || '';
+        if (d.includes('M450-450H220') || d.includes('M450-450') || d.includes('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z')) {
+          const anchorOrBtn = p.closest ? p.closest('a, button, [role="button"]') : p.parentElement;
+          if (anchorOrBtn && isElementVisible(anchorOrBtn, { allowDisabled: true })) {
+            return anchorOrBtn;
+          }
+        }
+      }
+    } catch (_) {}
 
     return null;
   }
@@ -994,8 +1014,8 @@
       logBridge('WARN', `Monaco editor model injection error: ${monacoErr?.message || monacoErr}`, {}, monacoErr);
     }
 
-    // Strategy 2: document.execCommand('insertText') (Antigravity Lexical & Monaco Textarea)
-    if (!valueSet && doc && typeof doc.execCommand === 'function') {
+    // Strategy 2: document.execCommand('insertText') (Antigravity Lexical & ContentEditable)
+    if (!valueSet && !isInputOrTextarea && doc && typeof doc.execCommand === 'function') {
       try {
         if (typeof inputElem.focus === 'function') {
           inputElem.focus({ preventScroll: true });
@@ -1364,10 +1384,14 @@
    */
   async function triggerNewConversation(options = {}) {
     const doc = options.document || (typeof document !== 'undefined' ? document : null);
+    const win = options.window || (typeof window !== 'undefined' ? window : null);
     const newBtn = options.button || findNewConversationButton(doc);
-    if (newBtn && typeof newBtn.click === 'function') {
+    if (newBtn) {
       try {
-        newBtn.click();
+        dispatchButtonClickCascade(newBtn, win);
+        if (typeof newBtn.click === 'function') {
+          newBtn.click();
+        }
         logBridge('INFO', 'New Conversation button triggered successfully');
         return true;
       } catch (err) {
@@ -1980,6 +2004,7 @@
         } else if (cmd.type === 'openNewConversation') {
           const success = await triggerNewConversation({
             document: this.customDocument,
+            window: this.customWindow,
             ...cmd.options
           });
 

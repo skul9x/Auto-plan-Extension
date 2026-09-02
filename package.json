@@ -2,7 +2,7 @@
   "name": "antigravity-auto-plan",
   "displayName": "Antigravity Auto-Plan Runner",
   "description": "Automate repeated prompts and monitor completion in Antigravity IDE",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "publisher": "skul9x",
   "engines": {
     "vscode": "^1.80.0"

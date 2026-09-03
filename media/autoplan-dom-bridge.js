@@ -1031,7 +1031,27 @@
           }
         } catch (_) {}
         doc.execCommand('selectAll', false, null);
-        const execSuccess = doc.execCommand('insertText', false, promptText);
+        let execSuccess = false;
+        if (promptText.includes('\n')) {
+          const lines = promptText.split(/\r?\n/);
+          execSuccess = true;
+          for (let i = 0; i < lines.length; i++) {
+            if (i > 0) {
+              try {
+                doc.execCommand('insertLineBreak', false, null);
+              } catch (_) {}
+            }
+            if (lines[i].length > 0) {
+              const ok = doc.execCommand('insertText', false, lines[i]);
+              if (!ok && i === 0) {
+                execSuccess = false;
+                break;
+              }
+            }
+          }
+        } else {
+          execSuccess = doc.execCommand('insertText', false, promptText);
+        }
         if (execSuccess) {
           valueSet = true;
           injectionStrategy = 'execCommand';
@@ -1133,12 +1153,10 @@
     const dispatchedEvents = [];
     try {
       if (win && typeof win.InputEvent === 'function') {
-        inputElem.dispatchEvent(new win.InputEvent('input', {
-          bubbles: true,
-          cancelable: true,
-          inputType: 'insertText',
-          data: promptText
-        }));
+        const inputEventInit = isInputOrTextarea
+          ? { bubbles: true, cancelable: true, inputType: 'insertText', data: promptText }
+          : { bubbles: true, cancelable: true };
+        inputElem.dispatchEvent(new win.InputEvent('input', inputEventInit));
         dispatchedEvents.push('input');
       } else if (win && typeof win.Event === 'function') {
         inputElem.dispatchEvent(new win.Event('input', { bubbles: true, cancelable: true }));
@@ -1171,6 +1189,49 @@
     }
 
     // Step 4: Submit triggering (Enter keydown/keypress/keyup + pointer/mouse button cascade + button polling + double-tap retry + form fallback)
+    // Pre-Submit Lease & Cancellation Check (LOGIC-001 Remediation)
+    const cmdId = options.commandId || options.cmd?.id || options.id;
+    const cmdTimeoutMs = typeof options.commandTimeoutMs === 'number' ? options.commandTimeoutMs : (typeof options.timeoutMs === 'number' ? options.timeoutMs : null);
+    const cmdDeadline = options.commandDeadline || options.deadline;
+    const cmdStartTime = options.commandStartTime || options.startTime;
+
+    const checkCommandAbort = () => {
+      const isCancelled = Boolean(
+        (typeof options.isCancelled === 'function' && options.isCancelled()) ||
+        (cmdId && options.cancelledCommands && options.cancelledCommands.has && options.cancelledCommands.has(cmdId)) ||
+        (cmdId && activeClientInstance && activeClientInstance.cancelledCommands && activeClientInstance.cancelledCommands.has(cmdId))
+      );
+      if (isCancelled) {
+        return { aborted: true, reason: 'Command cancelled by server coordinator', code: 'COMMAND_ABORTED_BY_TIMEOUT' };
+      }
+      const isExpired = Boolean(
+        (cmdDeadline && Date.now() > cmdDeadline) ||
+        (cmdStartTime && cmdTimeoutMs && (Date.now() - cmdStartTime > cmdTimeoutMs))
+      );
+      if (isExpired) {
+        return { aborted: true, reason: `Command lease expired (> ${cmdTimeoutMs}ms)`, code: 'COMMAND_ABORTED_BY_TIMEOUT' };
+      }
+      return { aborted: false };
+    };
+
+    const initialAbort = checkCommandAbort();
+    if (initialAbort.aborted) {
+      const abortErr = new Error(`Command aborted before submit: ${initialAbort.reason}`);
+      abortErr.code = initialAbort.code;
+      abortErr.aborted = true;
+      abortErr.commandId = cmdId;
+      steps.push({
+        step: 4,
+        name: 'Submit triggering',
+        status: 'aborted',
+        reason: initialAbort.reason,
+        code: initialAbort.code
+      });
+      abortErr.steps = steps;
+      logBridge('WARN', `Pre-submit abort check triggered: ${initialAbort.reason}`, { commandId: cmdId, code: initialAbort.code });
+      throw abortErr;
+    }
+
     let submitStrategy = 'enterKey';
     let enterDispatched = false;
     let sendButtonClicked = false;
@@ -1204,6 +1265,23 @@
 
     if (sendBtn && initialDisabled && maxPollMs > 0) {
       while (Date.now() - pollStart < maxPollMs) {
+        const loopAbort = checkCommandAbort();
+        if (loopAbort.aborted) {
+          const abortErr = new Error(`Command aborted during button wait: ${loopAbort.reason}`);
+          abortErr.code = loopAbort.code;
+          abortErr.aborted = true;
+          abortErr.commandId = cmdId;
+          steps.push({
+            step: 4,
+            name: 'Submit triggering',
+            status: 'aborted',
+            reason: loopAbort.reason,
+            code: loopAbort.code
+          });
+          abortErr.steps = steps;
+          logBridge('WARN', `Button wait abort check triggered: ${loopAbort.reason}`, { commandId: cmdId });
+          throw abortErr;
+        }
         await new Promise(r => setTimeout(r, pollIntervalMs));
         if (!isButtonDisabled(sendBtn)) {
           break;
@@ -1219,6 +1297,23 @@
       buttonWaitDurationMs = Date.now() - pollStart;
     } else if (!sendBtn && maxPollMs > 0) {
       while (Date.now() - pollStart < maxPollMs) {
+        const loopAbort = checkCommandAbort();
+        if (loopAbort.aborted) {
+          const abortErr = new Error(`Command aborted during button wait: ${loopAbort.reason}`);
+          abortErr.code = loopAbort.code;
+          abortErr.aborted = true;
+          abortErr.commandId = cmdId;
+          steps.push({
+            step: 4,
+            name: 'Submit triggering',
+            status: 'aborted',
+            reason: loopAbort.reason,
+            code: loopAbort.code
+          });
+          abortErr.steps = steps;
+          logBridge('WARN', `Button wait abort check triggered: ${loopAbort.reason}`, { commandId: cmdId });
+          throw abortErr;
+        }
         await new Promise(r => setTimeout(r, pollIntervalMs));
         sendBtn = options.sendButton || findSendButton(inputElem || doc, sendBtnDiag);
         if (sendBtn) {
@@ -1228,6 +1323,25 @@
         }
       }
       buttonWaitDurationMs = Date.now() - pollStart;
+    }
+
+    // Pre-dispatch final abort guard
+    const preDispatchAbort = checkCommandAbort();
+    if (preDispatchAbort.aborted) {
+      const abortErr = new Error(`Command aborted before submit dispatch: ${preDispatchAbort.reason}`);
+      abortErr.code = preDispatchAbort.code;
+      abortErr.aborted = true;
+      abortErr.commandId = cmdId;
+      steps.push({
+        step: 4,
+        name: 'Submit triggering',
+        status: 'aborted',
+        reason: preDispatchAbort.reason,
+        code: preDispatchAbort.code
+      });
+      abortErr.steps = steps;
+      logBridge('WARN', `Pre-dispatch abort check triggered: ${preDispatchAbort.reason}`, { commandId: cmdId });
+      throw abortErr;
     }
 
     // Mutually Exclusive Triggering Strategy:
@@ -1674,6 +1788,9 @@
       this.clientVersion = '2.0.0';
       this.logQueue = [];
       this.maxLogQueueCapacity = 50;
+      this.activeCommandId = null;
+      this.activeCommandDeadline = 0;
+      this.cancelledCommands = new Set();
 
       activeClientInstance = this;
 
@@ -1683,6 +1800,13 @@
         item.details = { ...(item.details || {}), windowKey: this.windowKey };
         this.logQueue.push(item);
       }
+    }
+
+    /**
+     * Checks if a command ID has been marked as cancelled by the server
+     */
+    isCommandCancelled(commandId) {
+      return Boolean(commandId && this.cancelledCommands && this.cancelledCommands.has(commandId));
     }
 
     /**
@@ -1797,7 +1921,7 @@
         });
         if (res && res.status === 200) {
           return true;
-        } else if (res && res.status === 404) {
+        } else if (res && (res.status === 404 || res.status === 409 || res.status === 423)) {
           this.serverPort = null;
         }
       } catch (err) {
@@ -1828,7 +1952,7 @@
         return this.serverPort;
       }
 
-      if (typeof window !== 'undefined' && window.__AUTOPLAN_PORT__) {
+      if (typeof window !== 'undefined' && window.__AUTOPLAN_PORT__ && (!window.__AUTOPLAN_WINDOW_KEY__ || window.__AUTOPLAN_WINDOW_KEY__ === this.windowKey)) {
         this.serverPort = window.__AUTOPLAN_PORT__;
         await this.sendClientLog('INFO', `Discovered BridgeServer via window global on port ${this.serverPort}`, {
           port: this.serverPort
@@ -1857,21 +1981,54 @@
 
           const res = await this.fetchFn(url, {
             method: 'GET',
+            headers: { 'X-Window-Key': this.windowKey },
             signal: controller ? controller.signal : undefined
           });
 
           if (timeoutId) clearTimeout(timeoutId);
 
-          if (res && res.status === 200) {
-            const data = await res.json();
+          if (res && (res.status === 200 || res.status === 409 || res.status === 423)) {
+            let data = null;
+            try {
+              data = await res.json();
+            } catch (_) {}
+
             if (data && data.service === 'autoplan-bridge-server') {
-              this.serverPort = port;
-              await this.sendClientLog('INFO', `Connected to BridgeServer on port ${this.serverPort}`, {
-                port: this.serverPort,
-                windowKey: this.windowKey
-              });
-              await this.flushStartupLogQueue();
-              return port;
+              const isOccupiedByOther = Boolean(
+                data.status === 'occupied' ||
+                data.isCompatible === false ||
+                data.bindRejected === true ||
+                (data.activeWindowKey && data.activeWindowKey !== this.windowKey)
+              );
+
+              if (isOccupiedByOther) {
+                await this.sendClientLog('INFO', `Skipping port ${port}: actively bound to window "${data.activeWindowKey || data.serverWindowKey}" (client windowKey: "${this.windowKey}")`, {
+                  port,
+                  activeWindowKey: data.activeWindowKey,
+                  serverWindowKey: data.serverWindowKey,
+                  windowKey: this.windowKey
+                });
+                continue;
+              }
+
+              // Server confirms ownership: no active window key, or active window key matches this.windowKey
+              const confirmsOwnership = Boolean(
+                !data.activeWindowKey ||
+                data.activeWindowKey === this.windowKey ||
+                data.serverWindowKey === this.windowKey
+              );
+
+              if (res.status === 200 && confirmsOwnership) {
+                this.serverPort = port;
+                await this.sendClientLog('INFO', `Connected to BridgeServer on port ${this.serverPort}`, {
+                  port: this.serverPort,
+                  windowKey: this.windowKey,
+                  activeWindowKey: data.activeWindowKey,
+                  serverWindowKey: data.serverWindowKey
+                });
+                await this.flushStartupLogQueue();
+                return port;
+              }
             }
           }
         } catch (probeErr) {
@@ -1934,8 +2091,8 @@
         });
 
         if (!res || res.status !== 200) {
-          if (res && res.status === 404) {
-            logBridge('WARN', `BridgeServer on port ${this.serverPort} returned 404, resetting serverPort`, { port: this.serverPort });
+          if (res && (res.status === 404 || res.status === 409 || res.status === 423)) {
+            logBridge('WARN', `BridgeServer on port ${this.serverPort} returned ${res.status}, resetting serverPort`, { port: this.serverPort });
             this.serverPort = null;
             // Immediate re-discovery probe
             await this.discoverPort();
@@ -1944,6 +2101,21 @@
         }
 
         const data = await res.json();
+        if (data && (data.bindRejected || data.isCompatible === false || (data.activeWindowKey && data.activeWindowKey !== this.windowKey))) {
+          logBridge('WARN', `BridgeServer on port ${this.serverPort} rejected binding for window "${this.windowKey}" (owner is "${data.activeWindowKey}"), resetting serverPort`, { port: this.serverPort });
+          this.serverPort = null;
+          // Immediate re-discovery probe
+          await this.discoverPort();
+          return;
+        }
+        if (data) {
+          const cancelledList = data.cancelledCommandIds || data.cancelledCommands;
+          if (Array.isArray(cancelledList)) {
+            for (let c = 0; c < cancelledList.length; c++) {
+              this.cancelledCommands.add(cancelledList[c]);
+            }
+          }
+        }
         if (data && Array.isArray(data.pendingCommands)) {
           for (let i = 0; i < data.pendingCommands.length; i++) {
             await this.handleCommand(data.pendingCommands[i]);
@@ -1980,11 +2152,23 @@
         }
       }
 
+      const cmdId = options.commandId || options.cmdId || options.id;
+      if (cmdId && this.isCommandCancelled(cmdId)) {
+        const err = new Error(`Command ${cmdId} cancelled by coordinator before injection`);
+        err.code = 'COMMAND_ABORTED_BY_TIMEOUT';
+        err.aborted = true;
+        err.commandId = cmdId;
+        throw err;
+      }
+
       this.isSubmitting = true;
       try {
         const result = await injectPromptAndSubmit(promptText, {
           document: this.customDocument,
           window: this.customWindow,
+          client: this,
+          cancelledCommands: this.cancelledCommands,
+          isCancelled: cmdId ? () => this.isCommandCancelled(cmdId) : undefined,
           ...options
         });
         this.lastSubmissionTime = Date.now();
@@ -2000,9 +2184,27 @@
     async handleCommand(cmd) {
       if (!cmd || !cmd.id) return;
 
+      if (this.cancelledCommands.has(cmd.id)) {
+        logBridge('WARN', `Command ${cmd.id} is already marked as cancelled by coordinator. Aborting.`);
+        await this.sendAck(cmd.id, 'aborted', 'COMMAND_ABORTED_BY_TIMEOUT', { commandId: cmd.id });
+        return;
+      }
+
+      this.activeCommandId = cmd.id;
+      const timeoutMs = typeof cmd.timeoutMs === 'number' ? cmd.timeoutMs : 5000;
+      this.activeCommandDeadline = Date.now() + timeoutMs;
+
       try {
         if (cmd.type === 'sendPrompt') {
-          const result = await this.injectPrompt(cmd.text || '', cmd.options || {});
+          const result = await this.injectPrompt(cmd.text || '', {
+            ...(cmd.options || {}),
+            commandId: cmd.id,
+            commandTimeoutMs: timeoutMs,
+            commandStartTime: cmd.createdAt || Date.now(),
+            commandDeadline: this.activeCommandDeadline,
+            cancelledCommands: this.cancelledCommands,
+            isCancelled: () => this.isCommandCancelled(cmd.id)
+          });
 
           await this.sendAck(cmd.id, 'submitClicked', null, {
             ...result,
@@ -2036,13 +2238,21 @@
           metadata.steps = err.steps;
         }
 
-        await this.sendClientLog('ERROR', `Command ${cmd.id} (${cmd.type}) execution failed: ${err?.message || err}`, {
+        const isAborted = err?.code === 'COMMAND_ABORTED_BY_TIMEOUT' || err?.aborted === true;
+        const status = isAborted ? 'aborted' : 'error';
+
+        await this.sendClientLog(isAborted ? 'WARN' : 'ERROR', `Command ${cmd.id} (${cmd.type}) execution ${isAborted ? 'aborted' : 'failed'}: ${err?.message || err}`, {
           commandId: cmd.id,
           error: err?.message || String(err),
           metadata
         });
 
-        await this.sendAck(cmd.id, 'error', err?.message || String(err), metadata);
+        await this.sendAck(cmd.id, status, err?.message || String(err), metadata);
+      } finally {
+        if (this.activeCommandId === cmd.id) {
+          this.activeCommandId = null;
+          this.activeCommandDeadline = 0;
+        }
       }
     }
 

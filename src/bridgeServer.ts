@@ -65,10 +65,17 @@ export interface BridgeServerStatus {
   serverStartedAt: number;
   serverPort: number;
   activeWindowKey: string | null;
+  serverWindowKey?: string;
+  isCompatible?: boolean;
+  status?: string;
+  bindRejected?: boolean;
+  rejectReason?: string;
   pendingCommandsCount: number;
   connectedClients: number;
   lastHeartbeatAt?: number;
   watchdogEnabled?: boolean;
+  cancelledCommandIds?: string[];
+  cancelledCommands?: string[];
 }
 
 export interface WatchdogStatus {
@@ -148,6 +155,32 @@ export class BridgeServer {
   private pendingCommands: Map<string, PendingDeferredCommand> = new Map();
   private queuedCommands: BridgeCommand[] = [];
   private clients: Map<string, BridgeClientTelemetry> = new Map();
+  private cancelledCommandIds: Map<string, number> = new Map();
+
+  private pruneCancelledCommands(): void {
+    const now = Date.now();
+    const ttlMs = 60000;
+    for (const [id, timestamp] of this.cancelledCommandIds.entries()) {
+      if (now - timestamp > ttlMs) {
+        this.cancelledCommandIds.delete(id);
+      }
+    }
+  }
+
+  public isCommandCancelled(commandId: string): boolean {
+    this.pruneCancelledCommands();
+    return this.cancelledCommandIds.has(commandId);
+  }
+
+  public markCommandCancelled(commandId: string): void {
+    this.cancelledCommandIds.set(commandId, Date.now());
+    this.pruneCancelledCommands();
+  }
+
+  public getCancelledCommandIds(): string[] {
+    this.pruneCancelledCommands();
+    return Array.from(this.cancelledCommandIds.keys());
+  }
 
   constructor(options: BridgeServerOptions = {}) {
     this.portStart = options.portStart || DEFAULT_PORT_START;
@@ -263,6 +296,7 @@ export class BridgeServer {
     }
     this.pendingCommands.clear();
     this.queuedCommands = [];
+    this.cancelledCommandIds.clear();
 
     // Remove from registry
     this.removePortFromRegistry();
@@ -368,16 +402,21 @@ export class BridgeServer {
   }
 
   public getStatus(): BridgeServerStatus {
+    this.pruneCancelledCommands();
+    const cancelledList = Array.from(this.cancelledCommandIds.keys());
     return {
       service: BRIDGE_SERVICE_NAME,
       protocolVersion: BRIDGE_PROTOCOL_VERSION,
       serverStartedAt: this.serverStartedAt,
       serverPort: this.port || 0,
-      activeWindowKey: this.activeWindowKey,
+      activeWindowKey: this.activeWindowKey || null,
+      serverWindowKey: this.windowKey,
       pendingCommandsCount: this.queuedCommands.length + this.pendingCommands.size,
       connectedClients: this.getActiveClients().length,
       lastHeartbeatAt: this.lastHeartbeatAt || undefined,
-      watchdogEnabled: this.watchdogTimer !== null
+      watchdogEnabled: this.watchdogTimer !== null,
+      cancelledCommandIds: cancelledList,
+      cancelledCommands: cancelledList
     };
   }
 
@@ -459,6 +498,10 @@ export class BridgeServer {
         // Also remove from queuedCommands if not yet fetched
         this.queuedCommands = this.queuedCommands.filter(c => c.id !== commandId);
 
+        // Mark command as cancelled for coordination with DOM bridge client
+        this.cancelledCommandIds.set(commandId, Date.now());
+        this.pruneCancelledCommands();
+
         this.logger.error('SERVER', `Command dispatch timed out after ${timeoutMs}ms (commandId: ${commandId}, clientFetched: ${clientFetched})`, {
           commandId,
           timeoutMs,
@@ -532,6 +575,10 @@ export class BridgeServer {
     }
   }
 
+  public handleStatus(reqWindowKey: string, query: Record<string, any>, res: http.ServerResponse): void {
+    return this.handleGetStatus(reqWindowKey, query, res);
+  }
+
   private handleGetStatus(reqWindowKey: string, query: Record<string, any>, res: http.ServerResponse): void {
     const isProbe = query.probe === '1' || query.probe === 'true';
 
@@ -540,6 +587,29 @@ export class BridgeServer {
         windowKey: reqWindowKey,
         query
       });
+
+      // Probe request: if reqWindowKey conflicts with an already active, non-stale window, return 409
+      if (reqWindowKey && this.activeWindowKey && reqWindowKey !== this.activeWindowKey && reqWindowKey !== this.windowKey) {
+        const activeClient = this.clients.get(this.activeWindowKey);
+        const isStale = activeClient
+          ? (Date.now() - activeClient.lastSeenAt > this.staleClientMs)
+          : (Date.now() - this.serverStartedAt > this.staleClientMs);
+
+        if (!isStale) {
+          this.logger.warn('SERVER', `Probe rejected: Port is occupied by active window "${this.activeWindowKey}", prober is "${reqWindowKey}"`);
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            service: BRIDGE_SERVICE_NAME,
+            status: 'occupied',
+            serverWindowKey: this.windowKey,
+            activeWindowKey: this.activeWindowKey,
+            isCompatible: false,
+            bindRejected: true,
+            rejectReason: 'owner-mismatch'
+          }));
+          return;
+        }
+      }
     }
 
     if (reqWindowKey) {
@@ -566,6 +636,7 @@ export class BridgeServer {
       }
     }
 
+    const isCompatible = !this.activeWindowKey || this.activeWindowKey === reqWindowKey || this.windowKey === reqWindowKey;
     const windowMismatch = reqWindowKey && this.activeWindowKey && reqWindowKey !== this.activeWindowKey;
     if (windowMismatch) {
       this.logger.warn('SERVER', `Window mismatch rejected for window "${reqWindowKey}": active owner is "${this.activeWindowKey}"`);
@@ -592,14 +663,22 @@ export class BridgeServer {
       this.logger.debug('SERVER', `Command ${cmd.id} (${cmd.type}) retrieved by client ${reqWindowKey || 'unknown'}`);
     }
 
+    this.pruneCancelledCommands();
+    const cancelledList = Array.from(this.cancelledCommandIds.keys());
+
     const responseData = {
       ...this.getStatus(),
+      serverWindowKey: this.windowKey,
+      activeWindowKey: this.activeWindowKey || null,
+      isCompatible: Boolean(isCompatible),
       bindRejected: Boolean(windowMismatch),
       rejectReason: windowMismatch ? 'owner-mismatch' : undefined,
-      pendingCommands: commandsForClient
+      pendingCommands: commandsForClient,
+      cancelledCommandIds: cancelledList,
+      cancelledCommands: cancelledList
     };
 
-    res.writeHead(200);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(responseData));
   }
 
@@ -689,11 +768,37 @@ export class BridgeServer {
         });
       }
 
+      if (this.isCommandCancelled(ack.commandId)) {
+        this.logger.warn('SERVER', `ACK received for cancelled/timed-out command ${ack.commandId} (status=${ack.status}); discarding without error`, {
+          commandId: ack.commandId,
+          status: ack.status,
+          error: ack.error
+        });
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, commandId: ack.commandId, ignored: true, reason: 'command-cancelled' }));
+        return;
+      }
+
       const deferred = this.pendingCommands.get(ack.commandId);
       if (deferred) {
         const durationMs = Date.now() - deferred.startTime;
 
-        if (ack.status === 'error') {
+        if (ack.status === 'aborted' || ack.status === 'cancelled') {
+          this.logger.warn('SERVER', `Command ${ack.commandId} execution aborted by client: ${ack.error || 'aborted'}`, {
+            commandId: ack.commandId,
+            status: ack.status,
+            durationMs,
+            metadata: ack.metadata
+          });
+          clearTimeout(deferred.timer);
+          this.pendingCommands.delete(ack.commandId);
+          this.cancelledCommandIds.set(ack.commandId, Date.now());
+          const abortErr: any = new Error(ack.error || `Command ${ack.commandId} aborted by client`);
+          abortErr.code = 'COMMAND_ABORTED_BY_TIMEOUT';
+          abortErr.aborted = true;
+          if (ack.metadata) abortErr.metadata = ack.metadata;
+          deferred.reject(abortErr);
+        } else if (ack.status === 'error') {
           this.logger.error('SERVER', `Command ${ack.commandId} execution failed in DOM client: ${ack.error || 'unknown error'}`, {
             commandId: ack.commandId,
             status: ack.status,
@@ -770,6 +875,26 @@ export class BridgeServer {
   private handleGetHeartbeat(reqWindowKey: string, res: http.ServerResponse): void {
     this.lastHeartbeatAt = Date.now();
     this.logger.debug('SERVER', `Heartbeat ping received from window: ${reqWindowKey || 'unknown'}`);
+
+    if (reqWindowKey && this.activeWindowKey && reqWindowKey !== this.activeWindowKey && reqWindowKey !== this.windowKey) {
+      const activeClient = this.clients.get(this.activeWindowKey);
+      const isStale = activeClient
+        ? (Date.now() - activeClient.lastSeenAt > this.staleClientMs)
+        : (Date.now() - this.serverStartedAt > this.staleClientMs);
+
+      if (!isStale) {
+        this.logger.warn('SERVER', `Heartbeat rejected: Port is occupied by active window "${this.activeWindowKey}", prober is "${reqWindowKey}"`);
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'Window mismatch: server belongs to another active window',
+          serverWindowKey: this.windowKey,
+          activeWindowKey: this.activeWindowKey,
+          isCompatible: false
+        }));
+        return;
+      }
+    }
+
     if (reqWindowKey) {
       this.clients.set(reqWindowKey, {
         windowKey: reqWindowKey,
@@ -778,11 +903,13 @@ export class BridgeServer {
       });
     }
 
-    res.writeHead(200);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'ok',
       service: BRIDGE_SERVICE_NAME,
       serverPort: this.port || 0,
+      serverWindowKey: this.windowKey,
+      activeWindowKey: this.activeWindowKey || null,
       uptimeMs: this.serverStartedAt > 0 ? Date.now() - this.serverStartedAt : 0,
       timestamp: this.lastHeartbeatAt
     }));

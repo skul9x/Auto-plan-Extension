@@ -201,6 +201,37 @@ The extension registers the following commands in the Command Palette:
 
 ---
 
+## Tech Stack
+
+The extension is engineered with a **zero-external-runtime-dependency** architecture. It relies purely on the Node.js standard library and native VS Code / Electron APIs to ensure maximum performance, instant initialization, and minimal memory footprint.
+
+| Layer / Category | Technology / Tool | Purpose & Details |
+| :--- | :--- | :--- |
+| **Core Languages** | **TypeScript 5.3.3** | Strongly typed extension codebase compiled via `tsc` with strict type checking. |
+| | **JavaScript (ES6+)** | Vanilla in-process DOM bridge script (`media/autoplan-dom-bridge.js`) and Webview frontends. |
+| **Runtime Environment** | **Node.js (v20+)** | Powers the extension host, filesystem I/O, embedded HTTP server, and child processes (`child_process`). |
+| | **Electron Renderer** | Host runtime for VS Code / Antigravity UI and in-process DOM chat editor manipulation. |
+| **Platform APIs** | **VS Code Extension API (`^1.80.0`)** | `WebviewViewProvider`, `WebviewPanel`, Status Bar items, Output Channels, Commands, and Settings. |
+| | **Antigravity IDE Platform** | Native integration with Antigravity AI Agent side panel and transcript log locations. |
+| **Inter-Process IPC** | **Embedded REST HTTP Server** | Built-in Node.js `http` module dynamically binding to safe localhost port ranges (`48860-48900` / `49200-49220`). |
+| | **VS Code Message Passing** | Bidirectional postMessage RPC channel between extension host and webview UI panels. |
+| | **Port Registry Discovery** | Ephemeral JSON discovery file in OS tempdir (`ag-autoplan-ports.json`) for bridge auto-connection. |
+| **3-Tier Automation Engine** | **Tier 1: Focus-Free DOM Bridge** | In-process DOM event injection (`KeyboardEvent`, `InputEvent`), double-tap Enter, and `MutationObserver`. |
+| | **Tier 2: VS Code Command API** | Editor command fallback (`antigravity.sendTextToChat`). |
+| | **Tier 3: OS Keystroke Engines** | Synthetic keyboard simulation via **`xdotool`** (Linux), **PowerShell `WScript.Shell`** (Windows), and **AppleScript / `osascript`** (macOS). |
+| **System Security & Elevation** | **Polkit (`pkexec`)** | Secure GUI administrator privilege elevation on Linux for patching `workbench.html`. |
+| | **PowerShell `RunAs` & AppleScript** | Privileged elevation on Windows (UAC) and macOS (`with administrator privileges`). |
+| | **Content Security Policy (CSP)** | Dynamic CSP nonce and header updates in `workbench.html` allowing secure localhost bridge traffic. |
+| | **Checksum Integrity Manager** | Recalculates SHA-256 checksums in `product.json` to prevent VS Code corrupt installation warnings. |
+| **Data Streaming & Storage** | **JSONL Stream Engine** | Non-blocking byte-offset tracking and `mtime` modification guards for `~/.gemini/antigravity-ide/brain/` transcripts. |
+| | **Markdown & Plan Discovery** | Alphanumeric natural sorter (`Intl.Collator`) and regex parser for multi-phase plans (`phase-*.md`). |
+| **Front-End & Styling** | **HTML5 & Vanilla CSS3** | Custom responsive dashboards using CSS variables (`--vscode-*`) supporting all VS Code themes. |
+| | **Vector Graphics (SVG)** | Custom extension vector icons (`media/icon.svg`). |
+| **Build & Tooling** | **`@vscode/vsce` (2.24.0)** | Official VS Code Extension packaging CLI producing `.vsix` bundles. |
+| | **Node.js Native `assert`** | High-speed, zero-overhead automated regression and unit test suites. |
+
+---
+
 ## Troubleshooting
 
 ### "Linux Pre-Flight Failed"

@@ -960,7 +960,7 @@ export class Orchestrator extends EventEmitter {
         try {
           try {
             convId = await this.transcriptWatcher.waitForNewConversation(
-              phaseStartTime - 1000,
+              phaseStartTime,
               this.lastConversationId,
               3000,
               this.transcriptWatcher.getOptions().pollIntervalMs
@@ -1018,9 +1018,9 @@ export class Orchestrator extends EventEmitter {
                 ? phase.startOffset
                 : 0;
             if (transcriptPath) {
-              completionResult = await this.transcriptWatcher.watchFile(transcriptPath, convId, offsetToUse, phaseStartTime - 1000);
+              completionResult = await this.transcriptWatcher.watchFile(transcriptPath, convId, offsetToUse, phaseStartTime);
             } else {
-              completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime - 1000, this.lastConversationId);
+              completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime, this.lastConversationId);
             }
           } else {
             if (this.lastConversationId) {
@@ -1031,13 +1031,13 @@ export class Orchestrator extends EventEmitter {
                   transcriptPath,
                   this.lastConversationId,
                   phase.startOffset || 0,
-                  phaseStartTime - 1000
+                  phaseStartTime
                 );
               } else {
-                completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime - 1000, this.lastConversationId);
+                completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime, this.lastConversationId);
               }
             } else {
-              completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime - 1000, this.lastConversationId);
+              completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime, this.lastConversationId);
             }
           }
         } finally {
@@ -1291,7 +1291,7 @@ export class Orchestrator extends EventEmitter {
         try {
           try {
             convId = await this.transcriptWatcher.waitForNewConversation(
-              timestampBeforeSend - 1000,
+              timestampBeforeSend,
               this.lastConversationId,
               3000,
               100
@@ -1308,9 +1308,9 @@ export class Orchestrator extends EventEmitter {
             const transcriptPath = getTranscriptPath(convDir);
             const offsetToUse = convId === this.lastConversationId ? preDispatchOffset : 0;
             if (transcriptPath) {
-              completionResult = await this.transcriptWatcher.watchFile(transcriptPath, convId, offsetToUse, timestampBeforeSend - 1000);
+              completionResult = await this.transcriptWatcher.watchFile(transcriptPath, convId, offsetToUse, timestampBeforeSend);
             } else {
-              completionResult = await this.transcriptWatcher.watchLatest(timestampBeforeSend - 1000, this.lastConversationId);
+              completionResult = await this.transcriptWatcher.watchLatest(timestampBeforeSend, this.lastConversationId);
             }
           } else {
             if (this.lastConversationId) {
@@ -1321,13 +1321,13 @@ export class Orchestrator extends EventEmitter {
                   transcriptPath,
                   this.lastConversationId,
                   preDispatchOffset,
-                  timestampBeforeSend - 1000
+                  timestampBeforeSend
                 );
               } else {
-                completionResult = await this.transcriptWatcher.watchLatest(timestampBeforeSend - 1000, this.lastConversationId);
+                completionResult = await this.transcriptWatcher.watchLatest(timestampBeforeSend, this.lastConversationId);
               }
             } else {
-              completionResult = await this.transcriptWatcher.watchLatest(timestampBeforeSend - 1000, this.lastConversationId);
+              completionResult = await this.transcriptWatcher.watchLatest(timestampBeforeSend, this.lastConversationId);
             }
           }
         } finally {

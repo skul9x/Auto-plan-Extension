@@ -449,7 +449,7 @@ export class PromptDispatcher {
           await this.bridgeServer.start();
         } catch (err: any) {
           if (mode === 'auto') {
-            throw new Error(`DOM Bridge server failed to start: ${err.message}`);
+            throw new Error(`DOM Bridge connection failure: bridge server failed to start (${err.message})`);
           }
         }
       }
@@ -475,7 +475,7 @@ export class PromptDispatcher {
     }
 
     if (this.bridgeServer.getConnectedClients().length === 0) {
-      throw new Error('DOM Bridge has no active connected clients');
+      throw new Error('DOM Bridge connection failure: no active connected clients');
     }
 
     // Fallback: If command API was unavailable, trigger openNewConversation via DOM Bridge client
@@ -504,12 +504,37 @@ export class PromptDispatcher {
     try {
       ackResult = await this.bridgeServer.dispatchPromptCommand(promptText, commandOpts);
     } catch (err: any) {
-      this.logger.error('DISPATCHER', `Tier 1 dispatch failed: ${err.message}`, {
+      const isTimeout = err?.message && /timed?\s*out/i.test(err.message);
+      const isAborted = err?.code === 'COMMAND_ABORTED_BY_TIMEOUT' || err?.aborted === true || (err?.message && /aborted/i.test(err.message));
+
+      if (isTimeout || isAborted) {
+        this.logger.warn('DISPATCHER', `Tier 1 submission cancelled due to timeout (${timeoutMs}ms). Cancellation signal registered with BridgeServer.`, {
+          timeoutMs,
+          targetWindow: commandOpts.windowKey,
+          error: err.message
+        });
+        const cancellationErr: any = new Error(`DOM Bridge submission cancellation: command timed out after ${timeoutMs}ms and cancellation signal registered with BridgeServer`);
+        cancellationErr.code = 'COMMAND_ABORTED_BY_TIMEOUT';
+        cancellationErr.isTimeout = true;
+        cancellationErr.isCancelled = true;
+        if (err.domSnapshot) cancellationErr.domSnapshot = err.domSnapshot;
+        if (err.steps) cancellationErr.steps = err.steps;
+        if (err.metadata) cancellationErr.metadata = err.metadata;
+        throw cancellationErr;
+      }
+
+      const isConnectionFailure = !this.bridgeServer.isListening() || this.bridgeServer.getConnectedClients().length === 0;
+      const errorCategory = isConnectionFailure ? 'DOM Bridge connection failure' : 'DOM Bridge execution error';
+      this.logger.error('DISPATCHER', `Tier 1 dispatch failed (${errorCategory}): ${err.message}`, {
         domSnapshot: err.domSnapshot,
         steps: err.steps,
         metadata: err.metadata
       }, err);
-      throw err;
+      const formattedErr: any = new Error(`[${errorCategory}] ${err.message}`);
+      if (err.domSnapshot) formattedErr.domSnapshot = err.domSnapshot;
+      if (err.steps) formattedErr.steps = err.steps;
+      if (err.metadata) formattedErr.metadata = err.metadata;
+      throw formattedErr;
     }
 
     const durationMs = Date.now() - startTime;
@@ -656,11 +681,20 @@ export class PromptDispatcher {
         return res;
       } catch (err: any) {
         const durationMs = Date.now() - t1Start;
-        this.logger.warn('DISPATCHER', `Tier 1 (domBridge) failed in ${durationMs}ms: ${err.message}. Falling back to Tier 2 (nativeCommand)...`, {
-          tier: 'domBridge',
-          durationMs,
-          error: err.stack || err.message
-        }, err);
+        const isTimeout = err?.isTimeout || err?.isCancelled || (err?.message && /timed?\s*out|cancellation/i.test(err.message));
+        if (isTimeout) {
+          this.logger.warn('DISPATCHER', `Tier 1 (domBridge) timed out after ${durationMs}ms; cancellation signal registered with BridgeServer. Falling back to Tier 2 (nativeCommand)...`, {
+            tier: 'domBridge',
+            durationMs,
+            error: err.stack || err.message
+          }, err);
+        } else {
+          this.logger.warn('DISPATCHER', `Tier 1 (domBridge) failed in ${durationMs}ms: ${err.message}. Falling back to Tier 2 (nativeCommand)...`, {
+            tier: 'domBridge',
+            durationMs,
+            error: err.stack || err.message
+          }, err);
+        }
         fallbackHistory.push({
           tier: 'domBridge',
           error: err.message || String(err),

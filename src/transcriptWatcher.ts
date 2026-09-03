@@ -60,6 +60,7 @@ export interface CandidateConversation {
   transcriptPath: string | null;
   transcriptMtime: number;
   transcriptSize: number;
+  transcriptBirthtime?: number;
 }
 
 export interface BrainDirCacheEntry {
@@ -168,12 +169,14 @@ export async function getCandidateConversationsAsync(
       const transcriptPath = getTranscriptPath(fullPath);
       let transcriptMtime = 0;
       let transcriptSize = 0;
+      let transcriptBirthtime = 0;
 
       if (transcriptPath) {
         try {
           const tStats = await fs.promises.stat(transcriptPath);
           transcriptMtime = tStats.mtimeMs;
           transcriptSize = tStats.size;
+          transcriptBirthtime = Math.max(tStats.birthtimeMs || 0, tStats.ctimeMs || 0);
         } catch {
           // File might not exist yet
         }
@@ -190,7 +193,8 @@ export async function getCandidateConversationsAsync(
         time: dirTime,
         transcriptPath,
         transcriptMtime,
-        transcriptSize
+        transcriptSize,
+        transcriptBirthtime
       });
     }
 
@@ -271,12 +275,14 @@ export function findLatestConversation(
       const transcriptPath = getTranscriptPath(fullPath);
       let transcriptMtime = 0;
       let transcriptSize = 0;
+      let transcriptBirthtime = 0;
 
       if (transcriptPath && fs.existsSync(transcriptPath)) {
         try {
           const tStats = fs.statSync(transcriptPath);
           transcriptMtime = tStats.mtimeMs;
           transcriptSize = tStats.size;
+          transcriptBirthtime = Math.max(tStats.birthtimeMs || 0, tStats.ctimeMs || 0);
         } catch {}
       }
 
@@ -291,7 +297,8 @@ export function findLatestConversation(
         time: dirTime,
         transcriptPath,
         transcriptMtime,
-        transcriptSize
+        transcriptSize,
+        transcriptBirthtime
       });
     }
 
@@ -319,9 +326,33 @@ export function findLatestConversation(
  * 4. tool_calls is empty / null / undefined (no active tools)
  * 5. content / response includes completion keyword (case-insensitive)
  */
-export function isValidCompletionStep(step: any, keyword: string): boolean {
+export function isValidCompletionStep(step: any, keyword: string, minTimestamp?: number): boolean {
   if (!step || typeof step !== 'object') {
     return false;
+  }
+
+  // Inspect step timestamp properties (step.timestamp, step.createdAt, step.time)
+  if (minTimestamp !== undefined && minTimestamp > 0) {
+    const rawTs = step.timestamp ?? step.createdAt ?? step.time;
+    if (rawTs !== undefined && rawTs !== null) {
+      let stepTs: number | null = null;
+      if (typeof rawTs === 'number' && !isNaN(rawTs)) {
+        stepTs = rawTs < 1e11 ? rawTs * 1000 : rawTs;
+      } else if (typeof rawTs === 'string') {
+        const parsed = Date.parse(rawTs);
+        if (!isNaN(parsed)) {
+          stepTs = parsed;
+        } else {
+          const num = Number(rawTs);
+          if (!isNaN(num)) {
+            stepTs = num < 1e11 ? num * 1000 : num;
+          }
+        }
+      }
+      if (stepTs !== null && stepTs < minTimestamp) {
+        return false;
+      }
+    }
   }
 
   // Strictly require source === 'MODEL' and type === 'PLANNER_RESPONSE'
@@ -399,6 +430,10 @@ export class TranscriptWatcher extends EventEmitter {
     resolve: (res: CompletionResult) => void;
   } | null = null;
 
+  // Pre-existing candidate baselines to prevent stale historical rebinds
+  private candidateBaselineSizes: Map<string, number> = new Map();
+  private candidatePreExisted: Set<string> = new Set();
+
   constructor(options?: WatcherOptions) {
     super();
     this.setMaxListeners(50);
@@ -409,7 +444,7 @@ export class TranscriptWatcher extends EventEmitter {
       pollIntervalMs: options?.pollIntervalMs || 300,
       relaxedPollIntervalMs: options?.relaxedPollIntervalMs || 1200,
       settleQuietPeriodMs: options?.settleQuietPeriodMs ?? 1500,
-      arbitrationTimeoutMs: options?.arbitrationTimeoutMs ?? 3000,
+      arbitrationTimeoutMs: options?.arbitrationTimeoutMs ?? 15000,
       sinceTimestamp: options?.sinceTimestamp ?? 0
     };
     this.sinceTimestamp = this.options.sinceTimestamp;
@@ -422,6 +457,67 @@ export class TranscriptWatcher extends EventEmitter {
 
   public getSinceTimestamp(): number {
     return this.sinceTimestamp;
+  }
+
+  /**
+   * Initializes candidate baselines to track pre-existing files and sizes before phase start.
+   */
+  private initializeBaselineCandidates(): void {
+    this.candidateBaselineSizes.clear();
+    this.candidatePreExisted.clear();
+    let brainDir = this.options.brainDir;
+    if (this.currentFilePath && (!brainDir || !fs.existsSync(brainDir))) {
+      const normalized = path.normalize(this.currentFilePath);
+      const parts = normalized.split(path.sep);
+      const brainIdx = parts.lastIndexOf('brain');
+      if (brainIdx !== -1) {
+        brainDir = parts.slice(0, brainIdx + 1).join(path.sep);
+      } else {
+        brainDir = path.dirname(path.dirname(normalized));
+      }
+    }
+
+    if (brainDir && fs.existsSync(brainDir)) {
+      try {
+        const entries = fs.readdirSync(brainDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory() || entry.name === 'scratch') continue;
+          const fullPath = path.join(brainDir, entry.name);
+          const tPath = getTranscriptPath(fullPath);
+          if (tPath && fs.existsSync(tPath)) {
+            try {
+              const stats = fs.statSync(tPath);
+              const birthtime = stats.birthtimeMs || 0;
+              this.candidateBaselineSizes.set(tPath, stats.size);
+              const existedBefore =
+                (birthtime > 0 && this.sinceTimestamp > 0 && birthtime < this.sinceTimestamp) ||
+                (this.sinceTimestamp > 0 && stats.mtimeMs < this.sinceTimestamp);
+              if (existedBefore) {
+                this.candidatePreExisted.add(tPath);
+              }
+            } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    if (
+      this.currentFilePath &&
+      fs.existsSync(this.currentFilePath) &&
+      !this.candidateBaselineSizes.has(this.currentFilePath)
+    ) {
+      try {
+        const stats = fs.statSync(this.currentFilePath);
+        const birthtime = stats.birthtimeMs || 0;
+        this.candidateBaselineSizes.set(this.currentFilePath, stats.size);
+        const existedBefore =
+          (birthtime > 0 && this.sinceTimestamp > 0 && birthtime < this.sinceTimestamp) ||
+          (this.sinceTimestamp > 0 && stats.mtimeMs < this.sinceTimestamp);
+        if (existedBefore) {
+          this.candidatePreExisted.add(this.currentFilePath);
+        }
+      } catch {}
+    }
   }
 
   /**
@@ -470,6 +566,7 @@ export class TranscriptWatcher extends EventEmitter {
     this.isWatching = true;
     this.isCheckingConv = false;
     this.sinceTimestamp = sinceTimestamp;
+    this.initializeBaselineCandidates();
 
     const startTime = Date.now();
     return new Promise<string>((resolve, reject) => {
@@ -598,6 +695,8 @@ export class TranscriptWatcher extends EventEmitter {
         this.sinceTimestamp = this.options.sinceTimestamp || (Date.now() - 60000);
       }
     }
+
+    this.initializeBaselineCandidates();
 
     return new Promise<CompletionResult>((resolve) => {
       this.activeResolve = resolve;
@@ -771,13 +870,36 @@ export class TranscriptWatcher extends EventEmitter {
         this.activeConvId || undefined
       );
 
-      // Look for candidates that are active (transcriptSize > 0 or transcriptMtime >= lastActivityTime)
-      const activeCandidates = candidates.filter(
-        (c) =>
-          c.convId !== this.activeConvId &&
-          c.transcriptPath &&
-          (c.transcriptSize > 0 || c.transcriptMtime >= this.lastActivityTime)
-      );
+      // Look for candidates that strictly satisfy:
+      // 1. transcriptMtime >= this.sinceTimestamp (where sinceTimestamp is the phase start boundary).
+      // 2. The file must have experienced active byte growth since the phase started, or have a creation time after sinceTimestamp.
+      const activeCandidates = candidates.filter((c) => {
+        if (c.convId === this.activeConvId || !c.transcriptPath) {
+          return false;
+        }
+
+        // Must satisfy transcriptMtime >= this.sinceTimestamp
+        if (this.sinceTimestamp > 0 && c.transcriptMtime < this.sinceTimestamp) {
+          return false;
+        }
+
+        const baselineSize = this.candidateBaselineSizes.get(c.transcriptPath);
+        const hasGrowth = baselineSize !== undefined
+          ? c.transcriptSize > baselineSize
+          : c.transcriptSize > 0;
+
+        const isCreatedAfterSince = this.sinceTimestamp > 0
+          ? ((c.transcriptBirthtime !== undefined && c.transcriptBirthtime >= this.sinceTimestamp) ||
+             (c.time >= this.sinceTimestamp) ||
+             !this.candidatePreExisted.has(c.transcriptPath))
+          : true;
+
+        if (this.candidatePreExisted.has(c.transcriptPath)) {
+          return hasGrowth;
+        }
+
+        return hasGrowth || isCreatedAfterSince;
+      });
 
       if (activeCandidates.length > 0) {
         const best = activeCandidates[0];
@@ -796,7 +918,28 @@ export class TranscriptWatcher extends EventEmitter {
 
           this.activeConvId = newConvId;
           this.currentFilePath = newFilePath;
-          this.readOffset = 0;
+
+          // Initial Offset Preservation on Candidate Rebind:
+          // Do NOT reset readOffset = 0 if the file already existed prior to sinceTimestamp.
+          // Fast-forward the read offset to the end of the pre-existing content, so only newly appended tokens are processed.
+          let preExistingOffset = 0;
+          let filePreExisted = false;
+
+          if (this.candidatePreExisted.has(newFilePath)) {
+            filePreExisted = true;
+            preExistingOffset = this.candidateBaselineSizes.get(newFilePath) || 0;
+          } else if (this.sinceTimestamp > 0 && fs.existsSync(newFilePath)) {
+            try {
+              const stats = fs.statSync(newFilePath);
+              const birthtime = stats.birthtimeMs || 0;
+              if ((birthtime > 0 && birthtime < this.sinceTimestamp) || stats.mtimeMs < this.sinceTimestamp) {
+                filePreExisted = true;
+                preExistingOffset = this.candidateBaselineSizes.get(newFilePath) ?? stats.size;
+              }
+            } catch {}
+          }
+
+          this.readOffset = filePreExisted ? preExistingOffset : 0;
           this.lineBuffer = '';
           this.stringDecoder = new StringDecoder('utf8');
           this.lastActivityTime = Date.now();
@@ -837,7 +980,8 @@ export class TranscriptWatcher extends EventEmitter {
    * Watches the latest conversation transcript, evaluating candidates and excluding excludeConvId if provided.
    */
   public async watchLatest(sinceTimestamp?: number, excludeConvId?: string): Promise<CompletionResult> {
-    const candidates = await getCandidateConversationsAsync(this.options.brainDir, sinceTimestamp, excludeConvId);
+    const effectiveSince = sinceTimestamp !== undefined && sinceTimestamp > 0 ? sinceTimestamp : this.sinceTimestamp;
+    const candidates = await getCandidateConversationsAsync(this.options.brainDir, effectiveSince, excludeConvId);
     let convId: string | null = null;
     let transcriptPath: string | null = null;
 
@@ -855,7 +999,18 @@ export class TranscriptWatcher extends EventEmitter {
       throw new Error(`No conversation found in brain directory: ${this.options.brainDir}`);
     }
 
-    return this.watchFile(transcriptPath, convId, 0, sinceTimestamp);
+    let initialOffset = 0;
+    if (effectiveSince > 0 && fs.existsSync(transcriptPath)) {
+      try {
+        const stats = fs.statSync(transcriptPath);
+        const birthtime = stats.birthtimeMs || 0;
+        if ((birthtime > 0 && birthtime < effectiveSince) || stats.mtimeMs < effectiveSince) {
+          initialOffset = stats.size;
+        }
+      } catch {}
+    }
+
+    return this.watchFile(transcriptPath, convId, initialOffset, effectiveSince);
   }
 
   /**
@@ -888,7 +1043,7 @@ export class TranscriptWatcher extends EventEmitter {
       isJson = false;
     }
 
-    if (isJson && parsed && isValidCompletionStep(parsed, this.options.keyword)) {
+    if (isJson && parsed && isValidCompletionStep(parsed, this.options.keyword, this.sinceTimestamp)) {
       const eventData: CompletionEventData = {
         conversationId,
         matchedLine: line,
@@ -998,6 +1153,8 @@ export class TranscriptWatcher extends EventEmitter {
       this.stringDecoder = null;
     }
 
+    this.candidateBaselineSizes.clear();
+    this.candidatePreExisted.clear();
     this.lineBuffer = '';
     this.readOffset = 0;
     this.currentFilePath = null;

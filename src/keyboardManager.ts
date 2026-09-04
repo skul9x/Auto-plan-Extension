@@ -1,8 +1,29 @@
 import * as vscode from 'vscode';
-import { exec, execSync } from 'child_process';
+import { exec, execSync, execFile } from 'child_process';
+import * as fs from 'fs';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
+
+export class ForeignWindowFocusError extends Error {
+  public readonly detectedTitle: string;
+  public readonly detectedProcess?: string;
+  constructor(detectedTitle: string, detectedProcess?: string) {
+    const procInfo = detectedProcess ? ` [process: ${detectedProcess}]` : '';
+    super(`ForeignWindowFocusError: Active window is not VS Code (detected: "${detectedTitle}"${procInfo}). Keystroke injection aborted to prevent blind input corruption.`);
+    this.name = 'ForeignWindowFocusError';
+    this.detectedTitle = detectedTitle;
+    this.detectedProcess = detectedProcess;
+    Object.setPrototypeOf(this, ForeignWindowFocusError.prototype);
+  }
+}
+
+export interface ActiveWindowInfo {
+  isTarget: boolean;
+  windowTitle: string;
+  processName?: string;
+  pid?: number;
+}
 
 export interface BatchPromptOptions {
   /** Delay after Ctrl+Shift+L to wait for chat UI to open and focus (ms). Default: 800ms */
@@ -13,6 +34,10 @@ export interface BatchPromptOptions {
   pasteDelayMs?: number;
   /** Delay after Enter (ms). Default: 300ms */
   submitDelayMs?: number;
+  /** Custom active window validator for testing or simulation */
+  activeWindowValidator?: () => Promise<ActiveWindowInfo>;
+  /** Skip active window focus check (e.g. for headless CI environments) */
+  skipFocusCheck?: boolean;
 }
 
 export interface BatchAction {
@@ -35,6 +60,212 @@ export interface KeyboardManagerOptions {
   customClipboardSetter?: (text: string) => Promise<void>;
   /** Custom batch sender hook for testing or environment simulation */
   customBatchSender?: (batchScript: string, actions: BatchAction[]) => Promise<void>;
+  /** Custom active window validator for testing or simulation */
+  activeWindowValidator?: () => Promise<ActiveWindowInfo>;
+  /** Skip active window focus check (e.g. for headless CI environments) */
+  skipFocusCheck?: boolean;
+}
+
+/**
+ * Checks whether an active window title and/or process matches approved editor targets.
+ */
+export function isApprovedEditor(windowTitle: string, processName?: string, pid?: number): boolean {
+  if (pid && (pid === process.pid || pid === process.ppid)) {
+    return true;
+  }
+
+  const approvedProcesses = ['code', 'electron', 'visual studio code', 'antigravity', 'vscodium', 'cursor', 'windsurf'];
+  const titlePatterns = [
+    /visual studio code/i,
+    /(?:^|\s|-|_|\/)code(?:\s|-|_|\/|$)/i,
+    /antigravity/i,
+    /vscodium/i,
+    /cursor/i,
+    /windsurf/i
+  ];
+
+  const cleanTitle = (windowTitle || '').trim();
+  const cleanProcess = (processName || '').trim().toLowerCase();
+
+  const titleMatches = titlePatterns.some(p => p.test(cleanTitle));
+
+  if (cleanProcess) {
+    const procMatches = approvedProcesses.some(p => {
+      const lower = p.toLowerCase();
+      return cleanProcess === lower ||
+             cleanProcess.startsWith(lower + '.') ||
+             cleanProcess.includes(lower);
+    });
+    return procMatches && titleMatches;
+  }
+
+  return titleMatches;
+}
+
+/**
+ * Queries the OS foreground window and verifies if it belongs to an approved editor instance.
+ */
+export async function inspectActiveWindow(): Promise<ActiveWindowInfo> {
+  const platform = process.platform;
+  try {
+    if (platform === 'linux') {
+      return await inspectLinuxActiveWindow();
+    } else if (platform === 'win32') {
+      return await inspectWindowsActiveWindow();
+    } else if (platform === 'darwin') {
+      return await inspectMacActiveWindow();
+    }
+  } catch {
+    // Return safe fallback without crashing
+  }
+  return {
+    isTarget: false,
+    windowTitle: 'Unknown / Headless Window',
+    processName: undefined,
+    pid: undefined
+  };
+}
+
+async function inspectLinuxActiveWindow(): Promise<ActiveWindowInfo> {
+  try {
+    // Try xdotool first
+    try {
+      const winId = execSync('xdotool getactivewindow', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 }).trim();
+      if (winId) {
+        let windowTitle = '';
+        let pid: number | undefined;
+        try {
+          windowTitle = execSync(`xdotool getwindowname ${winId}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 }).trim();
+        } catch {}
+        try {
+          const pidStr = execSync(`xdotool getwindowpid ${winId}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 }).trim();
+          if (pidStr && !isNaN(parseInt(pidStr, 10))) {
+            pid = parseInt(pidStr, 10);
+          }
+        } catch {}
+
+        let processName: string | undefined;
+        if (pid) {
+          try {
+            processName = execSync(`ps -p ${pid} -o comm=`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 }).trim();
+          } catch {}
+        }
+
+        const isTarget = isApprovedEditor(windowTitle, processName, pid);
+        return { isTarget, windowTitle, processName, pid };
+      }
+    } catch {
+      // Fallback to xprop below
+    }
+
+    // Fallback: xprop
+    try {
+      const rootOut = execSync('xprop -root _NET_ACTIVE_WINDOW', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 }).trim();
+      const match = rootOut.match(/window id #\s*(0x[0-9a-fA-F]+|\d+)/);
+      if (match) {
+        const winId = match[1];
+        let windowTitle = '';
+        try {
+          const titleOut = execSync(`xprop -id ${winId} _NET_WM_NAME WM_NAME`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 });
+          const titleMatch = titleOut.match(/(?:_NET_WM_NAME|WM_NAME)\([^)]*\)\s*=\s*"([^"]*)"/);
+          if (titleMatch) {
+            windowTitle = titleMatch[1];
+          }
+        } catch {}
+
+        let pid: number | undefined;
+        let processName: string | undefined;
+        try {
+          const pidOut = execSync(`xprop -id ${winId} _NET_WM_PID`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 });
+          const pidMatch = pidOut.match(/_NET_WM_PID\([^)]*\)\s*=\s*(\d+)/);
+          if (pidMatch) {
+            pid = parseInt(pidMatch[1], 10);
+            processName = execSync(`ps -p ${pid} -o comm=`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 }).trim();
+          }
+        } catch {}
+
+        const isTarget = isApprovedEditor(windowTitle, processName, pid);
+        return { isTarget, windowTitle, processName, pid };
+      }
+    } catch {
+      // xprop failed or headless
+    }
+  } catch {}
+
+  return {
+    isTarget: false,
+    windowTitle: 'Unknown / Headless Window',
+    processName: undefined,
+    pid: undefined
+  };
+}
+
+async function inspectWindowsActiveWindow(): Promise<ActiveWindowInfo> {
+  try {
+    const psCmd = `powershell -NoProfile -NonInteractive -Command "Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class Win32 {
+  [DllImport(\\"user32.dll\\")] public static extern IntPtr GetForegroundWindow();
+  [DllImport(\\"user32.dll\\")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+  [DllImport(\\"user32.dll\\")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+}
+'@;
+$hwnd = [Win32]::GetForegroundWindow();
+$pidVal = 0;
+[Win32]::GetWindowThreadProcessId($hwnd, [ref]$pidVal);
+$sb = New-Object System.Text.StringBuilder 256;
+[Win32]::GetWindowText($hwnd, $sb, 256) | Out-Null;
+$title = $sb.ToString();
+$proc = if ($pidVal -gt 0) { (Get-Process -Id $pidVal -ErrorAction SilentlyContinue).ProcessName } else { '' };
+[PSCustomObject]@{ Title = $title; Process = $proc; Pid = $pidVal } | ConvertTo-Json -Compress"`;
+
+    const { stdout } = await execAsync(psCmd, { timeout: 2500 });
+    const parsed = JSON.parse(stdout.trim());
+    const windowTitle = parsed.Title || '';
+    const processName = parsed.Process || undefined;
+    const pid = typeof parsed.Pid === 'number' && parsed.Pid > 0 ? parsed.Pid : undefined;
+    const isTarget = isApprovedEditor(windowTitle, processName, pid);
+    return { isTarget, windowTitle, processName, pid };
+  } catch {
+    return {
+      isTarget: false,
+      windowTitle: 'Unknown / Headless Window',
+      processName: undefined,
+      pid: undefined
+    };
+  }
+}
+
+async function inspectMacActiveWindow(): Promise<ActiveWindowInfo> {
+  try {
+    const appleScript = `osascript -e 'tell application "System Events"
+  set p to ""
+  set w to ""
+  try
+    set p to name of first application process whose frontmost is true
+  end try
+  try
+    set w to name of front window of (first application process whose frontmost is true)
+  end try
+  return p & "|||" & w
+end tell'`;
+
+    const { stdout } = await execAsync(appleScript, { timeout: 2500 });
+    const parts = stdout.trim().split('|||');
+    const processName = parts[0]?.trim() || undefined;
+    const windowTitle = parts[1]?.trim() || processName || '';
+    const isTarget = isApprovedEditor(windowTitle, processName);
+    return { isTarget, windowTitle, processName };
+  } catch {
+    return {
+      isTarget: false,
+      windowTitle: 'Unknown / Headless Window',
+      processName: undefined,
+      pid: undefined
+    };
+  }
 }
 
 /**
@@ -71,11 +302,87 @@ export function buildLinuxBatchScript(options?: BatchPromptOptions, defaults?: B
   return `xdotool key --clearmodifiers ctrl+shift+l sleep ${focusSec} key --clearmodifiers ctrl+a sleep ${selectSec} key --clearmodifiers ctrl+v sleep ${pasteSec} key --clearmodifiers Return`;
 }
 
+/**
+ * Checks whether osascript is available and executable on macOS
+ */
+export function checkDarwinKeyboardPrerequisites(binaryPath: string = '/usr/bin/osascript'): { available: boolean; binary: string | null; error?: string } {
+  try {
+    if (fs.existsSync(binaryPath)) {
+      fs.accessSync(binaryPath, fs.constants.X_OK);
+      return { available: true, binary: binaryPath };
+    }
+  } catch {}
+
+  try {
+    const stdout = execSync('which osascript', { stdio: ['pipe', 'pipe', 'ignore'], encoding: 'utf8' }).trim();
+    if (stdout) {
+      return { available: true, binary: stdout };
+    }
+  } catch {}
+
+  return {
+    available: false,
+    binary: null,
+    error: 'osascript is not available or not executable. macOS requires /usr/bin/osascript for Tier 3 keyboard automation.'
+  };
+}
+
+/**
+ * Constructs the single macOS AppleScript batch script string
+ */
+export function buildDarwinBatchScript(options?: BatchPromptOptions, defaults?: BatchPromptOptions): string {
+  const focusDelayMs = options?.focusDelayMs ?? defaults?.focusDelayMs ?? 800;
+  const selectDelayMs = options?.selectDelayMs ?? defaults?.selectDelayMs ?? 100;
+  const pasteDelayMs = options?.pasteDelayMs ?? defaults?.pasteDelayMs ?? 150;
+
+  const focusSec = +(focusDelayMs / 1000).toFixed(3);
+  const selectSec = +(selectDelayMs / 1000).toFixed(3);
+  const pasteSec = +(pasteDelayMs / 1000).toFixed(3);
+
+  return [
+    'tell application "System Events"',
+    '  keystroke "l" using {command down, shift down}',
+    `  delay ${focusSec}`,
+    '  keystroke "a" using {command down}',
+    `  delay ${selectSec}`,
+    '  keystroke "v" using {command down}',
+    `  delay ${pasteSec}`,
+    '  key code 36',
+    'end tell'
+  ].join('\n');
+}
+
+/**
+ * Executes an AppleScript via osascript using execFile to prevent shell injection,
+ * and translates permission errors (-1743) to actionable instructions.
+ */
+export async function runAppleScript(
+  script: string,
+  binaryPath: string = '/usr/bin/osascript',
+  customExecFile?: typeof execFile
+): Promise<void> {
+  const runner = customExecFile || execFile;
+  return new Promise<void>((resolve, reject) => {
+    runner(binaryPath, ['-e', script], (error, stdout, stderr) => {
+      if (error) {
+        const errMsg = `${error.message || ''} ${stderr || ''}`;
+        if (errMsg.includes('-1743') || /not authorized to send apple events/i.test(errMsg)) {
+          return reject(new Error('macOS Accessibility permission denied: Antigravity/VS Code requires Accessibility permission to simulate keystrokes. Please enable it in: System Settings > Privacy & Security > Accessibility.'));
+        }
+        return reject(new Error(`AppleScript execution failed: ${stderr || error.message}`));
+      }
+      resolve();
+    });
+  });
+}
+
 export class KeyboardManager {
-  private options: Required<Omit<KeyboardManagerOptions, 'customKeySender' | 'customClipboardSetter' | 'customBatchSender'>> & {
+  private options: Required<Omit<KeyboardManagerOptions, 'customKeySender' | 'customClipboardSetter' | 'customBatchSender' | 'activeWindowValidator'>> & {
     customKeySender?: (keys: string) => Promise<void>;
     customClipboardSetter?: (text: string) => Promise<void>;
     customBatchSender?: (batchScript: string, actions: BatchAction[]) => Promise<void>;
+    activeWindowValidator?: () => Promise<ActiveWindowInfo>;
+    skipFocusCheck: boolean;
   };
 
   constructor(options?: KeyboardManagerOptions) {
@@ -86,7 +393,9 @@ export class KeyboardManager {
       submitDelayMs: options?.submitDelayMs ?? 300,
       customKeySender: options?.customKeySender,
       customClipboardSetter: options?.customClipboardSetter,
-      customBatchSender: options?.customBatchSender
+      customBatchSender: options?.customBatchSender,
+      activeWindowValidator: options?.activeWindowValidator,
+      skipFocusCheck: options?.skipFocusCheck ?? false
     };
   }
 
@@ -102,6 +411,27 @@ export class KeyboardManager {
    */
   public checkLinuxKeyboardPrerequisites(): { available: boolean; binary: string | null; error?: string } {
     return checkLinuxKeyboardPrerequisites();
+  }
+
+  /**
+   * Checks whether macOS keyboard prerequisites (osascript) are available
+   */
+  public checkDarwinKeyboardPrerequisites(binaryPath?: string): { available: boolean; binary: string | null; error?: string } {
+    return checkDarwinKeyboardPrerequisites(binaryPath);
+  }
+
+  /**
+   * Constructs the single macOS AppleScript batch script string.
+   */
+  public buildDarwinBatchScript(options?: BatchPromptOptions): string {
+    return buildDarwinBatchScript(options, this.options);
+  }
+
+  /**
+   * Executes AppleScript safely via osascript.
+   */
+  public async runAppleScript(script: string, binaryPath?: string, customExecFile?: typeof execFile): Promise<void> {
+    return runAppleScript(script, binaryPath, customExecFile);
   }
 
   /**
@@ -325,9 +655,28 @@ export class KeyboardManager {
   }
 
   /**
+   * Verifies that the active OS foreground window belongs to an approved editor.
+   * Throws ForeignWindowFocusError if focus is lost or belongs to another application.
+   */
+  public async verifyActiveWindow(options?: BatchPromptOptions): Promise<ActiveWindowInfo> {
+    const skip = options?.skipFocusCheck ?? this.options.skipFocusCheck ?? false;
+    if (skip) {
+      return { isTarget: true, windowTitle: 'Skipped Focus Check' };
+    }
+
+    const validator = options?.activeWindowValidator ?? this.options.activeWindowValidator ?? inspectActiveWindow;
+    const info = await validator();
+    if (!info.isTarget) {
+      throw new ForeignWindowFocusError(info.windowTitle, info.processName);
+    }
+    return info;
+  }
+
+  /**
    * Copies prompt text to clipboard, selects all, pastes, and presses enter.
    */
-  public async pasteAndSubmit(promptText: string): Promise<void> {
+  public async pasteAndSubmit(promptText: string, options?: BatchPromptOptions): Promise<void> {
+    await this.verifyActiveWindow(options);
     await this.copyToClipboard(promptText);
     await this.selectAll();
     await this.paste();
@@ -342,6 +691,9 @@ export class KeyboardManager {
     if (!prereqs.available) {
       throw new Error(prereqs.error || 'xdotool is not available on this Linux system');
     }
+
+    // 0. Active window verification MUST be executed BEFORE any clipboard modification
+    await this.verifyActiveWindow(options);
 
     // 1. Prime clipboard
     await this.copyToClipboard(promptText);
@@ -360,18 +712,57 @@ export class KeyboardManager {
   }
 
   /**
+   * Executes macOS batch prompt using AppleScript via osascript.
+   */
+  public async executeDarwinBatchPrompt(promptText: string, options?: BatchPromptOptions): Promise<void> {
+    const prereqs = this.checkDarwinKeyboardPrerequisites();
+    if (!prereqs.available) {
+      throw new Error(prereqs.error || 'osascript is not available on this macOS system');
+    }
+
+    // 0. Active window verification MUST be executed BEFORE any clipboard modification
+    await this.verifyActiveWindow(options);
+
+    // 1. Prime clipboard
+    await this.copyToClipboard(promptText);
+
+    // 2. Build AppleScript batch script
+    const script = this.buildDarwinBatchScript(options);
+
+    // 3. Execute AppleScript safely
+    await this.runAppleScript(script, prereqs.binary || '/usr/bin/osascript');
+
+    // 4. Delay after submit
+    const submitDelay = options?.submitDelayMs ?? this.options.submitDelayMs;
+    if (submitDelay > 0) {
+      await this.delay(submitDelay);
+    }
+  }
+
+  /**
    * Executes the prompt automation flow using a single-batch execution routed by OS platform.
    * Consolidates:
-   * 1. Prime clipboard with promptText (in-process)
-   * 2. Single invocation combining Open Chat (^)+SelectAll (^a)+Paste (^v)+Enter ({ENTER})
-   * 3. Built-in sleep delays inside the single OS process
+   * 1. Active window verification BEFORE clipboard or keystrokes
+   * 2. Prime clipboard with promptText (in-process)
+   * 3. Single invocation combining Open Chat (^)+SelectAll (^a)+Paste (^v)+Enter ({ENTER})
+   * 4. Built-in sleep delays inside the single OS process
    */
   public async executeBatchPromptFlow(promptText: string, options?: BatchPromptOptions): Promise<void> {
+    // 0. Active window verification MUST be executed BEFORE any clipboard modification and BEFORE dispatching keystrokes
+    await this.verifyActiveWindow(options);
+
     // 1. Prime the clipboard with prompt text
     await this.copyToClipboard(promptText);
 
     // 2. Prepare batch script and actions
-    const batchScript = process.platform === 'linux' ? this.buildLinuxBatchScript(options) : this.buildBatchScript(options);
+    let batchScript: string;
+    if (process.platform === 'linux') {
+      batchScript = this.buildLinuxBatchScript(options);
+    } else if (process.platform === 'darwin') {
+      batchScript = this.buildDarwinBatchScript(options);
+    } else {
+      batchScript = this.buildBatchScript(options);
+    }
     const actions = this.buildBatchActions(options);
 
     // 3. Custom Batch Sender Hook (for tests & custom execution)
@@ -417,6 +808,12 @@ export class KeyboardManager {
         throw new Error(prereqs.error || 'xdotool is not available on this Linux system');
       }
       await execAsync(batchScript);
+    } else if (process.platform === 'darwin') {
+      const prereqs = this.checkDarwinKeyboardPrerequisites();
+      if (!prereqs.available) {
+        throw new Error(prereqs.error || 'osascript is not available on this macOS system');
+      }
+      await this.runAppleScript(batchScript, prereqs.binary || '/usr/bin/osascript');
     } else {
       throw new Error(`Unsupported platform for keyboard automation: ${process.platform}`);
     }
@@ -451,3 +848,7 @@ export class KeyboardManager {
 }
 
 export const keyboardManager = new KeyboardManager();
+
+export async function executeDarwinBatchPrompt(promptText: string, options?: BatchPromptOptions): Promise<void> {
+  return keyboardManager.executeDarwinBatchPrompt(promptText, options);
+}

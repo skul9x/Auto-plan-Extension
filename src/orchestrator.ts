@@ -15,8 +15,11 @@ import {
   TranscriptWatcher,
   transcriptWatcher as defaultTranscriptWatcher,
   CompletionResult,
-  getTranscriptPath
+  getTranscriptPath,
+  NewConversationTimeoutError
 } from './transcriptWatcher';
+
+export { NewConversationTimeoutError };
 import {
   PhaseFile,
   scanPlanFolder,
@@ -62,6 +65,8 @@ export interface PhaseItem {
   conversationId?: string;
   /** Initial file byte offset before prompt dispatch */
   startOffset?: number;
+  /** Initial number of transcript lines before prompt dispatch */
+  initialTranscriptLength?: number;
   /** Execution start timestamp */
   startTime?: number;
   /** Execution end timestamp */
@@ -509,6 +514,10 @@ export class Orchestrator extends EventEmitter {
     return this.lastConversationId;
   }
 
+  public setLastConversationId(id?: string): void {
+    this.lastConversationId = id;
+  }
+
   private setState(state: OrchestratorState, message?: string, conversationId?: string): void {
     this.state = state;
     const currentPhase = this.getCurrentPhase() || undefined;
@@ -715,6 +724,59 @@ export class Orchestrator extends EventEmitter {
   }
 
   /**
+   * Waits for a new conversation to appear after phaseStartTime.
+   * If expectNew is true, a timeout throws NewConversationTimeoutError rather than returning stale conversation IDs.
+   */
+  public async waitForNewConversation(
+    phaseStartTime: number,
+    lastConvId?: string,
+    timeoutMs: number = 3000,
+    pollIntervalMs?: number,
+    expectNew: boolean = true,
+    diagnosticContext?: { phaseIndex?: number; fileName?: string }
+  ): Promise<string> {
+    try {
+      return await this.transcriptWatcher.waitForNewConversation(
+        phaseStartTime,
+        lastConvId,
+        timeoutMs,
+        pollIntervalMs
+      );
+    } catch (err: any) {
+      if (!expectNew) {
+        return lastConvId || 'current_conversation';
+      }
+      if (err instanceof NewConversationTimeoutError) {
+        throw new NewConversationTimeoutError(err.message, {
+          phaseIndex: diagnosticContext?.phaseIndex ?? err.phaseIndex,
+          fileName: diagnosticContext?.fileName ?? err.fileName,
+          lastConversationId: lastConvId ?? err.lastConversationId,
+          timeoutMs: timeoutMs ?? err.timeoutMs,
+          diagnosticInfo: {
+            phaseStartTime,
+            lastConversationId: lastConvId,
+            ...err.diagnosticInfo
+          }
+        });
+      }
+      throw new NewConversationTimeoutError(
+        `Timeout waiting for new conversation after ${timeoutMs}ms (stale conversation: ${lastConvId || 'none'})`,
+        {
+          phaseIndex: diagnosticContext?.phaseIndex,
+          fileName: diagnosticContext?.fileName,
+          lastConversationId: lastConvId,
+          timeoutMs,
+          diagnosticInfo: {
+            phaseStartTime,
+            lastConversationId: lastConvId,
+            originalError: err?.message
+          }
+        }
+      );
+    }
+  }
+
+  /**
    * Executes the sequential phase loop starting at a specific index.
    */
   private async runPhaseSequence(
@@ -800,18 +862,23 @@ export class Orchestrator extends EventEmitter {
 
         // Measure pre-dispatch offset if lastConversationId is known
         let initialOffset = 0;
+        let initialTranscriptLength = 0;
         if (this.lastConversationId && this.lastConversationId !== 'current_conversation') {
           const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, this.lastConversationId);
           const transcriptPath = getTranscriptPath(convDir);
           if (transcriptPath && fs.existsSync(transcriptPath)) {
             try {
               initialOffset = fs.statSync(transcriptPath).size;
+              const content = fs.readFileSync(transcriptPath, 'utf8');
+              initialTranscriptLength = content.split('\n').filter(l => l.trim().length > 0).length;
             } catch {
               initialOffset = 0;
+              initialTranscriptLength = 0;
             }
           }
         }
         phase.startOffset = initialOffset;
+        phase.initialTranscriptLength = initialTranscriptLength;
 
         // 1. Render Prompt Template & Emit Phase Start Event
         const template = config.promptTemplate || config.promptText || DEFAULT_PROMPT_TEMPLATE;
@@ -959,11 +1026,13 @@ export class Orchestrator extends EventEmitter {
 
         try {
           try {
-            convId = await this.transcriptWatcher.waitForNewConversation(
+            convId = await this.waitForNewConversation(
               phaseStartTime,
               this.lastConversationId,
               3000,
-              this.transcriptWatcher.getOptions().pollIntervalMs
+              this.transcriptWatcher.getOptions().pollIntervalMs,
+              dispatchOptions.openNewConversation !== false,
+              { phaseIndex: i, fileName: phase.fileName }
             );
           } catch (err: any) {
             if (this.isSkippingCurrentPhase) {
@@ -981,6 +1050,27 @@ export class Orchestrator extends EventEmitter {
               continue;
             }
             if (this.isAborted) break;
+
+            if (err instanceof NewConversationTimeoutError) {
+              this.stopStallWatchdog();
+              phase.status = 'Failed';
+              phase.endTime = Date.now();
+              phase.error = err.message;
+              this.debugLogger.logPhaseEvent(
+                this.toPhaseDiagnosticInfo(phase),
+                'FAIL',
+                `New conversation timeout for ${phase.fileName}: ${err.message}`,
+                {
+                  phaseIndex: i,
+                  error: err.message,
+                  stack: err.stack,
+                  diagnosticInfo: err.diagnosticInfo
+                }
+              );
+              this.diagnoseSubsequentPhasesOnFailure(i, err.message);
+              throw err;
+            }
+
             convId = this.lastConversationId || 'current_conversation';
           }
 
@@ -1013,31 +1103,59 @@ export class Orchestrator extends EventEmitter {
           if (convId !== 'current_conversation') {
             const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, convId);
             const transcriptPath = getTranscriptPath(convDir);
-            const offsetToUse =
-              convId === this.lastConversationId && phase.startOffset !== undefined
-                ? phase.startOffset
-                : 0;
-            if (transcriptPath) {
-              completionResult = await this.transcriptWatcher.watchFile(transcriptPath, convId, offsetToUse, phaseStartTime);
+            let offsetToUse = 0;
+            if (convId === this.lastConversationId) {
+              if (phase.startOffset !== undefined && phase.startOffset > 0) {
+                offsetToUse = phase.startOffset;
+              } else if (transcriptPath && fs.existsSync(transcriptPath)) {
+                try {
+                  offsetToUse = fs.statSync(transcriptPath).size;
+                  phase.startOffset = offsetToUse;
+                } catch {
+                  offsetToUse = 0;
+                }
+              }
             } else {
-              completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime, this.lastConversationId);
+              offsetToUse = phase.startOffset !== undefined ? phase.startOffset : 0;
+            }
+
+            if (transcriptPath) {
+              completionResult = await this.transcriptWatcher.watchFile(
+                transcriptPath,
+                convId,
+                offsetToUse,
+                phaseStartTime,
+                phase.initialTranscriptLength
+              );
+            } else {
+              completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime, this.lastConversationId, phase.initialTranscriptLength);
             }
           } else {
             if (this.lastConversationId) {
               const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, this.lastConversationId);
               const transcriptPath = getTranscriptPath(convDir);
+              let offsetToUse = phase.startOffset;
+              if ((offsetToUse === undefined || offsetToUse === 0) && transcriptPath && fs.existsSync(transcriptPath)) {
+                try {
+                  offsetToUse = fs.statSync(transcriptPath).size;
+                  phase.startOffset = offsetToUse;
+                } catch {
+                  offsetToUse = 0;
+                }
+              }
               if (transcriptPath && fs.existsSync(transcriptPath)) {
                 completionResult = await this.transcriptWatcher.watchFile(
                   transcriptPath,
                   this.lastConversationId,
-                  phase.startOffset || 0,
-                  phaseStartTime
+                  offsetToUse || 0,
+                  phaseStartTime,
+                  phase.initialTranscriptLength
                 );
               } else {
-                completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime, this.lastConversationId);
+                completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime, this.lastConversationId, phase.initialTranscriptLength);
               }
             } else {
-              completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime, this.lastConversationId);
+              completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime, this.lastConversationId, phase.initialTranscriptLength);
             }
           }
         } finally {
@@ -1290,13 +1408,22 @@ export class Orchestrator extends EventEmitter {
 
         try {
           try {
-            convId = await this.transcriptWatcher.waitForNewConversation(
+            convId = await this.waitForNewConversation(
               timestampBeforeSend,
               this.lastConversationId,
               3000,
-              100
+              100,
+              dispatchOptions.openNewConversation !== false
             );
-          } catch {
+          } catch (err: any) {
+            if (this.isAborted) break;
+            if (err instanceof NewConversationTimeoutError) {
+              this.debugLogger.error('ORCHESTRATOR', `New conversation timeout in run loop: ${err.message}`, {
+                iteration: i,
+                error: err.message
+              });
+              throw err;
+            }
             convId = this.lastConversationId || 'current_conversation';
           }
 
@@ -1306,7 +1433,17 @@ export class Orchestrator extends EventEmitter {
           if (convId !== 'current_conversation') {
             const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, convId);
             const transcriptPath = getTranscriptPath(convDir);
-            const offsetToUse = convId === this.lastConversationId ? preDispatchOffset : 0;
+            let offsetToUse = 0;
+            if (convId === this.lastConversationId) {
+              offsetToUse = preDispatchOffset;
+              if (offsetToUse === 0 && transcriptPath && fs.existsSync(transcriptPath)) {
+                try {
+                  offsetToUse = fs.statSync(transcriptPath).size;
+                } catch {
+                  offsetToUse = 0;
+                }
+              }
+            }
             if (transcriptPath) {
               completionResult = await this.transcriptWatcher.watchFile(transcriptPath, convId, offsetToUse, timestampBeforeSend);
             } else {
@@ -1316,11 +1453,19 @@ export class Orchestrator extends EventEmitter {
             if (this.lastConversationId) {
               const convDir = path.join(this.transcriptWatcher.getOptions().brainDir, this.lastConversationId);
               const transcriptPath = getTranscriptPath(convDir);
+              let offsetToUse = preDispatchOffset;
+              if (offsetToUse === 0 && transcriptPath && fs.existsSync(transcriptPath)) {
+                try {
+                  offsetToUse = fs.statSync(transcriptPath).size;
+                } catch {
+                  offsetToUse = 0;
+                }
+              }
               if (transcriptPath && fs.existsSync(transcriptPath)) {
                 completionResult = await this.transcriptWatcher.watchFile(
                   transcriptPath,
                   this.lastConversationId,
-                  preDispatchOffset,
+                  offsetToUse,
                   timestampBeforeSend
                 );
               } else {

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { BridgeServer, bridgeServer as defaultBridgeServer, CommandOptions } from './bridgeServer';
+import { BridgeServer, bridgeServer as defaultBridgeServer, CommandOptions, CommandAckResult } from './bridgeServer';
 import { KeyboardManager, keyboardManager as defaultKeyboardManager, BatchPromptOptions } from './keyboardManager';
 import { AutoPlanConfig, getConfig, ExecutionMode } from './config';
 import { DebugLogger, debugLogger, sanitizePrompt } from './debugLogger';
@@ -425,9 +425,14 @@ export class PromptDispatcher {
         openedViaCommand = true;
       } catch {
         try {
-          await this.commandExecutor('workbench.action.chat.open');
+          await this.commandExecutor('workbench.action.chat.newChat');
+          openedViaCommand = true;
         } catch {
-          // Non-fatal if chat view is already open or command is unavailable
+          try {
+            await this.commandExecutor('workbench.action.chat.open');
+          } catch {
+            // Non-fatal if chat view is already open or command is unavailable
+          }
         }
       }
     } else if (options?.revealChat !== false) {
@@ -478,18 +483,41 @@ export class PromptDispatcher {
       throw new Error('DOM Bridge connection failure: no active connected clients');
     }
 
-    // Fallback: If command API was unavailable, trigger openNewConversation via DOM Bridge client
-    if (options?.openNewConversation !== false && !openedViaCommand) {
+    // DOM Handshake: Await transition to empty conversation or trigger via DOM Bridge client
+    let handshakeAck: CommandAckResult | undefined;
+    if (options?.openNewConversation !== false) {
       try {
-        this.logger.debug('DISPATCHER', 'Command API unavailable for openNewConversation, triggering via DOM Bridge client...');
-        await this.bridgeServer.dispatchPromptCommand('', {
-          type: 'openNewConversation',
-          timeoutMs: Math.min(timeoutMs, 3000),
-          windowKey: options?.windowKey
-        });
-        await new Promise((r) => setTimeout(r, 100));
+        if (!openedViaCommand) {
+          this.logger.debug('DISPATCHER', 'Command API unavailable for openNewConversation, triggering via DOM Bridge client...');
+          handshakeAck = await this.bridgeServer.dispatchPromptCommand('', {
+            type: 'openNewConversation',
+            timeoutMs: Math.min(timeoutMs, 3000),
+            windowKey: options?.windowKey
+          });
+        } else {
+          this.logger.debug('DISPATCHER', 'Opened via command, executing fast DOM Bridge readiness handshake...');
+          handshakeAck = await this.bridgeServer.dispatchPromptCommand('', {
+            type: 'openNewConversation',
+            timeoutMs: Math.min(timeoutMs, 3000),
+            windowKey: options?.windowKey,
+            extra: { readyCheckOnly: true }
+          });
+        }
+
+        if (handshakeAck && handshakeAck.status === 'error') {
+          this.logger.warn('DISPATCHER', `DOM Bridge openNewConversation handshake returned error: ${handshakeAck.error}`);
+        } else {
+          this.logger.info('DISPATCHER', `DOM Bridge openNewConversation handshake completed successfully (${handshakeAck?.status})`);
+        }
       } catch (convErr: any) {
         this.logger.warn('DISPATCHER', `DOM Bridge openNewConversation command warning: ${convErr?.message || convErr}`);
+        handshakeAck = {
+          success: false,
+          commandId: '',
+          status: 'error',
+          durationMs: 0,
+          error: convErr?.message || String(convErr)
+        };
       }
     }
 
@@ -549,13 +577,21 @@ export class PromptDispatcher {
       throw err;
     }
 
+    const resultMetadata: Record<string, any> = {
+      ...(ackResult.metadata || {})
+    };
+    if (handshakeAck) {
+      resultMetadata.handshake = handshakeAck;
+      resultMetadata.handshakeStatus = handshakeAck.status;
+    }
+
     return {
       success: true,
       tier: 'domBridge',
       durationMs,
       commandId: ackResult.commandId,
       status: ackResult.status,
-      metadata: ackResult.metadata
+      metadata: resultMetadata
     };
   }
 
@@ -570,9 +606,13 @@ export class PromptDispatcher {
         await this.commandExecutor('antigravity.prioritized.chat.openNewConversation');
       } catch {
         try {
-          await this.commandExecutor('workbench.action.chat.open');
+          await this.commandExecutor('workbench.action.chat.newChat');
         } catch {
-          // Non-fatal if opening new conversation command does not exist
+          try {
+            await this.commandExecutor('workbench.action.chat.open');
+          } catch {
+            // Non-fatal if opening new conversation command does not exist
+          }
         }
       }
     }

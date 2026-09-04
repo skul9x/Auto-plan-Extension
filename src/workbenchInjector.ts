@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { execSync } from 'child_process';
+import { exec, execSync } from 'child_process';
 
 /**
  * Unique HTML comment markers for bridge script injection
@@ -166,6 +166,45 @@ export function computeSha256Base64(data: Buffer | string): string {
   return crypto.createHash('sha256').update(buf).digest('base64').replace(/=+$/, '');
 }
 
+export class ElevationLockedError extends Error {
+  constructor(message: string = 'An elevation prompt is already active. Please respond to the existing modal dialog.') {
+    super(message);
+    this.name = 'ElevationLockedError';
+  }
+}
+
+let isElevationInProgress = false;
+
+export function getIsElevationInProgress(): boolean {
+  return isElevationInProgress;
+}
+
+export function setIsElevationInProgress(value: boolean): void {
+  isElevationInProgress = value;
+}
+
+/**
+ * Checks whether the current process has write permissions to workbench.html and its parent directory
+ * without requiring elevated privileges.
+ */
+export function canWriteWorkbenchPath(customPath?: string): boolean {
+  const wbPath = customPath || getWorkbenchPath();
+  if (!wbPath) {
+    return false;
+  }
+  try {
+    if (fs.existsSync(wbPath)) {
+      fs.accessSync(wbPath, fs.constants.W_OK);
+      const dir = path.dirname(wbPath);
+      fs.accessSync(dir, fs.constants.W_OK);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Writes content to a file, handling permissions and elevating privileges if needed
  * via native OS authentication dialogs on Linux (pkexec), Windows (runAs), and macOS (osascript).
@@ -178,10 +217,16 @@ export function writeFileElevated(filePath: string, content: string): void {
       throw err;
     }
 
+    if (isElevationInProgress) {
+      throw new ElevationLockedError('An elevation prompt is already active. Please respond to the existing modal dialog.');
+    }
+
+    isElevationInProgress = true;
     const tmpPath = path.join(os.tmpdir(), `autoplan-elevated-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
-    fs.writeFileSync(tmpPath, content, 'utf8');
 
     try {
+      fs.writeFileSync(tmpPath, content, 'utf8');
+
       if (process.platform === 'linux') {
         const cmd = buildLinuxElevationCommand(tmpPath, filePath);
         execSync(cmd, { timeout: 30000 });
@@ -197,11 +242,80 @@ export function writeFileElevated(filePath: string, content: string): void {
         throw err;
       }
     } catch (elevErr: any) {
+      if (elevErr instanceof ElevationLockedError) {
+        throw elevErr;
+      }
       throw new Error(`Elevated write failed: ${elevErr.message || elevErr}`);
     } finally {
+      isElevationInProgress = false;
       try {
         if (fs.existsSync(tmpPath)) {
           fs.unlinkSync(tmpPath);
+        }
+      } catch {
+        // Ignore unlink error
+      }
+    }
+  }
+}
+
+/**
+ * Asynchronously writes content to a file, elevating privileges if needed
+ * via native OS authentication dialogs without blocking the Node.js event loop.
+ * Implements an elevation mutex (single-flight lock) to prevent modal dialog flooding.
+ */
+export async function writeFileElevatedAsync(filePath: string, content: string): Promise<void> {
+  try {
+    await fs.promises.writeFile(filePath, content, 'utf8');
+    return;
+  } catch (err: any) {
+    if (err.code !== 'EACCES' && err.code !== 'EPERM') {
+      throw err;
+    }
+
+    if (isElevationInProgress) {
+      throw new ElevationLockedError('An elevation prompt is already active. Please respond to the existing modal dialog.');
+    }
+
+    isElevationInProgress = true;
+    const tmpPath = path.join(os.tmpdir(), `autoplan-elevated-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+
+    try {
+      await fs.promises.writeFile(tmpPath, content, 'utf8');
+
+      let cmd: string;
+      if (process.platform === 'linux') {
+        cmd = buildLinuxElevationCommand(tmpPath, filePath);
+      } else if (process.platform === 'darwin') {
+        const safeTmp = tmpPath.replace(/'/g, "'\\''");
+        const safeTarget = filePath.replace(/'/g, "'\\''");
+        const inner = `cp '${safeTmp}' '${safeTarget}' && chmod 644 '${safeTarget}'`;
+        cmd = `osascript -e 'do shell script "${inner.replace(/"/g, '\\"')}" with administrator privileges'`;
+      } else if (process.platform === 'win32') {
+        cmd = buildWindowsElevationCommand(tmpPath, filePath);
+      } else {
+        throw err;
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        exec(cmd, { timeout: 30000 }, (execErr, _stdout, _stderr) => {
+          if (execErr) {
+            reject(new Error(`Elevated write failed: ${execErr.message || execErr}`));
+          } else {
+            resolve();
+          }
+        });
+      });
+    } catch (elevErr: any) {
+      if (elevErr instanceof ElevationLockedError) {
+        throw elevErr;
+      }
+      throw new Error(`Elevated write failed: ${elevErr.message || elevErr}`);
+    } finally {
+      isElevationInProgress = false;
+      try {
+        if (fs.existsSync(tmpPath)) {
+          await fs.promises.unlink(tmpPath);
         }
       } catch {
         // Ignore unlink error
@@ -379,6 +493,100 @@ export function updateProductChecksums(workbenchPath?: string): boolean {
 }
 
 /**
+ * Asynchronously updates product.json checksums using non-blocking writeFileElevatedAsync
+ */
+export async function updateProductChecksumsAsync(workbenchPath?: string): Promise<boolean> {
+  try {
+    let productJsonPath: string | null = null;
+
+    if ((process as any).resourcesPath) {
+      const candidate = path.join((process as any).resourcesPath, 'app', 'product.json');
+      if (fs.existsSync(candidate)) {
+        productJsonPath = candidate;
+      }
+    }
+
+    if (!productJsonPath) {
+      const wb = workbenchPath || getWorkbenchPath();
+      if (wb) {
+        let currentDir = path.dirname(wb);
+        for (let i = 0; i < 8; i++) {
+          const candidate = path.join(currentDir, 'product.json');
+          if (fs.existsSync(candidate)) {
+            productJsonPath = candidate;
+            break;
+          }
+          const parent = path.dirname(currentDir);
+          if (parent === currentDir) break;
+          currentDir = parent;
+        }
+      }
+    }
+
+    if (!productJsonPath || !fs.existsSync(productJsonPath)) {
+      return false;
+    }
+
+    const productContent = await fs.promises.readFile(productJsonPath, 'utf8');
+    const productJson = JSON.parse(productContent);
+
+    if (!productJson.checksums || typeof productJson.checksums !== 'object') {
+      return false;
+    }
+
+    const appRoot = path.dirname(productJsonPath);
+    const outDir = path.join(appRoot, 'out');
+    let updated = false;
+
+    for (const relativePath of Object.keys(productJson.checksums)) {
+      const nativeRelative = relativePath.split('/').join(path.sep);
+      let targetFile = path.join(outDir, nativeRelative);
+      if (!fs.existsSync(targetFile)) {
+        targetFile = path.join(appRoot, nativeRelative);
+      }
+
+      if (fs.existsSync(targetFile)) {
+        const fileData = await fs.promises.readFile(targetFile);
+        const hash = computeSha256Base64(fileData);
+        if (productJson.checksums[relativePath] !== hash) {
+          productJson.checksums[relativePath] = hash;
+          updated = true;
+        }
+      }
+    }
+
+    const wb = workbenchPath || getWorkbenchPath();
+    if (wb && fs.existsSync(wb)) {
+      const fileData = await fs.promises.readFile(wb);
+      const hash = computeSha256Base64(fileData);
+
+      const relToOut = path.relative(outDir, wb).replace(/\\/g, '/');
+      const relToApp = path.relative(appRoot, wb).replace(/\\/g, '/');
+      const standardKey = 'vs/code/electron-sandbox/workbench/workbench.html';
+
+      if (productJson.checksums[relToOut] !== undefined && productJson.checksums[relToOut] !== hash) {
+        productJson.checksums[relToOut] = hash;
+        updated = true;
+      } else if (productJson.checksums[relToApp] !== undefined && productJson.checksums[relToApp] !== hash) {
+        productJson.checksums[relToApp] = hash;
+        updated = true;
+      } else if (productJson.checksums[standardKey] !== undefined && productJson.checksums[standardKey] !== hash) {
+        productJson.checksums[standardKey] = hash;
+        updated = true;
+      }
+    }
+
+    if (updated) {
+      await writeFileElevatedAsync(productJsonPath, JSON.stringify(productJson, null, '\t'));
+      return true;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Strips any injected bridge script tags from HTML content
  */
 export function removeBridgeTagsFromHtml(html: string): string {
@@ -455,16 +663,29 @@ export function installBridgeScript(options: InjectorOptions = {}): InjectionRes
       };
     }
 
+    const cleanOriginalContent = removeBridgeTagsFromHtml(rawContent);
     const backupPath = `${wbPath}${BACKUP_SUFFIX}`;
 
-    // Manage clean backup: only create if does not exist or forceBackup is set
-    if (!fs.existsSync(backupPath) || options.forceBackup) {
-      const cleanOriginalContent = removeBridgeTagsFromHtml(rawContent);
+    // Manage clean backup: only create if does not exist or forceBackup is set,
+    // and ensure stale backup is refreshed if current active workbench is newer/different
+    let shouldWriteBackup = !fs.existsSync(backupPath) || options.forceBackup;
+    if (!shouldWriteBackup && fs.existsSync(backupPath)) {
+      try {
+        const existingBackup = fs.readFileSync(backupPath, 'utf8');
+        if (removeBridgeTagsFromHtml(existingBackup).trim() !== cleanOriginalContent.trim()) {
+          shouldWriteBackup = true;
+        }
+      } catch {
+        shouldWriteBackup = true;
+      }
+    }
+
+    if (shouldWriteBackup) {
       writeFileElevated(backupPath, cleanOriginalContent);
     }
 
     // Strip any existing tag to guarantee idempotency
-    const cleanContent = removeBridgeTagsFromHtml(rawContent);
+    const cleanContent = cleanOriginalContent;
     const tagBlock = buildBridgeScriptTag(options.timestamp, scriptFileName);
 
     let newContent: string;
@@ -503,6 +724,107 @@ export function installBridgeScript(options: InjectorOptions = {}): InjectionRes
 export function injectWorkbenchHtml(options: InjectorOptions = {}): InjectionResult {
   return installBridgeScript(options);
 }
+
+/**
+ * Asynchronously installs the DOM bridge script tag into workbench.html.
+ * Idempotent, non-blocking elevation, and manages clean backup.
+ */
+export async function installBridgeScriptAsync(options: InjectorOptions = {}): Promise<InjectionResult> {
+  const wbPath = options.workbenchPath || getWorkbenchPath(options.customAppRoot);
+  if (!wbPath || !fs.existsSync(wbPath)) {
+    return {
+      success: false,
+      error: `workbench.html not found. AppRoot: ${options.customAppRoot || 'auto-detect failed'}`
+    };
+  }
+
+  try {
+    const rawContent = await fs.promises.readFile(wbPath, 'utf8');
+    const wbDir = path.dirname(wbPath);
+    const scriptFileName = options.scriptFileName || DEFAULT_BRIDGE_SCRIPT_NAME;
+    const scriptFilePath = path.join(wbDir, scriptFileName);
+
+    const scriptContent = buildBridgeScriptContent(options.context);
+    let scriptNeedsUpdate = true;
+    if (fs.existsSync(scriptFilePath)) {
+      try {
+        const existingScript = await fs.promises.readFile(scriptFilePath, 'utf8');
+        scriptNeedsUpdate = existingScript !== scriptContent;
+      } catch {
+        scriptNeedsUpdate = true;
+      }
+    }
+
+    // Idempotency check: avoid redundant file writes when bridge is already injected, timestamp matches, and script is up to date
+    const timestampSpecified = options.timestamp !== undefined;
+    const tagMatchesCurrentTimestamp = timestampSpecified ? rawContent.includes(`?v=${options.timestamp}`) : true;
+
+    if (!options.forceReinject && isBridgeInstalled(rawContent) && !scriptNeedsUpdate && tagMatchesCurrentTimestamp && !options.forceBackup) {
+      return {
+        success: true,
+        path: wbPath
+      };
+    }
+
+    const cleanOriginalContent = removeBridgeTagsFromHtml(rawContent);
+    const backupPath = `${wbPath}${BACKUP_SUFFIX}`;
+
+    // Manage clean backup: only create if does not exist or forceBackup is set,
+    // and ensure stale backup is refreshed if current active workbench is newer/different
+    let shouldWriteBackup = !fs.existsSync(backupPath) || options.forceBackup;
+    if (!shouldWriteBackup && fs.existsSync(backupPath)) {
+      try {
+        const existingBackup = await fs.promises.readFile(backupPath, 'utf8');
+        if (removeBridgeTagsFromHtml(existingBackup).trim() !== cleanOriginalContent.trim()) {
+          shouldWriteBackup = true;
+        }
+      } catch {
+        shouldWriteBackup = true;
+      }
+    }
+
+    if (shouldWriteBackup) {
+      await writeFileElevatedAsync(backupPath, cleanOriginalContent);
+    }
+
+    // Strip any existing tag to guarantee idempotency
+    const cleanContent = cleanOriginalContent;
+    const tagBlock = buildBridgeScriptTag(options.timestamp, scriptFileName);
+
+    let newContent: string;
+    if (cleanContent.includes('</body>')) {
+      newContent = cleanContent.replace('</body>', `\t${tagBlock}\n</body>`);
+    } else if (cleanContent.includes('</html>')) {
+      newContent = cleanContent.replace('</html>', `\t${tagBlock}\n</html>`);
+    } else {
+      newContent = `${cleanContent}\n${tagBlock}\n`;
+    }
+
+    await writeFileElevatedAsync(wbPath, newContent);
+
+    // Also write/copy the updated DOM bridge script into workbench directory
+    await writeFileElevatedAsync(scriptFilePath, scriptContent);
+
+    if (options.updateChecksums !== false) {
+      await updateProductChecksumsAsync(wbPath);
+    }
+
+    return {
+      success: true,
+      path: wbPath
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err.message || String(err)
+    };
+  }
+}
+
+/**
+ * Asynchronously injects DOM bridge script into workbench.html (alias for installBridgeScriptAsync).
+ */
+export const injectWorkbenchHtmlAsync = installBridgeScriptAsync;
 
 /**
  * Diagnostic check for DOM Bridge injection status.
@@ -564,23 +886,18 @@ export function uninstallBridgeScript(options: InjectorOptions = {}): Uninstalla
   }
 
   try {
-    const backupPath = `${wbPath}${BACKUP_SUFFIX}`;
-    let restoredContent: string;
+    const currentRaw = fs.readFileSync(wbPath, 'utf8');
+    const restoredContent = removeBridgeTagsFromHtml(currentRaw);
+    writeFileElevated(wbPath, restoredContent);
 
+    const backupPath = `${wbPath}${BACKUP_SUFFIX}`;
     if (fs.existsSync(backupPath)) {
-      const backupRaw = fs.readFileSync(backupPath, 'utf8');
-      restoredContent = removeBridgeTagsFromHtml(backupRaw);
       try {
         fs.unlinkSync(backupPath);
       } catch {
         // Ignore unlink error
       }
-    } else {
-      const currentRaw = fs.readFileSync(wbPath, 'utf8');
-      restoredContent = removeBridgeTagsFromHtml(currentRaw);
     }
-
-    writeFileElevated(wbPath, restoredContent);
 
     // Also remove the sidecar script file if present
     const wbDir = path.dirname(wbPath);
@@ -595,6 +912,60 @@ export function uninstallBridgeScript(options: InjectorOptions = {}): Uninstalla
 
     if (options.updateChecksums !== false) {
       updateProductChecksums(wbPath);
+    }
+
+    return {
+      success: true,
+      path: wbPath
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err.message || String(err)
+    };
+  }
+}
+
+/**
+ * Asynchronously uninstalls the DOM bridge script tag from workbench.html.
+ * Restores original content, unlinks temporary and sidecar files, and updates checksums asynchronously.
+ */
+export async function uninstallBridgeScriptAsync(options: InjectorOptions = {}): Promise<UninstallationResult> {
+  const wbPath = options.workbenchPath || getWorkbenchPath(options.customAppRoot);
+  if (!wbPath || !fs.existsSync(wbPath)) {
+    return {
+      success: false,
+      error: `workbench.html not found. AppRoot: ${options.customAppRoot || 'auto-detect failed'}`
+    };
+  }
+
+  try {
+    const currentRaw = await fs.promises.readFile(wbPath, 'utf8');
+    const restoredContent = removeBridgeTagsFromHtml(currentRaw);
+    await writeFileElevatedAsync(wbPath, restoredContent);
+
+    const backupPath = `${wbPath}${BACKUP_SUFFIX}`;
+    if (fs.existsSync(backupPath)) {
+      try {
+        await fs.promises.unlink(backupPath);
+      } catch {
+        // Ignore unlink error
+      }
+    }
+
+    // Also remove the sidecar script file if present
+    const wbDir = path.dirname(wbPath);
+    const scriptFile = path.join(wbDir, options.scriptFileName || DEFAULT_BRIDGE_SCRIPT_NAME);
+    if (fs.existsSync(scriptFile)) {
+      try {
+        await fs.promises.unlink(scriptFile);
+      } catch {
+        // Ignore unlink error
+      }
+    }
+
+    if (options.updateChecksums !== false) {
+      await updateProductChecksumsAsync(wbPath);
     }
 
     return {

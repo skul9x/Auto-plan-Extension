@@ -11,6 +11,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'autoplan.sidebarView';
 
   private _view?: vscode.WebviewView;
+  private _isWebviewReady: boolean = false;
+  private _readyFallbackTimer: NodeJS.Timeout | null = null;
+  private _cachedState?: any;
+  private _cachedBridgeStatus?: string;
+  private _cachedProgress?: any;
+  private _stateGeneration: number = 0;
+  private _refreshPromise: Promise<void> | null = null;
   private _activePlanPath?: string;
   private _rawPhases: PhaseFile[] = [];
   private _phases: (PhaseFile | PhaseDiagnosticInfo)[] = [];
@@ -28,6 +35,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     return this._view;
   }
 
+  public isWebviewReady(): boolean {
+    return this._isWebviewReady;
+  }
+
   public getSelectedIndices(): Set<number> {
     return this._selectedPhaseIndices;
   }
@@ -38,6 +49,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     token: vscode.CancellationToken
   ) {
     this._view = webviewView;
+    this._isWebviewReady = false;
+    this._cachedState = undefined;
+    this._cachedBridgeStatus = undefined;
+    this._cachedProgress = undefined;
+
+    if (this._readyFallbackTimer) {
+      clearTimeout(this._readyFallbackTimer);
+      this._readyFallbackTimer = null;
+    }
 
     webviewView.webview.options = {
       enableScripts: true,
@@ -50,88 +70,160 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       await this.handleWebviewMessage(message);
     });
 
+    webviewView.onDidDispose?.(() => {
+      if (this._readyFallbackTimer) {
+        clearTimeout(this._readyFallbackTimer);
+        this._readyFallbackTimer = null;
+      }
+    });
+
+    // Safety fallback timer to deliver state if webview fails to send ready (e.g. headless/constrained)
+    this._readyFallbackTimer = setTimeout(() => {
+      if (!this._isWebviewReady) {
+        this._isWebviewReady = true;
+        this._flushBufferedState();
+      }
+    }, 1500);
+    if (this._readyFallbackTimer && typeof this._readyFallbackTimer.unref === 'function') {
+      this._readyFallbackTimer.unref();
+    }
+
     this.refreshAndSendState();
     this.sendBridgeStatus();
   }
 
-  public async refreshAndSendState() {
-    if (!this._activePlanPath) {
-      this._activePlanPath = getCurrentPlanFolder();
-    }
+  public async refreshAndSendState(): Promise<void> {
+    const version = ++this._stateGeneration;
+    const task = async () => {
+      if (!this._activePlanPath) {
+        this._activePlanPath = getCurrentPlanFolder();
+      }
 
-    let auditReport: PlanPhasesAuditReport | undefined = undefined;
+      let auditReport: PlanPhasesAuditReport | undefined = undefined;
 
-    if (this._activePlanPath) {
-      try {
-        const stat = await fs.promises.stat(this._activePlanPath);
-        if (stat.isDirectory()) {
-          const rawPhases = await scanPlanFolderAsync(this._activePlanPath);
-          this._rawPhases = rawPhases;
-          if (this._selectedPhaseIndices.size === 0 && rawPhases.length > 0) {
-            rawPhases.forEach((p, idx) => {
-              if (!p.isCompleted) {
-                this._selectedPhaseIndices.add(idx);
+      if (this._activePlanPath) {
+        try {
+          const stat = await fs.promises.stat(this._activePlanPath);
+          if (stat.isDirectory()) {
+            const rawPhases = await scanPlanFolderAsync(this._activePlanPath);
+            this._rawPhases = rawPhases;
+            if (this._selectedPhaseIndices.size === 0 && rawPhases.length > 0) {
+              rawPhases.forEach((p, idx) => {
+                if (!p.isCompleted) {
+                  this._selectedPhaseIndices.add(idx);
+                }
+              });
+              if (this._selectedPhaseIndices.size === 0) {
+                rawPhases.forEach((_, idx) => this._selectedPhaseIndices.add(idx));
               }
-            });
-            if (this._selectedPhaseIndices.size === 0) {
-              rawPhases.forEach((_, idx) => this._selectedPhaseIndices.add(idx));
+            }
+
+            const isRunning = orchestrator.isRunning();
+            const currentPhase = orchestrator.getCurrentPhase();
+            const currentIdx = currentPhase ? rawPhases.findIndex(p => p.fileName === currentPhase.fileName) : 0;
+
+            if (isRunning) {
+              auditReport = orchestrator.getPhaseAuditReport();
+            } else {
+              auditReport = await auditPlanPhasesAsync(this._activePlanPath, {
+                selectedIndices: this._selectedPhaseIndices,
+                orchestratorState: 'idle'
+              });
+            }
+
+            if (auditReport && auditReport.phases && auditReport.phases.length > 0) {
+              this._phases = auditReport.phases;
+            } else {
+              this._phases = rawPhases;
             }
           }
-
-          const isRunning = orchestrator.isRunning();
-          const currentPhase = orchestrator.getCurrentPhase();
-          const currentIdx = currentPhase ? rawPhases.findIndex(p => p.fileName === currentPhase.fileName) : 0;
-
-          if (isRunning) {
-            auditReport = orchestrator.getPhaseAuditReport();
-          } else {
-            auditReport = await auditPlanPhasesAsync(this._activePlanPath, {
-              selectedIndices: this._selectedPhaseIndices,
-              orchestratorState: 'idle'
-            });
-          }
-
-          if (auditReport && auditReport.phases && auditReport.phases.length > 0) {
-            this._phases = auditReport.phases;
-          } else {
-            this._phases = rawPhases;
-          }
+        } catch {
+          this._phases = [];
         }
-      } catch {
-        this._phases = [];
       }
-    }
 
-    let plans: { folderPath: string; relName: string; phaseCount: number }[] = [];
-    try {
-      plans = await discoverWorkspacePlanFoldersAsync();
-    } catch {}
+      let plans: { folderPath: string; relName: string; phaseCount: number }[] = [];
+      try {
+        plans = await discoverWorkspacePlanFoldersAsync();
+      } catch {}
 
-    const isRunning = orchestrator.isRunning();
-    const isPaused = (orchestrator as any).isPaused ? (orchestrator as any).isPaused() : false;
-    const currentPhase = orchestrator.getCurrentPhase();
-    const currentIdx = currentPhase ? this._phases.findIndex(p => p.fileName === currentPhase.fileName) : 0;
+      const isRunning = orchestrator.isRunning();
+      const isPaused = (orchestrator as any).isPaused ? (orchestrator as any).isPaused() : false;
+      const currentPhase = orchestrator.getCurrentPhase();
+      const currentIdx = currentPhase ? this._phases.findIndex(p => p.fileName === currentPhase.fileName) : 0;
 
-    const state = {
-      status: isRunning ? (isPaused ? 'paused' : 'running') : 'idle',
-      activePlanPath: this._activePlanPath,
-      phases: this._phases,
-      selectedIndices: Array.from(this._selectedPhaseIndices),
-      currentPhaseIndex: currentIdx >= 0 ? currentIdx : 0,
-      progressPercentage: (orchestrator as any).getProgressPercentage ? (orchestrator as any).getProgressPercentage() : 0,
-      plans,
-      auditReport
+      const state = {
+        status: isRunning ? (isPaused ? 'paused' : 'running') : 'idle',
+        activePlanPath: this._activePlanPath,
+        phases: this._phases,
+        selectedIndices: Array.from(this._selectedPhaseIndices),
+        currentPhaseIndex: currentIdx >= 0 ? currentIdx : 0,
+        progressPercentage: (orchestrator as any).getProgressPercentage ? (orchestrator as any).getProgressPercentage() : 0,
+        plans,
+        auditReport
+      };
+
+      if (version !== this._stateGeneration) {
+        return;
+      }
+
+      this.updateState(state);
     };
 
-    this.updateState(state);
+    const promise = task();
+    this._refreshPromise = promise;
+    try {
+      await promise;
+    } finally {
+      if (this._refreshPromise === promise) {
+        this._refreshPromise = null;
+      }
+    }
+  }
+
+  private async _flushBufferedState(): Promise<void> {
+    if (this._cachedState) {
+      const state = this._cachedState;
+      this._cachedState = undefined;
+      this.updateState(state);
+    } else if (this._refreshPromise) {
+      await this._refreshPromise;
+    } else {
+      await this.refreshAndSendState();
+    }
+
+    if (this._cachedBridgeStatus !== undefined) {
+      const status = this._cachedBridgeStatus;
+      this._cachedBridgeStatus = undefined;
+      this.sendBridgeStatus(status);
+    } else {
+      this.sendBridgeStatus();
+    }
+
+    if (this._cachedProgress) {
+      const progress = this._cachedProgress;
+      this._cachedProgress = undefined;
+      this.sendProgress(progress);
+    }
+
+    this.flushPendingLogs();
   }
 
   public updateState(state?: any) {
-    this.flushPendingLogs();
     if (!state) {
       void this.refreshAndSendState();
       return;
     }
+
+    this._stateGeneration++;
+
+    if (!this._isWebviewReady) {
+      this._cachedState = state;
+      return;
+    }
+
+    this._cachedState = undefined;
+    this.flushPendingLogs();
 
     this._view?.webview.postMessage({
       type: 'stateUpdate',
@@ -157,6 +249,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       }
     }
 
+    if (!this._isWebviewReady) {
+      this._cachedBridgeStatus = status;
+      return;
+    }
+
+    this._cachedBridgeStatus = undefined;
     this._view?.webview.postMessage({
       type: 'bridgeStatus',
       command: 'bridgeStatus',
@@ -185,6 +283,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     if (this._pendingLogQueue.length === 0) {
       return;
     }
+    if (!this._isWebviewReady) {
+      return;
+    }
     const logs = [...this._pendingLogQueue];
     this._pendingLogQueue = [];
 
@@ -204,10 +305,20 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   public dispose(): void {
+    if (this._readyFallbackTimer) {
+      clearTimeout(this._readyFallbackTimer);
+      this._readyFallbackTimer = null;
+    }
     this.flushPendingLogs();
   }
 
   public sendProgress(progress: { percentage: number; elapsedTime: string; currentPhaseIndex?: number; totalPhases?: number }) {
+    if (!this._isWebviewReady) {
+      this._cachedProgress = progress;
+      return;
+    }
+
+    this._cachedProgress = undefined;
     this._view?.webview.postMessage({
       type: 'progress',
       command: 'progress',
@@ -220,6 +331,36 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     const cmd = message.command || message.type;
 
     switch (cmd) {
+      case 'ready': {
+        this._isWebviewReady = true;
+        if (this._readyFallbackTimer) {
+          clearTimeout(this._readyFallbackTimer);
+          this._readyFallbackTimer = null;
+        }
+        if (this._cachedState) {
+          const state = this._cachedState;
+          this._cachedState = undefined;
+          this.updateState(state);
+        } else if (this._refreshPromise) {
+          await this._refreshPromise;
+        } else {
+          await this.refreshAndSendState();
+        }
+        if (this._cachedBridgeStatus !== undefined) {
+          const status = this._cachedBridgeStatus;
+          this._cachedBridgeStatus = undefined;
+          this.sendBridgeStatus(status);
+        } else {
+          this.sendBridgeStatus();
+        }
+        if (this._cachedProgress) {
+          const progress = this._cachedProgress;
+          this._cachedProgress = undefined;
+          this.sendProgress(progress);
+        }
+        this.flushPendingLogs();
+        break;
+      }
       case 'start':
         await this._handleStart();
         break;

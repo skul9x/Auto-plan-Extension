@@ -263,9 +263,14 @@
     "test:all": "node out/test/phase05_e2e_cross_platform_release.test.js"
   },
   "devDependencies": {
+    "@types/jsdom": "^30.0.0",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.80.0",
     "@vscode/vsce": "^2.24.0",
+    "jsdom": "^27.0.1",
+    "mocha": "^11.8.0",
+    "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
   }
 }

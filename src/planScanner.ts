@@ -158,6 +158,7 @@ export interface PhaseExecutionContext {
     index: number;
     phaseNumber?: number;
     fileName?: string;
+    filePath?: string;
     status: 'Completed' | 'Running' | 'Pending' | 'Failed' | 'Skipped' | 'Stopped';
     error?: string;
     conversationId?: string;
@@ -861,19 +862,26 @@ export function auditPlanPhases(
     };
   }
 
-  const activePhaseMap = new Map<number | string, any>();
+  const activePhaseMap = new Map<string, any>();
   if (executionContext?.activePhases) {
     for (const ap of executionContext.activePhases) {
-      activePhaseMap.set(ap.index, ap);
       if (ap.fileName) {
         activePhaseMap.set(ap.fileName.toLowerCase(), ap);
+        activePhaseMap.set(path.basename(ap.fileName).toLowerCase(), ap);
+      }
+      if (ap.filePath) {
+        activePhaseMap.set(path.normalize(ap.filePath).toLowerCase(), ap);
       }
     }
   }
 
   const diagnosticPhases: PhaseDiagnosticInfo[] = phaseFiles.map((pf, idx) => {
     const headerInfo = inspectPhaseHeader(pf.nativePath || pf.filePath);
-    const active = activePhaseMap.get(idx) || activePhaseMap.get(pf.fileName.toLowerCase());
+    const fileKey = (pf.fileName || '').toLowerCase();
+    const baseKey = path.basename(pf.filePath || pf.nativePath || '').toLowerCase();
+    const pathKey = (pf.filePath || pf.nativePath ? path.normalize(pf.filePath || pf.nativePath).toLowerCase() : '');
+
+    const active = activePhaseMap.get(fileKey) || activePhaseMap.get(baseKey) || (pathKey ? activePhaseMap.get(pathKey) : undefined);
 
     let isSelected = true;
     if (executionContext?.selectedIndices) {
@@ -1013,12 +1021,15 @@ export async function auditPlanPhasesAsync(
     };
   }
 
-  const activePhaseMap = new Map<number | string, any>();
+  const activePhaseMap = new Map<string, any>();
   if (executionContext?.activePhases) {
     for (const ap of executionContext.activePhases) {
-      activePhaseMap.set(ap.index, ap);
       if (ap.fileName) {
         activePhaseMap.set(ap.fileName.toLowerCase(), ap);
+        activePhaseMap.set(path.basename(ap.fileName).toLowerCase(), ap);
+      }
+      if (ap.filePath) {
+        activePhaseMap.set(path.normalize(ap.filePath).toLowerCase(), ap);
       }
     }
   }
@@ -1029,7 +1040,11 @@ export async function auditPlanPhasesAsync(
 
   const diagnosticPhases: PhaseDiagnosticInfo[] = phaseFiles.map((pf, idx) => {
     const headerInfo = headerInspections[idx];
-    const active = activePhaseMap.get(idx) || activePhaseMap.get(pf.fileName.toLowerCase());
+    const fileKey = (pf.fileName || '').toLowerCase();
+    const baseKey = path.basename(pf.filePath || pf.nativePath || '').toLowerCase();
+    const pathKey = (pf.filePath || pf.nativePath ? path.normalize(pf.filePath || pf.nativePath).toLowerCase() : '');
+
+    const active = activePhaseMap.get(fileKey) || activePhaseMap.get(baseKey) || (pathKey ? activePhaseMap.get(pathKey) : undefined);
 
     let isSelected = true;
     if (executionContext?.selectedIndices) {

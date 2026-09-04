@@ -886,6 +886,275 @@
   }
 
   /**
+   * Evaluates whether an input element's buffer has been cleared or submitted (LOGIC-008).
+   * Inspects value for standard inputs/textareas, and textContent/innerHTML for rich text (Lexical/ProseMirror).
+   */
+  function isInputClearedOrSubmitted(inputElem, promptText) {
+    if (!inputElem) return true;
+
+    const trimmedPrompt = (typeof promptText === 'string' ? promptText : '').trim();
+
+    // 1. Textarea / Input
+    if (inputElem.tagName === 'TEXTAREA' || inputElem.tagName === 'INPUT') {
+      const val = (inputElem.value || '').trim();
+      if (!val) {
+        return true;
+      }
+      if (trimmedPrompt && (val === trimmedPrompt || val.includes(trimmedPrompt))) {
+        return false;
+      }
+      return false;
+    }
+
+    // 2. Monaco Editor Model API (if element or window has monaco model)
+    try {
+      if (typeof inputElem.getModel === 'function') {
+        const model = inputElem.getModel();
+        if (model && typeof model.getValue === 'function') {
+          const mVal = model.getValue().trim();
+          if (!mVal) return true;
+          if (trimmedPrompt && (mVal === trimmedPrompt || mVal.includes(trimmedPrompt))) return false;
+          return false;
+        }
+      }
+    } catch (_) {}
+
+    // 3. Contenteditable / Rich Text / Lexical / ProseMirror
+    const textProp = (inputElem.textContent !== undefined && inputElem.textContent !== null)
+      ? inputElem.textContent
+      : (inputElem.innerText !== undefined && inputElem.innerText !== null ? inputElem.innerText : '');
+    const rawText = String(textProp).replace(/\u200B/g, '').trim();
+    if (!rawText) {
+      return true;
+    }
+
+    if (trimmedPrompt && (rawText === trimmedPrompt || rawText.includes(trimmedPrompt) || trimmedPrompt.includes(rawText))) {
+      return false;
+    }
+
+    // Inspect inner HTML structure for empty structural tags (e.g. <p><br></p>, <p></p>, <br>)
+    const html = (inputElem.innerHTML || '').trim();
+    if (html && (/^<(p|div|span)[^>]*>\s*(<br\s*\/?>)?\s*<\/\1>$/i.test(html) || /^<br\s*\/?>$/i.test(html))) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Helper targeting active Cancel/Stop button replacing send button (Phase 03 Proof 2).
+   * Targets button[aria-label*="Cancel"][data-tooltip-id*="input-send-button-cancel-tooltip"]
+   * and button[aria-label*="Cancel"][data-tooltip-id*="cancel"] containing .bg-red-500.
+   */
+  function findCancelButton(doc) {
+    if (!doc) return null;
+    try {
+      const selector = 'button[aria-label*="Cancel"][data-tooltip-id*="input-send-button-cancel-tooltip"], button[aria-label*="Cancel"][data-tooltip-id*="cancel"], button[aria-label*="Cancel"]';
+      const btns = (typeof queryDeep === 'function')
+        ? queryDeep(selector, doc)
+        : (doc.querySelectorAll ? Array.from(doc.querySelectorAll(selector)) : []);
+
+      for (const btn of btns) {
+        if (!btn) continue;
+        const ariaLabel = (btn.getAttribute ? btn.getAttribute('aria-label') : '') || '';
+        const tooltipId = (btn.getAttribute ? btn.getAttribute('data-tooltip-id') : '') || '';
+        const hasRedSquare = btn.querySelector && Boolean(btn.querySelector('.bg-red-500, [class*="bg-red-500"]'));
+
+        if (tooltipId.includes('input-send-button-cancel-tooltip')) {
+          return btn;
+        }
+        if (tooltipId.toLowerCase().includes('cancel') && (hasRedSquare || !tooltipId.includes('dialog'))) {
+          return btn;
+        }
+        if (ariaLabel.toLowerCase().includes('cancel') && hasRedSquare) {
+          return btn;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /**
+   * Helper counting user messages in the chat history (Phase 03 Proof 3).
+   * Targets div[role="article"][aria-label="User message"], div[data-testid="user-input-step"]
+   */
+  function countUserMessages(doc) {
+    if (!doc) return 0;
+    try {
+      const selector = 'div[role="article"][aria-label="User message"], div[data-testid="user-input-step"]';
+      const elements = (typeof queryDeep === 'function')
+        ? queryDeep(selector, doc)
+        : (doc.querySelectorAll ? Array.from(doc.querySelectorAll(selector)) : []);
+
+      if (!elements || elements.length === 0) return 0;
+
+      const uniqueMessages = new Set();
+      for (const el of elements) {
+        let root = el;
+        if (typeof el.closest === 'function') {
+          const parentArticle = el.closest('div[role="article"][aria-label="User message"]');
+          if (parentArticle) {
+            root = parentArticle;
+          }
+        }
+        uniqueMessages.add(root);
+      }
+      return uniqueMessages.size;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /**
+   * Helper checking Proof 2 criteria: Active agent Cancel button or live announcer "Working..."
+   */
+  function isCancelButtonOrWorkingActive(doc) {
+    if (!doc) return false;
+    if (findCancelButton(doc)) return true;
+    try {
+      const announcer = (typeof queryDeep === 'function')
+        ? (queryDeep('#a11y-live-announcer', doc)[0] || null)
+        : (doc.querySelector ? doc.querySelector('#a11y-live-announcer') : null);
+      if (announcer) {
+        const text = announcer.textContent || announcer.innerText || '';
+        if (text.includes('Working...')) {
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /**
+   * Asynchronously verifies that an input submission actually cleared the buffer
+   * or triggered an active agent response / new user message (Phase 03: 3-Point Proof Verification Standard).
+   *
+   * A submission is confirmed as verified if and only if at least ONE of the following 3 hard criteria evaluates to true:
+   * - Proof 1 (Input Clearance): isInputClearedOrSubmitted(inputElem, promptText) returns true
+   * - Proof 2 (Active Agent Cancel Button): findCancelButton(doc) !== null or #a11y-live-announcer contains "Working..."
+   * - Proof 3 (Message Count Increment): countUserMessages(doc) > initialMessageCount
+   *
+   * Generic body mutations (tooltips, clock updates, etc.) do NOT verify submission.
+   */
+  async function verifyInputSubmission(inputElem, promptText, options = {}) {
+    const startTime = Date.now();
+    const doc = options.document || (typeof document !== 'undefined' ? document : (inputElem?.ownerDocument || null));
+
+    // Observation window (default 1000ms per Phase 03 Requirement 2.3)
+    const observationTimeoutMs = options.observationTimeoutMs !== undefined
+      ? options.observationTimeoutMs
+      : (options.clearanceObservationMs !== undefined
+        ? options.clearanceObservationMs
+        : (options.verificationDelayMs !== undefined ? options.verificationDelayMs : 1000));
+    const pollIntervalMs = options.pollIntervalMs !== undefined ? options.pollIntervalMs : 15;
+
+    // Snapshot pre-submission message count
+    const initialMessageCount = options.initialMessageCount !== undefined
+      ? options.initialMessageCount
+      : countUserMessages(doc);
+
+    // Three-Point Proof verification checks
+    const checkProof1 = () => isInputClearedOrSubmitted(inputElem, promptText);
+    const checkProof2 = () => isCancelButtonOrWorkingActive(doc);
+    const checkProof3 = () => countUserMessages(doc) > initialMessageCount;
+
+    // 1. Immediate proof evaluation
+    if (checkProof1()) {
+      return {
+        verified: true,
+        reason: 'input_cleared_immediately',
+        proof: 'proof1_input_clearance',
+        durationMs: Date.now() - startTime
+      };
+    }
+    if (checkProof2()) {
+      return {
+        verified: true,
+        reason: 'cancel_button_active',
+        proof: 'proof2_active_cancel_button',
+        durationMs: Date.now() - startTime
+      };
+    }
+    if (checkProof3()) {
+      return {
+        verified: true,
+        reason: 'message_count_incremented',
+        proof: 'proof3_message_count_increment',
+        durationMs: Date.now() - startTime
+      };
+    }
+
+    // 2. Polling loop: generic body mutations are completely ignored.
+    // Only the 3 hard proof criteria can verify submission.
+    while (Date.now() - startTime < observationTimeoutMs) {
+      if (checkProof1()) {
+        return {
+          verified: true,
+          reason: 'input_cleared',
+          proof: 'proof1_input_clearance',
+          durationMs: Date.now() - startTime
+        };
+      }
+      if (checkProof2()) {
+        return {
+          verified: true,
+          reason: 'cancel_button_active',
+          proof: 'proof2_active_cancel_button',
+          durationMs: Date.now() - startTime
+        };
+      }
+      if (checkProof3()) {
+        return {
+          verified: true,
+          reason: 'message_count_incremented',
+          proof: 'proof3_message_count_increment',
+          durationMs: Date.now() - startTime
+        };
+      }
+
+      const remaining = observationTimeoutMs - (Date.now() - startTime);
+      if (remaining <= 0) break;
+      await new Promise(r => setTimeout(r, Math.min(pollIntervalMs, remaining)));
+    }
+
+    // 3. Final evaluation at timeout deadline
+    if (checkProof1()) {
+      return {
+        verified: true,
+        reason: 'input_cleared_at_deadline',
+        proof: 'proof1_input_clearance',
+        durationMs: Date.now() - startTime
+      };
+    }
+    if (checkProof2()) {
+      return {
+        verified: true,
+        reason: 'cancel_button_active',
+        proof: 'proof2_active_cancel_button',
+        durationMs: Date.now() - startTime
+      };
+    }
+    if (checkProof3()) {
+      return {
+        verified: true,
+        reason: 'message_count_incremented',
+        proof: 'proof3_message_count_increment',
+        durationMs: Date.now() - startTime
+      };
+    }
+
+    return {
+      verified: false,
+      reason: 'unverified_input_remains',
+      rejectionReason: 'unverified_input_remains',
+      error: 'Submission was not verified: input retains prompt and neither Cancel button nor user message increment was detected',
+      durationMs: Date.now() - startTime,
+      currentValue: (inputElem && (inputElem.tagName === 'TEXTAREA' || inputElem.tagName === 'INPUT'))
+        ? (inputElem.value || '')
+        : (inputElem ? (inputElem.textContent || inputElem.innerText || '') : '')
+    };
+  }
+
+  /**
    * Injects prompt text into active chat input and triggers submit with step-by-step diagnostics
    */
   async function injectPromptAndSubmit(promptText, options = {}) {
@@ -1237,8 +1506,12 @@
     let sendButtonClicked = false;
     let doubleTapExecuted = false;
     let formSubmitted = false;
+    let submissionVerified = true;
+    let verificationResult = null;
+    let rejectionReason = null;
+    let verificationError = null;
 
-    // Helper to evaluate if button is disabled or aria-disabled
+    // Helper to evaluate if button is disabled or aria-disabled (aligned with empirical DOM snapshot body4.txt)
     const isButtonDisabled = (btn) => {
       if (!btn) return true;
       if (btn.disabled) return true;
@@ -1247,8 +1520,26 @@
           return true;
         }
       }
-      if (btn.classList && (btn.classList.contains('disabled') || btn.classList.contains('monaco-button-disabled'))) {
-        return true;
+      if (btn.classList) {
+        if (
+          btn.classList.contains('disabled') ||
+          btn.classList.contains('monaco-button-disabled') ||
+          btn.classList.contains('cursor-not-allowed')
+        ) {
+          return true;
+        }
+        // Strict readiness criteria aligned with body4.txt:
+        // Ready when disabled attribute is removed, cursor-not-allowed is absent,
+        // and either cursor-pointer or bg-primary is present.
+        const hasClassTokens = (typeof btn.classList.length === 'number' ? btn.classList.length > 0 : false) ||
+          Boolean(btn.className && String(btn.className).trim().length > 0) ||
+          Boolean(btn.classList.classes && btn.classList.classes.size > 0);
+        if (hasClassTokens) {
+          const hasPointerOrPrimary = btn.classList.contains('cursor-pointer') || btn.classList.contains('bg-primary');
+          if (!hasPointerOrPrimary) {
+            return true;
+          }
+        }
       }
       return false;
     };
@@ -1256,14 +1547,14 @@
     const sendBtnDiag = {};
     let sendBtn = options.sendButton || findSendButton(inputElem || doc, sendBtnDiag);
 
-    // Button Enablement Polling (up to 250ms/300ms)
-    const maxPollMs = options.pollTimeoutMs !== undefined ? options.pollTimeoutMs : 250;
-    const pollIntervalMs = options.pollIntervalMs !== undefined ? options.pollIntervalMs : 25;
+    // Extended Button Enablement Polling (default 1500ms, 50ms interval)
+    const maxPollMs = options.pollTimeoutMs !== undefined ? options.pollTimeoutMs : 1500;
+    const pollIntervalMs = options.pollIntervalMs !== undefined ? options.pollIntervalMs : 50;
     const pollStart = Date.now();
     let buttonWaitDurationMs = 0;
     let initialDisabled = sendBtn ? isButtonDisabled(sendBtn) : true;
 
-    if (sendBtn && initialDisabled && maxPollMs > 0) {
+    if ((!sendBtn || initialDisabled) && maxPollMs > 0) {
       while (Date.now() - pollStart < maxPollMs) {
         const loopAbort = checkCommandAbort();
         if (loopAbort.aborted) {
@@ -1283,43 +1574,13 @@
           throw abortErr;
         }
         await new Promise(r => setTimeout(r, pollIntervalMs));
-        if (!isButtonDisabled(sendBtn)) {
-          break;
-        }
-        const refreshedBtn = options.sendButton || findSendButton(inputElem || doc);
+        // Re-evaluate findSendButton on every poll interval to capture newly rendered buttons
+        const refreshedBtn = options.sendButton || findSendButton(inputElem || doc, sendBtnDiag);
         if (refreshedBtn) {
           sendBtn = refreshedBtn;
-          if (!isButtonDisabled(sendBtn)) {
-            break;
-          }
         }
-      }
-      buttonWaitDurationMs = Date.now() - pollStart;
-    } else if (!sendBtn && maxPollMs > 0) {
-      while (Date.now() - pollStart < maxPollMs) {
-        const loopAbort = checkCommandAbort();
-        if (loopAbort.aborted) {
-          const abortErr = new Error(`Command aborted during button wait: ${loopAbort.reason}`);
-          abortErr.code = loopAbort.code;
-          abortErr.aborted = true;
-          abortErr.commandId = cmdId;
-          steps.push({
-            step: 4,
-            name: 'Submit triggering',
-            status: 'aborted',
-            reason: loopAbort.reason,
-            code: loopAbort.code
-          });
-          abortErr.steps = steps;
-          logBridge('WARN', `Button wait abort check triggered: ${loopAbort.reason}`, { commandId: cmdId });
-          throw abortErr;
-        }
-        await new Promise(r => setTimeout(r, pollIntervalMs));
-        sendBtn = options.sendButton || findSendButton(inputElem || doc, sendBtnDiag);
-        if (sendBtn) {
-          if (!isButtonDisabled(sendBtn)) {
-            break;
-          }
+        if (sendBtn && !isButtonDisabled(sendBtn)) {
+          break;
         }
       }
       buttonWaitDurationMs = Date.now() - pollStart;
@@ -1343,6 +1604,9 @@
       logBridge('WARN', `Pre-dispatch abort check triggered: ${preDispatchAbort.reason}`, { commandId: cmdId });
       throw abortErr;
     }
+
+    // Snapshot initial pre-submission message count for Proof 3
+    const initialMessageCount = countUserMessages(doc);
 
     // Mutually Exclusive Triggering Strategy:
     // 1. Primary Strategy (buttonClick): If sendBtn is found and is not disabled, dispatch button click cascade only.
@@ -1372,8 +1636,43 @@
           sendBtn = recheckedBtn;
         }
       }
+
+      // If button state remains disabled after click & double-tap, benefit from submission verification (Section 3.3)
+      if (isButtonDisabled(sendBtn)) {
+        const verifyRes = await verifyInputSubmission(inputElem, promptText, {
+          window: win,
+          document: doc,
+          initialMessageCount,
+          observationTimeoutMs: options.observationTimeoutMs !== undefined ? options.observationTimeoutMs : (options.clearanceObservationMs !== undefined ? options.clearanceObservationMs : (options.verificationDelayMs !== undefined ? options.verificationDelayMs : 1000)),
+          pollIntervalMs: options.pollIntervalMs !== undefined ? options.pollIntervalMs : 15,
+          ...options
+        });
+        verificationResult = verifyRes;
+        if (!verifyRes || !verifyRes.verified) {
+          submissionVerified = false;
+          sendButtonClicked = false;
+          rejectionReason = 'button_disabled_unsubmitted';
+          verificationError = 'Send button remained disabled and input buffer was not cleared';
+        }
+      }
+    } else if (sendBtn && isButtonDisabled(sendBtn)) {
+      // Send button exists in DOM but remained disabled after maxPollMs (1500ms).
+      // STRICT REQUIREMENT: Absolute Prohibition of Synthetic Enter when Send Button Exists.
+      // NEVER dispatch KeyboardEvent('Enter'). Mark as failed rather than attempting a fake Enter.
+      sendButtonClicked = false;
+      enterDispatched = false;
+      submissionVerified = false;
+      submitStrategy = 'buttonClick';
+      rejectionReason = 'button_disabled_timeout';
+      verificationError = `Send button remained disabled after ${maxPollMs}ms polling timeout; synthetic Enter fallback forbidden when send button is present`;
+      logBridge('WARN', `Send button remained disabled after ${maxPollMs}ms. Enter fallback prohibited because button exists in DOM.`, {
+        buttonSelector: sendBtn?.className || sendBtn?.tagName || null,
+        maxPollMs,
+        buttonWaitDurationMs
+      });
     } else {
-      // 2. Fallback Strategy (enterKey): Only if sendBtn is NOT present or disabled
+      // 2. Fallback Strategy (enterKey): ONLY permitted if no send button element can be discovered anywhere in the DOM
+      let enterAttempted = false;
       try {
         const KbEventClass = (win && win.KeyboardEvent) || (typeof KeyboardEvent !== 'undefined' ? KeyboardEvent : null);
         if (KbEventClass) {
@@ -1406,6 +1705,7 @@
             inputElem.dispatchEvent(ku);
           } catch (_) {}
 
+          enterAttempted = true;
           enterDispatched = true;
           submitStrategy = 'enterKey';
         }
@@ -1413,8 +1713,32 @@
         logBridge('WARN', `KeyboardEvent dispatch failed: ${kbErr?.message || kbErr}`, {}, kbErr);
       }
 
+      // Verification check for enterKey fallback (LOGIC-008 remediation)
+      if (enterDispatched) {
+        const verifyRes = await verifyInputSubmission(inputElem, promptText, {
+          window: win,
+          document: doc,
+          initialMessageCount,
+          observationTimeoutMs: options.observationTimeoutMs !== undefined ? options.observationTimeoutMs : (options.clearanceObservationMs !== undefined ? options.clearanceObservationMs : (options.verificationDelayMs !== undefined ? options.verificationDelayMs : 1000)),
+          pollIntervalMs: options.pollIntervalMs !== undefined ? options.pollIntervalMs : 15,
+          ...options
+        });
+        verificationResult = verifyRes;
+        if (!verifyRes || !verifyRes.verified) {
+          submissionVerified = false;
+          enterDispatched = false;
+          rejectionReason = 'untrusted_enter_rejected';
+          verificationError = 'Synthetic Enter event was not accepted by the editor (input was not cleared)';
+          logBridge('WARN', `Synthetic Enter event was rejected by editor: input buffer was not cleared`, {
+            inputElemTag: inputElem?.tagName,
+            rejectionReason,
+            verificationResult
+          });
+        }
+      }
+
       // 3. Form Fallback Strategy (formSubmit): If neither buttonClick nor enterKey succeeded
-      if (!sendButtonClicked && !enterDispatched) {
+      if (!sendButtonClicked && !enterAttempted) {
         const form = (sendBtn && (sendBtn.form || (typeof sendBtn.closest === 'function' && sendBtn.closest('form')))) ||
           (inputElem && (inputElem.form || (typeof inputElem.closest === 'function' && inputElem.closest('form'))));
 
@@ -1436,6 +1760,21 @@
             }
             if (formSubmitted) {
               submitStrategy = 'formSubmit';
+              const verifyRes = await verifyInputSubmission(inputElem, promptText, {
+                window: win,
+                document: doc,
+                initialMessageCount,
+                observationTimeoutMs: options.observationTimeoutMs !== undefined ? options.observationTimeoutMs : (options.clearanceObservationMs !== undefined ? options.clearanceObservationMs : (options.verificationDelayMs !== undefined ? options.verificationDelayMs : 1000)),
+                pollIntervalMs: options.pollIntervalMs !== undefined ? options.pollIntervalMs : 15,
+                ...options
+              });
+              verificationResult = verifyRes;
+              if (!verifyRes || !verifyRes.verified) {
+                submissionVerified = false;
+                formSubmitted = false;
+                rejectionReason = 'form_submit_unsubmitted';
+                verificationError = 'Form submission fallback did not clear input buffer';
+              }
             }
           } catch (formErr) {
             logBridge('WARN', `Form submission fallback failed: ${formErr?.message || formErr}`, {}, formErr);
@@ -1446,7 +1785,7 @@
 
     const isDocHidden = Boolean(doc?.hidden || (typeof document !== 'undefined' && document.hidden));
     const isBackgroundSubmission = Boolean(options.isBackground || isDocHidden);
-    const isSuccess = Boolean(sendButtonClicked || formSubmitted || enterDispatched);
+    const isSuccess = Boolean((sendButtonClicked || formSubmitted || enterDispatched) && submissionVerified);
 
     steps.push({
       step: 4,
@@ -1457,6 +1796,10 @@
       sendButtonClicked,
       doubleTapExecuted,
       formSubmitted,
+      submissionVerified,
+      rejectionReason: !isSuccess ? rejectionReason : undefined,
+      error: !isSuccess ? verificationError : undefined,
+      verificationResult: verificationResult || undefined,
       buttonSelector: sendBtn?.className || sendBtn?.tagName || null,
       buttonWaitDurationMs,
       initialDisabled,
@@ -1472,6 +1815,10 @@
       enterDispatched,
       doubleTapExecuted,
       formSubmitted,
+      submissionVerified,
+      rejectionReason: !isSuccess ? rejectionReason : undefined,
+      error: !isSuccess ? verificationError : undefined,
+      verificationResult: verificationResult || undefined,
       buttonSelector: sendBtn?.className || sendBtn?.tagName || null,
       buttonWaitDurationMs,
       initialDisabled,
@@ -1482,6 +1829,10 @@
         isBackground: isBackgroundSubmission,
         documentHidden: isDocHidden,
         submitStrategy,
+        submissionVerified,
+        rejectionReason: !isSuccess ? rejectionReason : undefined,
+        error: !isSuccess ? verificationError : undefined,
+        verificationResult: verificationResult || undefined,
         doubleTapExecuted,
         buttonWaitDurationMs,
         initialDisabled,
@@ -1505,26 +1856,101 @@
 
   /**
    * Triggers a New Conversation / New Chat in the Antigravity chat panel
+   * State-aware handshake:
+   * 1. Pre-checks if newBtn has 'cursor-not-allowed' (already on a new conversation).
+   * 2. If 'cursor-pointer', clicks and polls for all 3 readiness conditions:
+   *    a) newBtn acquires 'cursor-not-allowed'
+   *    b) Message input editor is empty
+   *    c) Send button is present and disabled
    */
   async function triggerNewConversation(options = {}) {
     const doc = options.document || (typeof document !== 'undefined' ? document : null);
     const win = options.window || (typeof window !== 'undefined' ? window : null);
+    const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 3000;
+    const intervalMs = typeof options.intervalMs === 'number' ? options.intervalMs : 50;
+    const startTime = Date.now();
+
     const newBtn = options.button || findNewConversationButton(doc);
-    if (newBtn) {
+    if (!newBtn) {
+      logBridge('WARN', 'triggerNewConversation: No New Conversation button found to click');
+      return { success: false, error: 'No New Conversation button found to click' };
+    }
+
+    // 1. Pre-check for Existing Empty Conversation
+    const isAlreadyDisabled = Boolean(
+      (newBtn.classList && newBtn.classList.contains('cursor-not-allowed')) ||
+      (newBtn.hasAttribute && newBtn.hasAttribute('disabled')) ||
+      newBtn.disabled === true
+    );
+
+    if (isAlreadyDisabled) {
+      logBridge('INFO', 'New Conversation pre-check: Chat panel is already on a blank/new conversation (cursor-not-allowed)');
+      return { success: true, alreadyNew: true, durationMs: 0 };
+    }
+
+    // 2. Deterministic Click (unless readyCheckOnly)
+    if (!options.readyCheckOnly) {
       try {
         dispatchButtonClickCascade(newBtn, win);
         if (typeof newBtn.click === 'function') {
           newBtn.click();
         }
-        logBridge('INFO', 'New Conversation button triggered successfully');
-        return true;
+        logBridge('INFO', 'New Conversation button click cascade dispatched');
       } catch (err) {
         logBridge('ERROR', `Error clicking New Conversation button: ${err?.message || err}`, {}, err);
-        return false;
+        throw err;
       }
     }
-    logBridge('WARN', 'triggerNewConversation: No New Conversation button found to click');
-    return false;
+
+    // Handshake Polling loop
+    while (Date.now() - startTime < timeoutMs) {
+      await new Promise(r => setTimeout(r, intervalMs));
+
+      // Condition a: newBtn acquires cursor-not-allowed
+      const currentBtn = findNewConversationButton(doc) || newBtn;
+      const isBtnDisabled = Boolean(
+        (currentBtn.classList && currentBtn.classList.contains('cursor-not-allowed')) ||
+        (currentBtn.hasAttribute && currentBtn.hasAttribute('disabled')) ||
+        currentBtn.disabled === true
+      );
+
+      // Condition b: message input editor is empty or contains only whitespace / <br>
+      const inputEditor = (doc && typeof doc.querySelector === 'function' && doc.querySelector('div[data-lexical-editor="true"]')) || findChatInput(doc);
+      let isEditorEmpty = false;
+      if (inputEditor) {
+        const textContent = (inputEditor.value !== undefined ? inputEditor.value : (inputEditor.innerText || inputEditor.textContent || '')).trim();
+        const htmlClean = (inputEditor.innerHTML || '')
+          .replace(/<br\s*\/?>/gi, '')
+          .replace(/<p[^>]*>/gi, '')
+          .replace(/<\/p>/gi, '')
+          .replace(/<[^>]*>/g, '')
+          .replace(/&nbsp;/g, ' ')
+          .trim();
+        isEditorEmpty = (textContent === '' || htmlClean === '');
+      }
+
+      // Condition c: send button is present and disabled (disabled="" or cursor-not-allowed)
+      const sendBtn = (doc && typeof doc.querySelector === 'function' && doc.querySelector('button[data-testid="send-button"]')) || findSendButton(doc);
+      const isSendBtnDisabled = Boolean(
+        sendBtn && (
+          sendBtn.hasAttribute('disabled') ||
+          sendBtn.disabled === true ||
+          (sendBtn.classList && sendBtn.classList.contains('cursor-not-allowed')) ||
+          sendBtn.getAttribute('aria-disabled') === 'true'
+        )
+      );
+
+      if (isBtnDisabled && isEditorEmpty && isSendBtnDisabled) {
+        const durationMs = Date.now() - startTime;
+        logBridge('INFO', `New conversation transition handshake confirmed in ${durationMs}ms`);
+        return { success: true, durationMs, alreadyNew: false };
+      }
+    }
+
+    const durationMs = Date.now() - startTime;
+    const timeoutErr = new Error(`New conversation handshake timed out after ${durationMs}ms: DOM failed to reach empty/ready state`);
+    logBridge('ERROR', timeoutErr.message);
+    throw timeoutErr;
   }
 
   /**
@@ -2206,21 +2632,38 @@
             isCancelled: () => this.isCommandCancelled(cmd.id)
           });
 
-          await this.sendAck(cmd.id, 'submitClicked', null, {
-            ...result,
-            isBackgroundSubmission: Boolean(
-              result?.isBackgroundSubmission ||
-              (this.customDocument ? this.customDocument.hidden : (typeof document !== 'undefined' && document.hidden))
-            )
-          });
+          if (result && result.success === false) {
+            await this.sendAck(cmd.id, 'error', result.error || result.rejectionReason || 'Synthetic Enter event was not accepted by the editor (input was not cleared)', {
+              ...result,
+              isBackgroundSubmission: Boolean(
+                result?.isBackgroundSubmission ||
+                (this.customDocument ? this.customDocument.hidden : (typeof document !== 'undefined' && document.hidden))
+              )
+            });
+          } else {
+            await this.sendAck(cmd.id, 'submitClicked', null, {
+              ...result,
+              isBackgroundSubmission: Boolean(
+                result?.isBackgroundSubmission ||
+                (this.customDocument ? this.customDocument.hidden : (typeof document !== 'undefined' && document.hidden))
+              )
+            });
+          }
         } else if (cmd.type === 'openNewConversation') {
-          const success = await triggerNewConversation({
+          const result = await triggerNewConversation({
             document: this.customDocument,
             window: this.customWindow,
-            ...cmd.options
+            ...(cmd.options || {}),
+            timeoutMs: typeof cmd.timeoutMs === 'number' ? cmd.timeoutMs : undefined
           });
 
-          await this.sendAck(cmd.id, success ? 'completed' : 'error', success ? null : 'Failed to find new conversation button');
+          const isSuccess = Boolean(result && (typeof result === 'object' ? result.success !== false : result));
+          await this.sendAck(
+            cmd.id,
+            isSuccess ? 'completed' : 'error',
+            isSuccess ? null : (result?.error || 'Failed to find new conversation button'),
+            typeof result === 'object' ? result : { success: isSuccess }
+          );
         } else if (cmd.type === 'clickApproval') {
           const count = this.approvalObserver ? this.approvalObserver.scanNow() : 0;
           await this.sendAck(cmd.id, 'completed', null, { clickedCount: count });
@@ -2343,8 +2786,12 @@
     captureDomDiagnosticSnapshot,
     findChatInput,
     findSendButton,
+    findCancelButton,
+    countUserMessages,
     findNewConversationButton,
     dispatchButtonClickCascade,
+    isInputClearedOrSubmitted,
+    verifyInputSubmission,
     injectPromptAndSubmit,
     triggerNewConversation,
     startAutoApprovalObserver,

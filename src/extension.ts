@@ -7,7 +7,15 @@ import { orchestrator, OrchestratorProgressInfo } from './orchestrator';
 import { scanPlanFolder, scanPlanFolderAsync, sortPhaseFiles, getPhasesFrom, normalizePath, PhaseFile, auditPlanPhases, auditPlanPhasesAsync } from './planScanner';
 import { getDefaultBrainDir, getTranscriptPath, findLatestConversation, transcriptWatcher } from './transcriptWatcher';
 import { bridgeServer, BRIDGE_PROTOCOL_VERSION } from './bridgeServer';
-import { isBridgeInstalled, installBridgeScript, uninstallBridgeScript, getWorkbenchPath } from './workbenchInjector';
+import {
+  isBridgeInstalled,
+  installBridgeScript,
+  installBridgeScriptAsync,
+  uninstallBridgeScript,
+  uninstallBridgeScriptAsync,
+  getWorkbenchPath,
+  canWriteWorkbenchPath
+} from './workbenchInjector';
 import { SidebarProvider } from './sidebarProvider';
 import { SettingsProvider } from './settingsProvider';
 import { promptDispatcher } from './promptDispatcher';
@@ -21,6 +29,35 @@ let runStartTime: number = 0;
 let elapsedTimer: NodeJS.Timeout | null = null;
 let lastProgressInfo: OrchestratorProgressInfo | undefined = undefined;
 let completionResetTimeout: NodeJS.Timeout | null = null;
+export let configDebounceTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Coalesces rapid configuration changes into a single debounced execution.
+ */
+export function triggerDebouncedConfigUpdate(
+  context?: any,
+  onComplete?: () => void,
+  delayMs: number = 300
+): void {
+  if (configDebounceTimer) {
+    clearTimeout(configDebounceTimer);
+  }
+  configDebounceTimer = setTimeout(() => {
+    configDebounceTimer = null;
+    try {
+      writeConfigJson(undefined, undefined, context);
+    } catch {}
+    if (!orchestrator.isRunning()) {
+      updateStatusBar();
+    }
+    updateBridgeStatusBar();
+    sidebarProvider?.sendBridgeStatus();
+    SettingsProvider.currentPanel?.sendInitSettings();
+    if (onComplete) {
+      onComplete();
+    }
+  }, delayMs);
+}
 
 export function getMainStatusBarItem(): vscode.StatusBarItem {
   return mainStatusBarItem;
@@ -1042,10 +1079,10 @@ export function updateBridgeStatusBar(): void {
 }
 
 /**
- * Installs the DOM Automation Bridge into workbench.html.
+ * Installs the DOM Automation Bridge into workbench.html asynchronously.
  */
 export async function installBridge(): Promise<boolean> {
-  const result = installBridgeScript();
+  const result = await installBridgeScriptAsync();
   if (result.success) {
     updateBridgeStatusBar();
     const selection = await vscode.window.showInformationMessage(
@@ -1101,10 +1138,10 @@ export async function showLinuxPreflightErrorNotification(): Promise<string | un
 }
 
 /**
- * Uninstalls the DOM Automation Bridge from workbench.html.
+ * Uninstalls the DOM Automation Bridge from workbench.html asynchronously.
  */
 export async function uninstallBridge(): Promise<boolean> {
-  const result = uninstallBridgeScript();
+  const result = await uninstallBridgeScriptAsync();
   if (result.success) {
     updateBridgeStatusBar();
     const selection = await vscode.window.showInformationMessage(
@@ -1421,10 +1458,34 @@ export function activate(context: vscode.ExtensionContext) {
     sidebarProvider?.sendBridgeStatus();
   });
 
-  // Background zero-click auto-detection & silent injection/repair of DOM Bridge script
-  if (!isBridgeInstalled()) {
-    installBridgeScript({ updateChecksums: true });
-    updateBridgeStatusBar();
+  // Non-blocking bridge status inspection on startup (LOGIC-007)
+  const startupConfig = getConfig();
+  if (startupConfig.autoInjectWorkbench !== false && !isBridgeInstalled()) {
+    const wbPath = getWorkbenchPath();
+    if (wbPath && canWriteWorkbenchPath(wbPath)) {
+      // Non-elevated write permissions exist: install asynchronously in background
+      installBridgeScriptAsync({ updateChecksums: true, context })
+        .then((res) => {
+          if (res.success) {
+            updateBridgeStatusBar();
+            sidebarProvider?.sendBridgeStatus();
+          }
+        })
+        .catch((err) => {
+          console.warn('[Auto-Plan] Background bridge installation failed:', err);
+        });
+    } else {
+      // Elevated permissions required: prompt user with actionable notification instead of popping root prompt during boot
+      vscode.window.showInformationMessage(
+        'Auto-Plan: DOM Bridge requires installation. Click Install to proceed.',
+        'Install',
+        'Later'
+      ).then((selection) => {
+        if (selection === 'Install') {
+          installBridge();
+        }
+      });
+    }
   }
 
   // Register commands
@@ -1513,18 +1574,10 @@ export function activate(context: vscode.ExtensionContext) {
     return showOutputChannel();
   });
 
-  // Watch for configuration changes
+  // Watch for configuration changes with 300ms debounce (LOGIC-007)
   const configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration('autoplan')) {
-      try {
-        writeConfigJson();
-      } catch {}
-      if (!orchestrator.isRunning()) {
-        updateStatusBar();
-      }
-      updateBridgeStatusBar();
-      sidebarProvider?.sendBridgeStatus();
-      SettingsProvider.currentPanel?.sendInitSettings();
+      triggerDebouncedConfigUpdate(context);
     }
   });
 
@@ -1554,15 +1607,19 @@ export function activate(context: vscode.ExtensionContext) {
     configWatcher
   );
 
-  // Initialize status bar and sidecar config states
+  // Initialize status bar and sidecar config states safely
   try {
-    writeConfigJson();
+    writeConfigJson(undefined, undefined, context);
   } catch {}
   updateStatusBar();
   updateBridgeStatusBar();
 }
 
 export async function deactivate() {
+  if (configDebounceTimer) {
+    clearTimeout(configDebounceTimer);
+    configDebounceTimer = null;
+  }
   stopElapsedTimer();
   clearTooltipCache();
   clearPlanDiscoveryCache();

@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { getWorkbenchPath, writeFileElevated } from './workbenchInjector';
+import * as os from 'os';
+import { getWorkbenchPath } from './workbenchInjector';
 
 export type ExecutionMode = 'auto' | 'domBridge' | 'nativeCommand' | 'keyboard';
 
@@ -136,10 +137,21 @@ export async function setPromptTemplate(
 export const SIDECAR_CONFIG_FILENAME = 'ag-autoplan-config.json';
 
 /**
- * Writes the AutoPlan configuration JSON file alongside workbench.html
- * for the DOM Bridge sidecar script to consume.
+ * Resolves the user-writable configuration storage directory.
  */
-export function writeConfigJson(config?: AutoPlanConfig, targetDir?: string): string | null {
+export function getUserConfigStorageDir(context?: any): string {
+  if (context?.globalStorageUri?.fsPath) {
+    return context.globalStorageUri.fsPath;
+  }
+  return path.join(os.homedir(), '.gemini', 'antigravity-ide');
+}
+
+/**
+ * Writes the AutoPlan configuration JSON file safely without root elevation.
+ * If targetDir is writable, writes there. Otherwise, catches permission errors (e.g. EACCES, EPERM)
+ * and falls back cleanly to the user-writable storage directory.
+ */
+export function writeConfigJson(config?: AutoPlanConfig, targetDir?: string, context?: any): string | null {
   const baseConfig = config ? { ...DEFAULT_CONFIG, ...config } : getConfig();
   const executionMode = baseConfig.executionMode ?? 'auto';
   const allowTierFallback = baseConfig.allowTierFallback ?? true;
@@ -153,21 +165,48 @@ export function writeConfigJson(config?: AutoPlanConfig, targetDir?: string): st
     allowTierFallback,
     strictMode
   };
-  let wbDir = targetDir;
-  if (!wbDir) {
+  const content = JSON.stringify(currentConfig, null, 2);
+
+  // 1. If targetDir is provided (e.g. in unit tests or specific paths), attempt direct write
+  if (targetDir) {
+    try {
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+      const configPath = path.join(targetDir, SIDECAR_CONFIG_FILENAME);
+      fs.writeFileSync(configPath, content, 'utf8');
+      return configPath;
+    } catch {
+      // EACCES / EPERM or any failure: never elevate, fall back cleanly to user storage
+    }
+  } else {
+    // 2. If targetDir is not provided: attempt writing to workbench directory ONLY if non-elevated permissions exist
     const wbPath = getWorkbenchPath();
     if (wbPath) {
-      wbDir = path.dirname(wbPath);
+      const wbDir = path.dirname(wbPath);
+      if (fs.existsSync(wbDir)) {
+        const configPath = path.join(wbDir, SIDECAR_CONFIG_FILENAME);
+        try {
+          fs.writeFileSync(configPath, content, 'utf8');
+          return configPath;
+        } catch {
+          // System directory requires root elevation; never call writeFileElevated, fall through to user storage
+        }
+      }
     }
   }
 
-  if (!wbDir || !fs.existsSync(wbDir)) {
+  // 3. Fallback to user-writable storage directory
+  try {
+    const userDir = getUserConfigStorageDir(context);
+    if (!fs.existsSync(userDir)) {
+      fs.mkdirSync(userDir, { recursive: true });
+    }
+    const userConfigPath = path.join(userDir, SIDECAR_CONFIG_FILENAME);
+    fs.writeFileSync(userConfigPath, content, 'utf8');
+    return userConfigPath;
+  } catch {
     return null;
   }
-
-  const configPath = path.join(wbDir, SIDECAR_CONFIG_FILENAME);
-  const content = JSON.stringify(currentConfig, null, 2);
-  writeFileElevated(configPath, content);
-  return configPath;
 }
 

@@ -338,4 +338,8 @@
       transcriptViewport.scrollTop = transcriptViewport.scrollHeight;
     }
   }
+
+  // Dispatch ready handshake to Extension Host
+  vscode.postMessage({ command: 'ready', type: 'ready' });
 })();
+

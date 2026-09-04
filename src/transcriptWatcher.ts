@@ -318,6 +318,39 @@ export function findLatestConversation(
   }
 }
 
+export interface CompletionValidationOptions {
+  initialTranscriptLength?: number;
+  entryIndex?: number;
+}
+
+export class NewConversationTimeoutError extends Error {
+  public readonly phaseIndex?: number;
+  public readonly fileName?: string;
+  public readonly lastConversationId?: string;
+  public readonly timeoutMs?: number;
+  public readonly diagnosticInfo?: Record<string, any>;
+
+  constructor(
+    message: string,
+    details?: {
+      phaseIndex?: number;
+      fileName?: string;
+      lastConversationId?: string;
+      timeoutMs?: number;
+      diagnosticInfo?: Record<string, any>;
+    }
+  ) {
+    super(message);
+    this.name = 'NewConversationTimeoutError';
+    this.phaseIndex = details?.phaseIndex;
+    this.fileName = details?.fileName;
+    this.lastConversationId = details?.lastConversationId;
+    this.timeoutMs = details?.timeoutMs;
+    this.diagnosticInfo = details?.diagnosticInfo;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 /**
  * Validates whether a transcript step meets the strict completion criteria:
  * 1. source === 'MODEL'
@@ -325,31 +358,69 @@ export function findLatestConversation(
  * 3. status === 'DONE'
  * 4. tool_calls is empty / null / undefined (no active tools)
  * 5. content / response includes completion keyword (case-insensitive)
+ * 6. Temporal and transcript boundary isolation (phaseStartTime, initialTranscriptLength)
  */
-export function isValidCompletionStep(step: any, keyword: string, minTimestamp?: number): boolean {
+export function isValidCompletionStep(
+  step: any,
+  keyword: string,
+  minTimestamp?: number,
+  optionsOrEntryIndex?: number | CompletionValidationOptions
+): boolean {
   if (!step || typeof step !== 'object') {
     return false;
   }
 
-  // Inspect step timestamp properties (step.timestamp, step.createdAt, step.time)
-  if (minTimestamp !== undefined && minTimestamp > 0) {
-    const rawTs = step.timestamp ?? step.createdAt ?? step.time;
-    if (rawTs !== undefined && rawTs !== null) {
-      let stepTs: number | null = null;
-      if (typeof rawTs === 'number' && !isNaN(rawTs)) {
-        stepTs = rawTs < 1e11 ? rawTs * 1000 : rawTs;
-      } else if (typeof rawTs === 'string') {
-        const parsed = Date.parse(rawTs);
-        if (!isNaN(parsed)) {
-          stepTs = parsed;
-        } else {
-          const num = Number(rawTs);
-          if (!isNaN(num)) {
-            stepTs = num < 1e11 ? num * 1000 : num;
-          }
+  let initialTranscriptLength: number | undefined;
+  let entryIndex: number | undefined;
+
+  if (typeof optionsOrEntryIndex === 'number') {
+    entryIndex = optionsOrEntryIndex;
+  } else if (optionsOrEntryIndex && typeof optionsOrEntryIndex === 'object') {
+    initialTranscriptLength = optionsOrEntryIndex.initialTranscriptLength;
+    entryIndex = optionsOrEntryIndex.entryIndex;
+  }
+
+  if (entryIndex === undefined) {
+    const rawIndex = step.step_index ?? step.index;
+    if (typeof rawIndex === 'number' && !isNaN(rawIndex)) {
+      entryIndex = rawIndex;
+    }
+  }
+
+  // Inspect step timestamp properties (step.timestamp, step.createdAt, step.time, step.updatedAt)
+  let stepTs: number | null = null;
+  const rawTs = step.timestamp ?? step.createdAt ?? step.time ?? step.updatedAt;
+  if (rawTs !== undefined && rawTs !== null) {
+    if (typeof rawTs === 'number' && !isNaN(rawTs)) {
+      stepTs = rawTs < 1e11 ? rawTs * 1000 : rawTs;
+    } else if (typeof rawTs === 'string') {
+      const parsed = Date.parse(rawTs);
+      if (!isNaN(parsed)) {
+        stepTs = parsed;
+      } else {
+        const num = Number(rawTs);
+        if (!isNaN(num)) {
+          stepTs = num < 1e11 ? num * 1000 : num;
         }
       }
-      if (stepTs !== null && stepTs < minTimestamp) {
+    }
+  }
+
+  let effectiveMinTs: number | undefined = undefined;
+  if (minTimestamp !== undefined && minTimestamp > 0) {
+    effectiveMinTs = minTimestamp < 1e11 ? minTimestamp * 1000 : minTimestamp;
+  }
+
+  if (effectiveMinTs !== undefined && effectiveMinTs > 0) {
+    // 1. If step has a creation/update timestamp, it must be strictly >= minTimestamp (phaseStartTime).
+    // Any keyword occurring before phaseStartTime must be ignored as residue from earlier operations.
+    if (stepTs !== null && stepTs < effectiveMinTs) {
+      return false;
+    }
+
+    // 2. If step does NOT have a timestamp, check whether entry index is beyond initialTranscriptLength
+    if (stepTs === null && initialTranscriptLength !== undefined && initialTranscriptLength > 0) {
+      if (entryIndex === undefined || entryIndex <= initialTranscriptLength) {
         return false;
       }
     }
@@ -433,6 +504,8 @@ export class TranscriptWatcher extends EventEmitter {
   // Pre-existing candidate baselines to prevent stale historical rebinds
   private candidateBaselineSizes: Map<string, number> = new Map();
   private candidatePreExisted: Set<string> = new Set();
+  private initialTranscriptLength: number = 0;
+  private lineCounter: number = 0;
 
   constructor(options?: WatcherOptions) {
     super();
@@ -457,6 +530,18 @@ export class TranscriptWatcher extends EventEmitter {
 
   public getSinceTimestamp(): number {
     return this.sinceTimestamp;
+  }
+
+  public getReadOffset(): number {
+    return this.readOffset;
+  }
+
+  public getInitialTranscriptLength(): number {
+    return this.initialTranscriptLength;
+  }
+
+  public getLineCounter(): number {
+    return this.lineCounter;
   }
 
   /**
@@ -530,6 +615,7 @@ export class TranscriptWatcher extends EventEmitter {
     this.removeAllListeners('conversationRebound');
     this.removeAllListeners('settleStarted');
     this.removeAllListeners('settleCancelled');
+    this.removeAllListeners('fileTruncated');
     this.removeAllListeners('timeout');
     this.removeAllListeners('error');
     this.removeAllListeners('logUpdate');
@@ -620,7 +706,16 @@ export class TranscriptWatcher extends EventEmitter {
               this.brainFsWatcher = null;
             }
             this.convReject = null;
-            reject(new Error(`Timeout waiting for new conversation after ${actualTimeoutMs}ms`));
+            reject(
+              new NewConversationTimeoutError(
+                `Timeout waiting for new conversation after ${actualTimeoutMs}ms (excluded: ${excludeConvId || 'none'})`,
+                {
+                  lastConversationId: excludeConvId,
+                  timeoutMs: actualTimeoutMs,
+                  diagnosticInfo: { sinceTimestamp, excludeConvId }
+                }
+              )
+            );
             return;
           }
         } catch (err) {
@@ -672,13 +767,26 @@ export class TranscriptWatcher extends EventEmitter {
     filePath: string,
     conversationId: string = 'unknown',
     initialOffset: number = 0,
-    sinceTimestamp?: number
+    sinceTimestamp?: number,
+    initialTranscriptLength?: number
   ): Promise<CompletionResult> {
     this.stop();
     this.isWatching = true;
     this.currentFilePath = filePath;
     this.activeConvId = conversationId;
     this.readOffset = initialOffset >= 0 ? initialOffset : 0;
+    this.initialTranscriptLength = initialTranscriptLength ?? 0;
+    if (this.initialTranscriptLength === 0 && fs.existsSync(filePath)) {
+      try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        const slice = this.readOffset > 0 ? content.slice(0, this.readOffset) : content;
+        const lines = slice.split('\n').filter(l => l.trim().length > 0);
+        this.initialTranscriptLength = lines.length;
+      } catch {
+        this.initialTranscriptLength = 0;
+      }
+    }
+    this.lineCounter = this.readOffset > 0 ? this.initialTranscriptLength : 0;
     this.lineBuffer = '';
     this.stringDecoder = new StringDecoder('utf8');
     this.isCheckingFile = false;
@@ -738,6 +846,30 @@ export class TranscriptWatcher extends EventEmitter {
 
           if (exists && this.isWatching) {
             const stats = await fs.promises.stat(targetFile);
+
+            if (this.isWatching && stats.size < this.readOffset) {
+              const previousOffset = this.readOffset;
+              console.warn(
+                `[TranscriptWatcher] Detected file truncation/rotation (${stats.size} < ${previousOffset}). Resetting read offset to 0.`
+              );
+              this.readOffset = 0;
+              this.lineBuffer = '';
+              this.stringDecoder = new StringDecoder('utf8');
+              this.candidateBaselineSizes.set(targetFile, 0);
+
+              if (this.settleTimer) {
+                clearTimeout(this.settleTimer);
+                this.settleTimer = null;
+                this.pendingCompletion = null;
+              }
+
+              this.emit('fileTruncated', {
+                filePath: targetFile,
+                previousOffset,
+                newSize: stats.size
+              });
+            }
+
             if (this.isWatching && stats.size > this.readOffset) {
               const fileHandle = await fs.promises.open(targetFile, 'r');
               try {
@@ -775,7 +907,8 @@ export class TranscriptWatcher extends EventEmitter {
 
                     hadLines = true;
                     this.lastActivityTime = Date.now();
-                    this.processLine(trimmed, this.activeConvId || conversationId, resolve);
+                    this.lineCounter++;
+                    this.processLine(trimmed, this.activeConvId || conversationId, resolve, this.lineCounter);
                     if (!this.isWatching) {
                       break;
                     }
@@ -940,6 +1073,20 @@ export class TranscriptWatcher extends EventEmitter {
           }
 
           this.readOffset = filePreExisted ? preExistingOffset : 0;
+          if (filePreExisted && fs.existsSync(newFilePath)) {
+            try {
+              const content = fs.readFileSync(newFilePath, 'utf8');
+              const slice = preExistingOffset > 0 ? content.slice(0, preExistingOffset) : content;
+              this.initialTranscriptLength = slice.split('\n').filter(l => l.trim().length > 0).length;
+              this.lineCounter = this.initialTranscriptLength;
+            } catch {
+              this.initialTranscriptLength = 0;
+              this.lineCounter = 0;
+            }
+          } else {
+            this.initialTranscriptLength = 0;
+            this.lineCounter = 0;
+          }
           this.lineBuffer = '';
           this.stringDecoder = new StringDecoder('utf8');
           this.lastActivityTime = Date.now();
@@ -979,7 +1126,11 @@ export class TranscriptWatcher extends EventEmitter {
   /**
    * Watches the latest conversation transcript, evaluating candidates and excluding excludeConvId if provided.
    */
-  public async watchLatest(sinceTimestamp?: number, excludeConvId?: string): Promise<CompletionResult> {
+  public async watchLatest(
+    sinceTimestamp?: number,
+    excludeConvId?: string,
+    initialTranscriptLength?: number
+  ): Promise<CompletionResult> {
     const effectiveSince = sinceTimestamp !== undefined && sinceTimestamp > 0 ? sinceTimestamp : this.sinceTimestamp;
     const candidates = await getCandidateConversationsAsync(this.options.brainDir, effectiveSince, excludeConvId);
     let convId: string | null = null;
@@ -1010,7 +1161,7 @@ export class TranscriptWatcher extends EventEmitter {
       } catch {}
     }
 
-    return this.watchFile(transcriptPath, convId, initialOffset, effectiveSince);
+    return this.watchFile(transcriptPath, convId, initialOffset, effectiveSince, initialTranscriptLength);
   }
 
   /**
@@ -1020,7 +1171,8 @@ export class TranscriptWatcher extends EventEmitter {
   private processLine(
     line: string,
     conversationId: string,
-    resolve: (res: CompletionResult) => void
+    resolve: (res: CompletionResult) => void,
+    entryIndex?: number
   ): void {
     if (line && line.trim()) {
       this.emit('logUpdate', line.trim());
@@ -1043,7 +1195,14 @@ export class TranscriptWatcher extends EventEmitter {
       isJson = false;
     }
 
-    if (isJson && parsed && isValidCompletionStep(parsed, this.options.keyword, this.sinceTimestamp)) {
+    if (
+      isJson &&
+      parsed &&
+      isValidCompletionStep(parsed, this.options.keyword, this.sinceTimestamp, {
+        initialTranscriptLength: this.initialTranscriptLength,
+        entryIndex
+      })
+    ) {
       const eventData: CompletionEventData = {
         conversationId,
         matchedLine: line,
@@ -1099,6 +1258,8 @@ export class TranscriptWatcher extends EventEmitter {
     this.isCheckingFile = false;
     this.isArbitrating = false;
     this.activePollIntervalMs = this.options.pollIntervalMs;
+    this.initialTranscriptLength = 0;
+    this.lineCounter = 0;
 
     if (this.convPollTimer) {
       clearInterval(this.convPollTimer);

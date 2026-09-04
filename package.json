@@ -248,6 +248,26 @@
           "type": "boolean",
           "default": true,
           "description": "Suppress warning toast popups when falling back between prompt dispatch tiers"
+        },
+        "autoplan.autoRetryOnTimeout": {
+          "type": "boolean",
+          "default": true,
+          "title": "Auto Retry On Timeout",
+          "description": "Automatically retry the phase when NewConversationTimeoutError occurs"
+        },
+        "autoplan.retryDelaySeconds": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "Delay in seconds before triggering automatic retry on timeout"
+        },
+        "autoplan.maxAutoRetries": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum number of automatic retries per phase on NewConversationTimeoutError"
         }
       }
     }

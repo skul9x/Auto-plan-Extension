@@ -536,6 +536,10 @@ export function setMainStatusBarItem(item: vscode.StatusBarItem): void {
   mainStatusBarItem = item;
 }
 
+export function setBridgeStatusBarItem(item: vscode.StatusBarItem): void {
+  bridgeStatusBarItem = item;
+}
+
 export function updateTooltipFromInfo(info: OrchestratorProgressInfo): void {
   const currentIdx =
     info.currentPhaseIndex !== undefined
@@ -608,9 +612,13 @@ export function updateStatusBar(info?: OrchestratorProgressInfo): void {
   const displayPhase = info.currentPhase?.fileName || '';
 
   if (mainStatusBarItem) {
-    mainStatusBarItem.text = displayPhase
-      ? `$(sync~spin) Auto-Plan: [${currentIdx + 1}/${total}] ${displayPhase}`
-      : `$(sync~spin) Auto-Plan: [${currentIdx + 1}/${total}]`;
+    if (info.state === 'delaying' && info.message && info.message.includes('Retrying')) {
+      mainStatusBarItem.text = `$(sync~spin) ${info.message}`;
+    } else {
+      mainStatusBarItem.text = displayPhase
+        ? `$(sync~spin) Auto-Plan: [${currentIdx + 1}/${total}] ${displayPhase}`
+        : `$(sync~spin) Auto-Plan: [${currentIdx + 1}/${total}]`;
+    }
     mainStatusBarItem.command = 'autoplan.actionMenu';
   }
 
@@ -1089,7 +1097,7 @@ export function updateBridgeStatusBar(): void {
     bridgeStatusBarItem.command = 'autoplan.checkBridgeStatus';
   }
 
-  bridgeStatusBarItem.show();
+  bridgeStatusBarItem.hide();
 }
 
 /**

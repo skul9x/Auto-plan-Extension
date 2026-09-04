@@ -29,6 +29,9 @@ export interface AutoPlanConfig {
   enablePhaseAuditLogging?: boolean;
   maxLogEntries?: number;
   autoOpenBridgeLogOnError?: boolean;
+  autoRetryOnTimeout?: boolean;
+  retryDelaySeconds?: number;
+  maxAutoRetries?: number;
 }
 
 export const DEFAULT_PROMPT_TEMPLATE = `Implement the code closely following the file {xxx}
@@ -58,7 +61,10 @@ export const DEFAULT_CONFIG: AutoPlanConfig = {
   enableVerboseBridgeLogs: false,
   enablePhaseAuditLogging: true,
   maxLogEntries: 500,
-  autoOpenBridgeLogOnError: false
+  autoOpenBridgeLogOnError: false,
+  autoRetryOnTimeout: true,
+  retryDelaySeconds: 3,
+  maxAutoRetries: 5
 };
 
 export const CONFIG_SECTION = 'autoplan';
@@ -100,7 +106,10 @@ export function getConfig(): AutoPlanConfig {
     enableVerboseBridgeLogs: config.get<boolean>('enableVerboseBridgeLogs', DEFAULT_CONFIG.enableVerboseBridgeLogs ?? false),
     enablePhaseAuditLogging: config.get<boolean>('enablePhaseAuditLogging', DEFAULT_CONFIG.enablePhaseAuditLogging ?? true),
     maxLogEntries: config.get<number>('maxLogEntries', DEFAULT_CONFIG.maxLogEntries ?? 500),
-    autoOpenBridgeLogOnError: config.get<boolean>('autoOpenBridgeLogOnError', DEFAULT_CONFIG.autoOpenBridgeLogOnError ?? false)
+    autoOpenBridgeLogOnError: config.get<boolean>('autoOpenBridgeLogOnError', DEFAULT_CONFIG.autoOpenBridgeLogOnError ?? false),
+    autoRetryOnTimeout: config.get<boolean>('autoRetryOnTimeout', DEFAULT_CONFIG.autoRetryOnTimeout ?? true),
+    retryDelaySeconds: config.get<number>('retryDelaySeconds', DEFAULT_CONFIG.retryDelaySeconds ?? 3),
+    maxAutoRetries: config.get<number>('maxAutoRetries', DEFAULT_CONFIG.maxAutoRetries ?? 5)
   };
 }
 

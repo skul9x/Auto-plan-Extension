@@ -579,6 +579,24 @@ export class Orchestrator extends EventEmitter {
   }
 
   /**
+   * Helper delay that waits for ms with responsive abort checking.
+   * Returns true if completed normally, false if aborted.
+   */
+  public async sleepWithAbort(ms: number, abortCheck: () => boolean): Promise<boolean> {
+    const step = 50;
+    let elapsed = 0;
+    while (elapsed < ms) {
+      if (this.isAborted || abortCheck()) {
+        return false;
+      }
+      const waitTime = Math.min(step, ms - elapsed);
+      await new Promise((resolve) => setTimeout(resolve, waitTime));
+      elapsed += waitTime;
+    }
+    return !(this.isAborted || abortCheck());
+  }
+
+  /**
    * Automatically scans a target plan folder and sequentially executes all discovered phases.
    */
   public async startFolder(
@@ -976,6 +994,10 @@ export class Orchestrator extends EventEmitter {
         this.currentIteration = i + 1;
         phase.status = 'Running';
         phase.startTime = Date.now();
+        let phaseRetryCount = 0;
+        const maxRetries = config.autoRetryOnTimeout ? (config.maxAutoRetries ?? 5) : 0;
+        const retryDelaySeconds = config.retryDelaySeconds ?? 3;
+        const retryDelayMs = retryDelaySeconds * 1000;
 
         // Measure pre-dispatch offset if lastConversationId is known
         let initialOffset = 0;
@@ -999,7 +1021,7 @@ export class Orchestrator extends EventEmitter {
 
         // 1. Render Prompt Template & Emit Phase Start Event
         const template = config.promptTemplate || config.promptText || DEFAULT_PROMPT_TEMPLATE;
-        const renderedPrompt = renderPromptTemplate(template, phase.filePath);
+        let renderedPrompt = renderPromptTemplate(template, phase.filePath);
 
         this.debugLogger.logPhaseEvent(
           this.toPhaseDiagnosticInfo(phase),
@@ -1014,12 +1036,6 @@ export class Orchestrator extends EventEmitter {
 
         this.emit('phaseStart', phase, i, this.phases.length, phase.fileName, phase.filePath);
 
-        // 2. Timestamp & Reset
-        const phaseStartTime = Date.now();
-
-        // 3. New Conversation Trigger, Focus, Paste & Submit via PromptDispatcher (3-Tier)
-        this.setState('sending', `Phase ${i + 1}/${this.phases.length}: Sending prompt for ${phase.fileName}`);
-
         const dispatchOptions: DispatchOptions = {
           mode: config.executionMode,
           allowFallback: config.allowTierFallback,
@@ -1029,96 +1045,6 @@ export class Orchestrator extends EventEmitter {
             focusDelayMs: config.focusDelayMs
           }
         };
-
-        let dispatchResult: DispatchResult;
-        try {
-          dispatchResult = await this.promptDispatcher.dispatchPrompt(renderedPrompt, dispatchOptions);
-          phase.dispatchResult = dispatchResult;
-        } catch (dispatchErr: any) {
-          phase.status = 'Failed';
-          phase.endTime = Date.now();
-          const errMsg = dispatchErr?.message || String(dispatchErr);
-          phase.error = errMsg;
-          phase.dispatchResult = {
-            success: false,
-            tier: (config.executionMode === 'auto' ? 'domBridge' : config.executionMode) as any,
-            durationMs: 0,
-            error: errMsg
-          };
-          this.debugLogger.logPhaseEvent(
-            this.toPhaseDiagnosticInfo(phase),
-            'FAIL',
-            `Prompt dispatch failed for ${phase.fileName}: ${errMsg}`,
-            {
-              phaseIndex: i,
-              error: errMsg,
-              stack: dispatchErr?.stack
-            }
-          );
-          this.diagnoseSubsequentPhasesOnFailure(i, errMsg);
-          throw dispatchErr;
-        }
-
-        if (!dispatchResult.success) {
-          phase.status = 'Failed';
-          phase.endTime = Date.now();
-          phase.error = dispatchResult.error || 'Prompt dispatch failed';
-          phase.dispatchResult = dispatchResult;
-          this.debugLogger.logPhaseEvent(
-            this.toPhaseDiagnosticInfo(phase),
-            'FAIL',
-            `Prompt dispatch failed for ${phase.fileName}: ${phase.error}`,
-            { phaseIndex: i, dispatchResult }
-          );
-          this.diagnoseSubsequentPhasesOnFailure(i, phase.error);
-          throw new Error(phase.error);
-        }
-
-        this.debugLogger.info(
-          'DISPATCHER',
-          `Prompt dispatched for ${phase.fileName} via ${dispatchResult.tier} tier in ${dispatchResult.durationMs}ms`,
-          {
-            phaseIndex: i,
-            fileName: phase.fileName,
-            tier: dispatchResult.tier,
-            durationMs: dispatchResult.durationMs,
-            success: dispatchResult.success
-          }
-        );
-
-        if (this.isAborted) break;
-        if (this.isSkippingCurrentPhase) {
-          this.stopStallWatchdog();
-          phase.status = 'Skipped';
-          phase.endTime = Date.now();
-          this.debugLogger.logPhaseEvent(
-            this.toPhaseDiagnosticInfo(phase),
-            'SKIP',
-            `Phase ${phase.phaseNumber || i + 1} (${phase.fileName}) skipped by user`,
-            { phaseIndex: i }
-          );
-          this.emit('skipped', phase);
-          this.isSkippingCurrentPhase = false;
-          continue;
-        }
-
-        // 6. Anti-Pollution Watcher & Proactive Stall Watchdog
-        this.setState('waiting', `Phase ${i + 1}/${this.phases.length}: Waiting for completion of ${phase.fileName}`);
-        this.debugLogger.info(
-          'ORCHESTRATOR',
-          `Watching transcript for ${phase.fileName} starting from timestamp ${phaseStartTime}`,
-          {
-            phaseIndex: i,
-            fileName: phase.fileName,
-            phaseStartTime,
-            pollIntervalMs: this.transcriptWatcher.getOptions().pollIntervalMs
-          }
-        );
-
-        const watchdogThreshold = config.timeoutPerLoopMinutes
-          ? Math.min(this.stallWatchdogThresholdMs, config.timeoutPerLoopMinutes * 60 * 1000 * 0.5)
-          : this.stallWatchdogThresholdMs;
-        this.startStallWatchdog(phase, i, watchdogThreshold);
 
         const onPhaseRebound = (oldConvId: string, newConvId: string, newFilePath: string) => {
           phase.conversationId = newConvId;
@@ -1138,32 +1064,16 @@ export class Orchestrator extends EventEmitter {
         };
         this.transcriptWatcher.on('conversationRebound', onPhaseRebound);
 
-        let convId: string;
+        let convId: string = '';
         let completionResult: CompletionResult;
         const convTimeoutMs = config.newConversationTimeoutMs || 8000;
+        let phaseStartTime = Date.now();
+        let dispatchResult: DispatchResult | undefined;
 
         try {
-          try {
-            const activeWorkspaceFolder = vscode?.workspace?.workspaceFolders?.[0];
-            const activeWsName = this.workspaceName || (activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined);
-            const activeWsPath = this.workspacePath || (activeWorkspaceFolder ? activeWorkspaceFolder.uri?.fsPath : undefined) || this.currentPlanFolder || undefined;
-            const ownershipCriteria: ConversationOwnershipCriteria = {
-              expectedPromptSnippet: phase.fileName,
-              workspacePath: activeWsPath,
-              workspaceName: activeWsName
-            };
-            this.transcriptWatcher.setOptions({ ownershipCriteria });
-
-            convId = await this.waitForNewConversation(
-              phaseStartTime,
-              this.lastConversationId,
-              convTimeoutMs,
-              this.transcriptWatcher.getOptions().pollIntervalMs,
-              dispatchOptions.openNewConversation !== false,
-              { phaseIndex: i, fileName: phase.fileName },
-              ownershipCriteria
-            );
-          } catch (err: any) {
+          // Retry loop for prompt dispatch & new conversation detection
+          while (true) {
+            if (this.isAborted) break;
             if (this.isSkippingCurrentPhase) {
               this.stopStallWatchdog();
               phase.status = 'Skipped';
@@ -1171,44 +1081,219 @@ export class Orchestrator extends EventEmitter {
               this.debugLogger.logPhaseEvent(
                 this.toPhaseDiagnosticInfo(phase),
                 'SKIP',
-                `Phase ${phase.phaseNumber || i + 1} (${phase.fileName}) skipped during conversation wait`,
+                `Phase ${phase.phaseNumber || i + 1} (${phase.fileName}) skipped by user`,
                 { phaseIndex: i }
               );
               this.emit('skipped', phase);
               this.isSkippingCurrentPhase = false;
-              continue;
+              break;
             }
-            if (this.isAborted) break;
 
-            if (err instanceof NewConversationTimeoutError) {
-              this.stopStallWatchdog();
+            // Fresh prompt render and timestamp
+            renderedPrompt = renderPromptTemplate(template, phase.filePath);
+            phaseStartTime = Date.now();
+
+            // 3. New Conversation Trigger, Focus, Paste & Submit via PromptDispatcher (3-Tier)
+            this.setState('sending', `Phase ${i + 1}/${this.phases.length}: Sending prompt for ${phase.fileName}`);
+
+            try {
+              dispatchResult = await this.promptDispatcher.dispatchPrompt(renderedPrompt, {
+                ...dispatchOptions,
+                openNewConversation: true
+              });
+              phase.dispatchResult = dispatchResult;
+            } catch (dispatchErr: any) {
               phase.status = 'Failed';
               phase.endTime = Date.now();
-              phase.error = err.message;
-              const stallReason: PhaseStallReason = {
-                code: 'AI_RESPONSE_TIMEOUT',
-                description: `Timeout waiting for new conversation after ${convTimeoutMs}ms. Verify prompt submission status in chat panel.`,
-                remediationAction: 'Verify prompt submission status in chat panel.'
+              const errMsg = dispatchErr?.message || String(dispatchErr);
+              phase.error = errMsg;
+              phase.dispatchResult = {
+                success: false,
+                tier: (config.executionMode === 'auto' ? 'domBridge' : config.executionMode) as any,
+                durationMs: 0,
+                error: errMsg
               };
-              phase.stallReason = stallReason;
-              this.debugLogger.logPhaseStall(this.toPhaseDiagnosticInfo(phase), stallReason);
               this.debugLogger.logPhaseEvent(
                 this.toPhaseDiagnosticInfo(phase),
                 'FAIL',
-                `New conversation timeout for ${phase.fileName}: ${err.message}`,
+                `Prompt dispatch failed for ${phase.fileName}: ${errMsg}`,
                 {
                   phaseIndex: i,
-                  error: err.message,
-                  stack: err.stack,
-                  diagnosticInfo: err.diagnosticInfo
+                  error: errMsg,
+                  stack: dispatchErr?.stack
                 }
               );
-              this.diagnoseSubsequentPhasesOnFailure(i, err.message);
-              throw err;
+              this.diagnoseSubsequentPhasesOnFailure(i, errMsg);
+              throw dispatchErr;
             }
 
-            convId = this.lastConversationId || 'current_conversation';
+            if (!dispatchResult.success) {
+              phase.status = 'Failed';
+              phase.endTime = Date.now();
+              phase.error = dispatchResult.error || 'Prompt dispatch failed';
+              phase.dispatchResult = dispatchResult;
+              this.debugLogger.logPhaseEvent(
+                this.toPhaseDiagnosticInfo(phase),
+                'FAIL',
+                `Prompt dispatch failed for ${phase.fileName}: ${phase.error}`,
+                { phaseIndex: i, dispatchResult }
+              );
+              this.diagnoseSubsequentPhasesOnFailure(i, phase.error);
+              throw new Error(phase.error);
+            }
+
+            this.debugLogger.info(
+              'DISPATCHER',
+              `Prompt dispatched for ${phase.fileName} via ${dispatchResult.tier} tier in ${dispatchResult.durationMs}ms`,
+              {
+                phaseIndex: i,
+                fileName: phase.fileName,
+                tier: dispatchResult.tier,
+                durationMs: dispatchResult.durationMs,
+                success: dispatchResult.success
+              }
+            );
+
+            if (this.isAborted) break;
+            if (this.isSkippingCurrentPhase) {
+              this.stopStallWatchdog();
+              phase.status = 'Skipped';
+              phase.endTime = Date.now();
+              this.debugLogger.logPhaseEvent(
+                this.toPhaseDiagnosticInfo(phase),
+                'SKIP',
+                `Phase ${phase.phaseNumber || i + 1} (${phase.fileName}) skipped by user`,
+                { phaseIndex: i }
+              );
+              this.emit('skipped', phase);
+              this.isSkippingCurrentPhase = false;
+              break;
+            }
+
+            // 6. Anti-Pollution Watcher & Proactive Stall Watchdog
+            this.setState('waiting', `Phase ${i + 1}/${this.phases.length}: Waiting for completion of ${phase.fileName}`);
+            this.debugLogger.info(
+              'ORCHESTRATOR',
+              `Watching transcript for ${phase.fileName} starting from timestamp ${phaseStartTime}`,
+              {
+                phaseIndex: i,
+                fileName: phase.fileName,
+                phaseStartTime,
+                pollIntervalMs: this.transcriptWatcher.getOptions().pollIntervalMs
+              }
+            );
+
+            const watchdogThreshold = config.timeoutPerLoopMinutes
+              ? Math.min(this.stallWatchdogThresholdMs, config.timeoutPerLoopMinutes * 60 * 1000 * 0.5)
+              : this.stallWatchdogThresholdMs;
+            this.startStallWatchdog(phase, i, watchdogThreshold);
+
+            try {
+              const activeWorkspaceFolder = vscode?.workspace?.workspaceFolders?.[0];
+              const activeWsName = this.workspaceName || (activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined);
+              const activeWsPath = this.workspacePath || (activeWorkspaceFolder ? activeWorkspaceFolder.uri?.fsPath : undefined) || this.currentPlanFolder || undefined;
+              const ownershipCriteria: ConversationOwnershipCriteria = {
+                expectedPromptSnippet: phase.fileName,
+                workspacePath: activeWsPath,
+                workspaceName: activeWsName
+              };
+              this.transcriptWatcher.setOptions({ ownershipCriteria });
+
+              convId = await this.waitForNewConversation(
+                phaseStartTime,
+                this.lastConversationId,
+                convTimeoutMs,
+                this.transcriptWatcher.getOptions().pollIntervalMs,
+                dispatchOptions.openNewConversation !== false,
+                { phaseIndex: i, fileName: phase.fileName },
+                ownershipCriteria
+              );
+              phaseRetryCount = 0;
+              break; // Conversation detection resolved successfully!
+            } catch (err: any) {
+              if (this.isSkippingCurrentPhase) {
+                this.stopStallWatchdog();
+                phase.status = 'Skipped';
+                phase.endTime = Date.now();
+                this.debugLogger.logPhaseEvent(
+                  this.toPhaseDiagnosticInfo(phase),
+                  'SKIP',
+                  `Phase ${phase.phaseNumber || i + 1} (${phase.fileName}) skipped during conversation wait`,
+                  { phaseIndex: i }
+                );
+                this.emit('skipped', phase);
+                this.isSkippingCurrentPhase = false;
+                break;
+              }
+              if (this.isAborted) break;
+
+              if (err instanceof NewConversationTimeoutError) {
+                if (phaseRetryCount < maxRetries) {
+                  phaseRetryCount++;
+                  this.stopStallWatchdog();
+                  const retryStatusMessage = `Auto-Plan: Retrying Phase ${phase.phaseNumber || i + 1} (${phaseRetryCount}/${maxRetries}) in ${retryDelaySeconds}s...`;
+                  this.setState('delaying', retryStatusMessage);
+                  this.debugLogger.info(
+                    'ORCHESTRATOR',
+                    `[ORCHESTRATOR] New conversation timeout for ${phase.fileName}. Auto-retrying (${phaseRetryCount}/${maxRetries}) in ${retryDelaySeconds}s...`
+                  );
+
+                  const notifMessage = `Auto-Plan: Phase ${phase.phaseNumber || i + 1} gặp timeout tạo phiên mới. Đang thử lại sau ${retryDelaySeconds}s... (Lần ${phaseRetryCount}/${maxRetries})`;
+                  if (typeof vscode !== 'undefined' && vscode?.window?.showInformationMessage) {
+                    const notifPromise = vscode.window.showInformationMessage(
+                      notifMessage,
+                      '⏹️ Hủy / Stop'
+                    );
+                    if (notifPromise && typeof notifPromise.then === 'function') {
+                      notifPromise.then((selected: string | undefined) => {
+                        if (selected === '⏹️ Hủy / Stop') {
+                          this.stop();
+                        }
+                      });
+                    }
+                  }
+
+                  const delayCompleted = await this.sleepWithAbort(retryDelayMs, () => this.isAborted);
+                  if (!delayCompleted || this.isAborted) {
+                    break;
+                  }
+                  continue; // Loop for next retry attempt
+                } else {
+                  this.stopStallWatchdog();
+                  phase.status = 'Failed';
+                  phase.endTime = Date.now();
+                  phase.error = err.message;
+                  const stallReason: PhaseStallReason = {
+                    code: 'AI_RESPONSE_TIMEOUT',
+                    description: `Timeout waiting for new conversation after ${convTimeoutMs}ms. Verify prompt submission status in chat panel.`,
+                    remediationAction: 'Verify prompt submission status in chat panel.'
+                  };
+                  phase.stallReason = stallReason;
+                  this.debugLogger.logPhaseStall(this.toPhaseDiagnosticInfo(phase), stallReason);
+                  this.debugLogger.logPhaseEvent(
+                    this.toPhaseDiagnosticInfo(phase),
+                    'FAIL',
+                    `New conversation timeout for ${phase.fileName}: ${err.message}`,
+                    {
+                      phaseIndex: i,
+                      error: err.message,
+                      stack: err.stack,
+                      diagnosticInfo: err.diagnosticInfo
+                    }
+                  );
+                  this.diagnoseSubsequentPhasesOnFailure(i, err.message);
+                  throw err;
+                }
+              }
+
+              convId = this.lastConversationId || 'current_conversation';
+              phaseRetryCount = 0;
+              break;
+            }
           }
+
+          if (this.isAborted) break;
+          if (phase.status === 'Skipped') continue;
 
           if (convId && convId !== 'current_conversation') {
             phase.conversationId = convId;

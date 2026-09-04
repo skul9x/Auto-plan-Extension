@@ -77,6 +77,8 @@ export interface PhaseItem {
   result?: CompletionResult;
   /** Prompt dispatch result details */
   dispatchResult?: DispatchResult;
+  /** Diagnostic stall reason if phase is blocked/stalled/failed */
+  stallReason?: PhaseStallReason;
 }
 
 export interface OrchestratorProgressInfo {
@@ -233,8 +235,12 @@ export class Orchestrator extends EventEmitter {
     return this.lastPreflightResult;
   }
 
+  public get config(): AutoPlanConfig {
+    return this.configProvider();
+  }
+
   /**
-   * Converts a runtime PhaseItem to PhaseDiagnosticInfo.
+   * Converts a PhaseItem into enriched PhaseDiagnosticInfo.
    */
   public toPhaseDiagnosticInfo(phase: PhaseItem): PhaseDiagnosticInfo {
     const phaseNum = phase.phaseNumber || phase.index + 1;
@@ -256,6 +262,7 @@ export class Orchestrator extends EventEmitter {
       isCompleted,
       isSelected,
       error: phase.error,
+      stallReason: phase.stallReason,
       conversationId: phase.conversationId,
       executionTimeMs
     };
@@ -382,6 +389,7 @@ export class Orchestrator extends EventEmitter {
         isCompleted: p.status === 'Completed',
         isSelected,
         error: p.error,
+        stallReason: p.stallReason,
         conversationId: p.conversationId,
         executionTimeMs:
           p.startTime && p.endTime
@@ -394,12 +402,14 @@ export class Orchestrator extends EventEmitter {
     });
 
     for (let i = 0; i < diagnosticPhases.length; i++) {
-      diagnosticPhases[i].stallReason = analyzePhaseStallReason(
-        diagnosticPhases[i],
-        diagnosticPhases,
-        i,
-        executionContext
-      );
+      if (!diagnosticPhases[i].stallReason) {
+        diagnosticPhases[i].stallReason = analyzePhaseStallReason(
+          diagnosticPhases[i],
+          diagnosticPhases,
+          i,
+          executionContext
+        );
+      }
     }
 
     const totalPhases = diagnosticPhases.length;
@@ -730,28 +740,96 @@ export class Orchestrator extends EventEmitter {
   public async waitForNewConversation(
     phaseStartTime: number,
     lastConvId?: string,
-    timeoutMs: number = 3000,
+    timeoutMs: number = 8000,
     pollIntervalMs?: number,
     expectNew: boolean = true,
     diagnosticContext?: { phaseIndex?: number; fileName?: string }
   ): Promise<string> {
+    const actualTimeoutMs = timeoutMs ?? 8000;
+    const heartbeatTimers: NodeJS.Timeout[] = [];
+    const clearHeartbeats = () => {
+      for (const timer of heartbeatTimers) {
+        clearTimeout(timer);
+      }
+      heartbeatTimers.length = 0;
+    };
+
+    if (actualTimeoutMs > 3000) {
+      const t3 = setTimeout(() => {
+        this.debugLogger.info(
+          'ORCHESTRATOR',
+          `Conversation directory detection in progress (elapsed: 3000ms, timeout: ${actualTimeoutMs}ms)${diagnosticContext?.fileName ? ` for ${diagnosticContext.fileName}` : ''}...`,
+          {
+            phaseIndex: diagnosticContext?.phaseIndex,
+            fileName: diagnosticContext?.fileName,
+            elapsedMs: 3000,
+            timeoutMs: actualTimeoutMs
+          }
+        );
+      }, 3000);
+      if (typeof t3.unref === 'function') {
+        t3.unref();
+      }
+      heartbeatTimers.push(t3);
+    }
+
+    if (actualTimeoutMs > 4000) {
+      const t4 = setTimeout(() => {
+        this.debugLogger.warn(
+          'ORCHESTRATOR',
+          `Conversation discovery is taking longer than expected (${diagnosticContext?.fileName || 'phase'}). Awaiting backend filesystem creation (elapsed: 4000ms)...`,
+          {
+            phaseIndex: diagnosticContext?.phaseIndex,
+            fileName: diagnosticContext?.fileName,
+            elapsedMs: 4000,
+            timeoutMs: actualTimeoutMs
+          }
+        );
+      }, 4000);
+      if (typeof t4.unref === 'function') {
+        t4.unref();
+      }
+      heartbeatTimers.push(t4);
+    }
+
+    if (actualTimeoutMs > 6000) {
+      const t6 = setTimeout(() => {
+        this.debugLogger.info(
+          'ORCHESTRATOR',
+          `Still awaiting conversation directory detection (elapsed: 6000ms, timeout: ${actualTimeoutMs}ms)${diagnosticContext?.fileName ? ` for ${diagnosticContext.fileName}` : ''}...`,
+          {
+            phaseIndex: diagnosticContext?.phaseIndex,
+            fileName: diagnosticContext?.fileName,
+            elapsedMs: 6000,
+            timeoutMs: actualTimeoutMs
+          }
+        );
+      }, 6000);
+      if (typeof t6.unref === 'function') {
+        t6.unref();
+      }
+      heartbeatTimers.push(t6);
+    }
+
     try {
       return await this.transcriptWatcher.waitForNewConversation(
         phaseStartTime,
         lastConvId,
-        timeoutMs,
+        actualTimeoutMs,
         pollIntervalMs
       );
     } catch (err: any) {
       if (!expectNew) {
         return lastConvId || 'current_conversation';
       }
+      const baseMessage = `Timeout waiting for new conversation after ${actualTimeoutMs}ms. Verify prompt submission status in chat panel.`;
+      const timeoutMessage = lastConvId ? `${baseMessage} (stale conversation: ${lastConvId})` : baseMessage;
       if (err instanceof NewConversationTimeoutError) {
-        throw new NewConversationTimeoutError(err.message, {
+        throw new NewConversationTimeoutError(timeoutMessage, {
           phaseIndex: diagnosticContext?.phaseIndex ?? err.phaseIndex,
           fileName: diagnosticContext?.fileName ?? err.fileName,
           lastConversationId: lastConvId ?? err.lastConversationId,
-          timeoutMs: timeoutMs ?? err.timeoutMs,
+          timeoutMs: actualTimeoutMs ?? err.timeoutMs,
           diagnosticInfo: {
             phaseStartTime,
             lastConversationId: lastConvId,
@@ -760,12 +838,12 @@ export class Orchestrator extends EventEmitter {
         });
       }
       throw new NewConversationTimeoutError(
-        `Timeout waiting for new conversation after ${timeoutMs}ms (stale conversation: ${lastConvId || 'none'})`,
+        timeoutMessage,
         {
           phaseIndex: diagnosticContext?.phaseIndex,
           fileName: diagnosticContext?.fileName,
           lastConversationId: lastConvId,
-          timeoutMs,
+          timeoutMs: actualTimeoutMs,
           diagnosticInfo: {
             phaseStartTime,
             lastConversationId: lastConvId,
@@ -773,6 +851,8 @@ export class Orchestrator extends EventEmitter {
           }
         }
       );
+    } finally {
+      clearHeartbeats();
     }
   }
 
@@ -1023,13 +1103,14 @@ export class Orchestrator extends EventEmitter {
 
         let convId: string;
         let completionResult: CompletionResult;
+        const convTimeoutMs = config.newConversationTimeoutMs || 8000;
 
         try {
           try {
             convId = await this.waitForNewConversation(
               phaseStartTime,
               this.lastConversationId,
-              3000,
+              convTimeoutMs,
               this.transcriptWatcher.getOptions().pollIntervalMs,
               dispatchOptions.openNewConversation !== false,
               { phaseIndex: i, fileName: phase.fileName }
@@ -1056,6 +1137,13 @@ export class Orchestrator extends EventEmitter {
               phase.status = 'Failed';
               phase.endTime = Date.now();
               phase.error = err.message;
+              const stallReason: PhaseStallReason = {
+                code: 'AI_RESPONSE_TIMEOUT',
+                description: `Timeout waiting for new conversation after ${convTimeoutMs}ms. Verify prompt submission status in chat panel.`,
+                remediationAction: 'Verify prompt submission status in chat panel.'
+              };
+              phase.stallReason = stallReason;
+              this.debugLogger.logPhaseStall(this.toPhaseDiagnosticInfo(phase), stallReason);
               this.debugLogger.logPhaseEvent(
                 this.toPhaseDiagnosticInfo(phase),
                 'FAIL',
@@ -1408,10 +1496,11 @@ export class Orchestrator extends EventEmitter {
 
         try {
           try {
+            const convTimeoutMs = config.newConversationTimeoutMs || 8000;
             convId = await this.waitForNewConversation(
               timestampBeforeSend,
               this.lastConversationId,
-              3000,
+              convTimeoutMs,
               100,
               dispatchOptions.openNewConversation !== false
             );

@@ -20,6 +20,7 @@ export interface AutoPlanConfig {
   allowTierFallback?: boolean;
   strictMode?: boolean;
   bridgeTimeoutMs?: number;
+  newConversationTimeoutMs?: number;
   staleClientMs?: number;
   autoApprovePermissions?: boolean;
   autoInjectWorkbench?: boolean;
@@ -49,6 +50,7 @@ export const DEFAULT_CONFIG: AutoPlanConfig = {
   allowTierFallback: true,
   strictMode: false,
   bridgeTimeoutMs: 5000,
+  newConversationTimeoutMs: 8000,
   staleClientMs: 120000,
   autoApprovePermissions: true,
   autoInjectWorkbench: true,
@@ -90,6 +92,7 @@ export function getConfig(): AutoPlanConfig {
     allowTierFallback,
     strictMode,
     bridgeTimeoutMs: config.get<number>('bridgeTimeoutMs', DEFAULT_CONFIG.bridgeTimeoutMs ?? 5000),
+    newConversationTimeoutMs: config.get<number>('newConversationTimeoutMs', DEFAULT_CONFIG.newConversationTimeoutMs ?? 8000),
     staleClientMs: config.get<number>('staleClientMs', DEFAULT_CONFIG.staleClientMs ?? 120000),
     autoApprovePermissions: config.get<boolean>('autoApprovePermissions', DEFAULT_CONFIG.autoApprovePermissions ?? true),
     autoInjectWorkbench: config.get<boolean>('autoInjectWorkbench', DEFAULT_CONFIG.autoInjectWorkbench ?? true),

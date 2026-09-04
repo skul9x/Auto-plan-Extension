@@ -1547,8 +1547,18 @@
     const sendBtnDiag = {};
     let sendBtn = options.sendButton || findSendButton(inputElem || doc, sendBtnDiag);
 
-    // Extended Button Enablement Polling (default 1500ms, 50ms interval)
-    const maxPollMs = options.pollTimeoutMs !== undefined ? options.pollTimeoutMs : 1500;
+    // Extended Button Enablement Polling (default 2500ms, 50ms interval)
+    let maxPollMs = 2500;
+    if (options.pollTimeoutMs !== undefined) {
+      if (options.allowShortTimeout || options.pollTimeoutMs === 0) {
+        maxPollMs = options.pollTimeoutMs;
+      } else if (typeof options.pollTimeoutMs === 'number' && options.pollTimeoutMs >= 2000) {
+        maxPollMs = options.pollTimeoutMs;
+      } else {
+        // Enforce 2500ms default if unprovided or less than 2000ms
+        maxPollMs = 2500;
+      }
+    }
     const pollIntervalMs = options.pollIntervalMs !== undefined ? options.pollIntervalMs : 50;
     const pollStart = Date.now();
     let buttonWaitDurationMs = 0;
@@ -1656,7 +1666,7 @@
         }
       }
     } else if (sendBtn && isButtonDisabled(sendBtn)) {
-      // Send button exists in DOM but remained disabled after maxPollMs (1500ms).
+      // Send button exists in DOM but remained disabled after maxPollMs (2500ms).
       // STRICT REQUIREMENT: Absolute Prohibition of Synthetic Enter when Send Button Exists.
       // NEVER dispatch KeyboardEvent('Enter'). Mark as failed rather than attempting a fake Enter.
       sendButtonClicked = false;
@@ -1664,12 +1674,57 @@
       submissionVerified = false;
       submitStrategy = 'buttonClick';
       rejectionReason = 'button_disabled_timeout';
-      verificationError = `Send button remained disabled after ${maxPollMs}ms polling timeout; synthetic Enter fallback forbidden when send button is present`;
-      logBridge('WARN', `Send button remained disabled after ${maxPollMs}ms. Enter fallback prohibited because button exists in DOM.`, {
+      verificationError = `Send button remained disabled after ${buttonWaitDurationMs}ms polling timeout; synthetic Enter fallback forbidden when send button is present`;
+      logBridge('WARN', `Send button remained disabled after ${buttonWaitDurationMs}ms (max ${maxPollMs}ms). Enter fallback prohibited because button exists in DOM.`, {
         buttonSelector: sendBtn?.className || sendBtn?.tagName || null,
         maxPollMs,
         buttonWaitDurationMs
       });
+
+      steps.push({
+        step: 4,
+        name: 'Submit triggering',
+        status: 'failed',
+        submitStrategy: 'buttonClick',
+        enterDispatched: false,
+        sendButtonClicked: false,
+        doubleTapExecuted: false,
+        formSubmitted: false,
+        submissionVerified: false,
+        rejectionReason: 'button_disabled_timeout',
+        error: verificationError,
+        buttonSelector: sendBtn?.className || sendBtn?.tagName || null,
+        buttonWaitDurationMs,
+        initialDisabled,
+        sendButtonDiagnostics: sendBtnDiag.diagnostics
+      });
+
+      const disabledTimeoutErr = new Error(verificationError);
+      disabledTimeoutErr.code = 'BUTTON_DISABLED_TIMEOUT';
+      disabledTimeoutErr.status = 'failed';
+      disabledTimeoutErr.rejectionReason = 'button_disabled_timeout';
+      disabledTimeoutErr.buttonSelector = sendBtn?.className || sendBtn?.tagName || null;
+      disabledTimeoutErr.buttonWaitDurationMs = buttonWaitDurationMs;
+      disabledTimeoutErr.initialDisabled = initialDisabled;
+      disabledTimeoutErr.steps = steps;
+      disabledTimeoutErr.diagnostics = {
+        buttonClass: sendBtn?.className || '',
+        buttonTagName: sendBtn?.tagName || '',
+        disabledDuration: buttonWaitDurationMs,
+        disabledDurationMs: buttonWaitDurationMs,
+        initialDisabled,
+        initialState: { initialDisabled },
+        maxPollMs
+      };
+      disabledTimeoutErr.sendButtonClicked = false;
+      disabledTimeoutErr.enterDispatched = false;
+      disabledTimeoutErr.submitStrategy = 'buttonClick';
+      disabledTimeoutErr.submissionVerified = false;
+      disabledTimeoutErr.success = false;
+
+      if (options.rejectOnDisabledTimeout !== false && options.throwOnError !== false) {
+        throw disabledTimeoutErr;
+      }
     } else {
       // 2. Fallback Strategy (enterKey): ONLY permitted if no send button element can be discovered anywhere in the DOM
       let enterAttempted = false;
@@ -1868,6 +1923,7 @@
     const win = options.window || (typeof window !== 'undefined' ? window : null);
     const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 3000;
     const intervalMs = typeof options.intervalMs === 'number' ? options.intervalMs : 50;
+    const probeTimeoutMs = typeof options.probeTimeoutMs === 'number' ? options.probeTimeoutMs : 1000;
     const startTime = Date.now();
 
     const newBtn = options.button || findNewConversationButton(doc);
@@ -1902,7 +1958,7 @@
       }
     }
 
-    // Handshake Polling loop
+    // Handshake Polling loop with post-open readiness probe
     while (Date.now() - startTime < timeoutMs) {
       await new Promise(r => setTimeout(r, intervalMs));
 
@@ -1914,10 +1970,14 @@
         currentBtn.disabled === true
       );
 
-      // Condition b: message input editor is empty or contains only whitespace / <br>
+      // Condition b: old chat message containers unmounted / cleared
+      const userMessageCount = countUserMessages(doc);
+      const isOldChatUnmounted = (userMessageCount === 0);
+
+      // Condition c: new editor container mounted, visible, and empty
       const inputEditor = (doc && typeof doc.querySelector === 'function' && doc.querySelector('div[data-lexical-editor="true"]')) || findChatInput(doc);
-      let isEditorEmpty = false;
-      if (inputEditor) {
+      let isEditorReadyAndEmpty = false;
+      if (inputEditor && isElementVisible(inputEditor)) {
         const textContent = (inputEditor.value !== undefined ? inputEditor.value : (inputEditor.innerText || inputEditor.textContent || '')).trim();
         const htmlClean = (inputEditor.innerHTML || '')
           .replace(/<br\s*\/?>/gi, '')
@@ -1926,10 +1986,10 @@
           .replace(/<[^>]*>/g, '')
           .replace(/&nbsp;/g, ' ')
           .trim();
-        isEditorEmpty = (textContent === '' || htmlClean === '');
+        isEditorReadyAndEmpty = (textContent === '' || htmlClean === '');
       }
 
-      // Condition c: send button is present and disabled (disabled="" or cursor-not-allowed)
+      // Condition d: send button is present and disabled (disabled="" or cursor-not-allowed)
       const sendBtn = (doc && typeof doc.querySelector === 'function' && doc.querySelector('button[data-testid="send-button"]')) || findSendButton(doc);
       const isSendBtnDisabled = Boolean(
         sendBtn && (
@@ -1940,10 +2000,10 @@
         )
       );
 
-      if (isBtnDisabled && isEditorEmpty && isSendBtnDisabled) {
+      if (isBtnDisabled && isOldChatUnmounted && isEditorReadyAndEmpty && isSendBtnDisabled) {
         const durationMs = Date.now() - startTime;
         logBridge('INFO', `New conversation transition handshake confirmed in ${durationMs}ms`);
-        return { success: true, durationMs, alreadyNew: false };
+        return { success: true, durationMs, alreadyNew: false, editorReady: true };
       }
     }
 
@@ -1951,6 +2011,13 @@
     const timeoutErr = new Error(`New conversation handshake timed out after ${durationMs}ms: DOM failed to reach empty/ready state`);
     logBridge('ERROR', timeoutErr.message);
     throw timeoutErr;
+  }
+
+  /**
+   * High-level handler for opening a new conversation with readiness probe
+   */
+  async function handleOpenNewConversation(options = {}) {
+    return triggerNewConversation(options);
   }
 
   /**
@@ -2607,6 +2674,10 @@
     /**
      * Executes a received command
      */
+    async executeCommand(cmd) {
+      return this.handleCommand(cmd);
+    }
+
     async handleCommand(cmd) {
       if (!cmd || !cmd.id) return;
 
@@ -2633,8 +2704,10 @@
           });
 
           if (result && result.success === false) {
-            await this.sendAck(cmd.id, 'error', result.error || result.rejectionReason || 'Synthetic Enter event was not accepted by the editor (input was not cleared)', {
+            const status = (result.status === 'failed' || result.code === 'BUTTON_DISABLED_TIMEOUT' || result.rejectionReason === 'button_disabled_timeout') ? 'failed' : 'error';
+            await this.sendAck(cmd.id, status, result.error || result.rejectionReason || 'Synthetic Enter event was not accepted by the editor (input was not cleared)', {
               ...result,
+              status,
               isBackgroundSubmission: Boolean(
                 result?.isBackgroundSubmission ||
                 (this.customDocument ? this.customDocument.hidden : (typeof document !== 'undefined' && document.hidden))
@@ -2650,7 +2723,7 @@
             });
           }
         } else if (cmd.type === 'openNewConversation') {
-          const result = await triggerNewConversation({
+          const result = await handleOpenNewConversation({
             document: this.customDocument,
             window: this.customWindow,
             ...(cmd.options || {}),
@@ -2682,9 +2755,31 @@
         }
 
         const isAborted = err?.code === 'COMMAND_ABORTED_BY_TIMEOUT' || err?.aborted === true;
-        const status = isAborted ? 'aborted' : 'error';
+        const isButtonDisabledTimeout = err?.code === 'BUTTON_DISABLED_TIMEOUT' || err?.rejectionReason === 'button_disabled_timeout';
+        const isFailed = isButtonDisabledTimeout || err?.status === 'failed';
+        const status = isAborted ? 'aborted' : (isFailed ? 'failed' : 'error');
 
-        await this.sendClientLog(isAborted ? 'WARN' : 'ERROR', `Command ${cmd.id} (${cmd.type}) execution ${isAborted ? 'aborted' : 'failed'}: ${err?.message || err}`, {
+        if (isButtonDisabledTimeout) {
+          metadata.code = 'BUTTON_DISABLED_TIMEOUT';
+          metadata.status = 'failed';
+          metadata.rejectionReason = 'button_disabled_timeout';
+          metadata.buttonClass = err.diagnostics?.buttonClass || err.buttonSelector || '';
+          metadata.disabledDuration = err.buttonWaitDurationMs !== undefined ? err.buttonWaitDurationMs : (err.diagnostics?.disabledDurationMs || 0);
+          metadata.initialState = {
+            initialDisabled: err.initialDisabled !== undefined ? err.initialDisabled : true
+          };
+          metadata.diagnostics = {
+            buttonClass: metadata.buttonClass,
+            disabledDuration: metadata.disabledDuration,
+            initialDisabled: metadata.initialState.initialDisabled,
+            ...(err.diagnostics || {})
+          };
+          metadata.sendButtonClicked = false;
+          metadata.enterDispatched = false;
+          metadata.isSuccess = false;
+        }
+
+        await this.sendClientLog(isAborted ? 'WARN' : (isFailed ? 'WARN' : 'ERROR'), `Command ${cmd.id} (${cmd.type}) execution ${isAborted ? 'aborted' : (isFailed ? 'rejected' : 'failed')}: ${err?.message || err}`, {
           commandId: cmd.id,
           error: err?.message || String(err),
           metadata
@@ -2794,6 +2889,7 @@
     verifyInputSubmission,
     injectPromptAndSubmit,
     triggerNewConversation,
+    handleOpenNewConversation,
     startAutoApprovalObserver,
     createWorkerTimer,
     DomBridgeClient

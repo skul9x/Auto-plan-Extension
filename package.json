@@ -222,6 +222,13 @@
           "default": 5000,
           "description": "Timeout in milliseconds for DOM Bridge command acknowledgment"
         },
+        "autoplan.newConversationTimeoutMs": {
+          "type": "number",
+          "default": 8000,
+          "minimum": 3000,
+          "maximum": 30000,
+          "description": "Timeout in milliseconds waiting for a new conversation directory to be detected"
+        },
         "autoplan.staleClientMs": {
           "type": "number",
           "default": 120000,

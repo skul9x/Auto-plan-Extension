@@ -415,7 +415,7 @@ export class PromptDispatcher {
     const startTime = Date.now();
     const config = this.configProvider();
     const mode = options?.mode || config.executionMode || 'auto';
-    const timeoutMs = options?.timeoutMs ?? config.bridgeTimeoutMs ?? 5000;
+    const timeoutMs = options?.timeoutMs ?? config.bridgeTimeoutMs ?? 6000;
     let openedViaCommand = false;
 
     // Chat Reveal & New Conversation Hook: Guarantee fresh conversation thread and chat DOM tree
@@ -489,15 +489,13 @@ export class PromptDispatcher {
       try {
         if (!openedViaCommand) {
           this.logger.debug('DISPATCHER', 'Command API unavailable for openNewConversation, triggering via DOM Bridge client...');
-          handshakeAck = await this.bridgeServer.dispatchPromptCommand('', {
-            type: 'openNewConversation',
+          handshakeAck = await this.bridgeServer.dispatchNewConversationCommand({
             timeoutMs: Math.min(timeoutMs, 3000),
             windowKey: options?.windowKey
           });
         } else {
           this.logger.debug('DISPATCHER', 'Opened via command, executing fast DOM Bridge readiness handshake...');
-          handshakeAck = await this.bridgeServer.dispatchPromptCommand('', {
-            type: 'openNewConversation',
+          handshakeAck = await this.bridgeServer.dispatchNewConversationCommand({
             timeoutMs: Math.min(timeoutMs, 3000),
             windowKey: options?.windowKey,
             extra: { readyCheckOnly: true }
@@ -519,6 +517,9 @@ export class PromptDispatcher {
           error: convErr?.message || String(convErr)
         };
       }
+
+      // Mandatory stabilization delay (450ms) after completing openNewConversation before queuing or dispatching sendPrompt
+      await new Promise((resolve) => setTimeout(resolve, 450));
     }
 
     const commandOpts: CommandOptions = {
@@ -528,58 +529,105 @@ export class PromptDispatcher {
       extra: options?.extra
     };
 
+    const maxRetries = 2;
+    let retryCount = 0;
     let ackResult: any;
-    try {
-      ackResult = await this.bridgeServer.dispatchPromptCommand(promptText, commandOpts);
-    } catch (err: any) {
-      const isTimeout = err?.message && /timed?\s*out/i.test(err.message);
-      const isAborted = err?.code === 'COMMAND_ABORTED_BY_TIMEOUT' || err?.aborted === true || (err?.message && /aborted/i.test(err.message));
 
-      if (isTimeout || isAborted) {
-        this.logger.warn('DISPATCHER', `Tier 1 submission cancelled due to timeout (${timeoutMs}ms). Cancellation signal registered with BridgeServer.`, {
-          timeoutMs,
-          targetWindow: commandOpts.windowKey,
-          error: err.message
-        });
-        const cancellationErr: any = new Error(`DOM Bridge submission cancellation: command timed out after ${timeoutMs}ms and cancellation signal registered with BridgeServer`);
-        cancellationErr.code = 'COMMAND_ABORTED_BY_TIMEOUT';
-        cancellationErr.isTimeout = true;
-        cancellationErr.isCancelled = true;
-        if (err.domSnapshot) cancellationErr.domSnapshot = err.domSnapshot;
-        if (err.steps) cancellationErr.steps = err.steps;
-        if (err.metadata) cancellationErr.metadata = err.metadata;
-        throw cancellationErr;
+    while (true) {
+      try {
+        ackResult = await this.bridgeServer.dispatchPromptCommand(promptText, commandOpts);
+        if (!ackResult || !ackResult.success) {
+          const err: any = new Error(ackResult?.error || `DOM Bridge rejected command ${ackResult?.commandId || ''}`);
+          if (ackResult?.metadata) {
+            err.metadata = ackResult.metadata;
+            if (ackResult.metadata.code) err.code = ackResult.metadata.code;
+            if (ackResult.metadata.rejectionReason) err.rejectionReason = ackResult.metadata.rejectionReason;
+            if (ackResult.metadata.domSnapshot) err.domSnapshot = ackResult.metadata.domSnapshot;
+            if (ackResult.metadata.steps) err.steps = ackResult.metadata.steps;
+            if (ackResult.metadata.diagnostics) err.diagnostics = ackResult.metadata.diagnostics;
+          }
+          throw err;
+        }
+        break;
+      } catch (err: any) {
+        const isTransientButtonDisabled =
+          err?.code === 'BUTTON_DISABLED_TIMEOUT' ||
+          err?.metadata?.code === 'BUTTON_DISABLED_TIMEOUT' ||
+          err?.code === 'NOT_READY' ||
+          err?.metadata?.code === 'NOT_READY' ||
+          err?.rejectionReason === 'button_disabled_timeout' ||
+          err?.metadata?.rejectionReason === 'button_disabled_timeout' ||
+          /BUTTON_DISABLED_TIMEOUT|button_disabled_timeout|button.*disabled|not ready/i.test(err?.message || '');
+
+        if (isTransientButtonDisabled && retryCount < maxRetries) {
+          retryCount++;
+          const warningMsg = `DOM send button temporarily unready, retrying (attempt ${retryCount}/${maxRetries})...`;
+          this.logger.warn('DISPATCHER', warningMsg, {
+            attempt: retryCount,
+            maxRetries,
+            error: err.message,
+            metadata: err.metadata
+          });
+          this.warningNotifier(warningMsg);
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          continue;
+        }
+
+        const isTimeout = err?.message && /timed?\s*out/i.test(err.message);
+        const isAborted = err?.code === 'COMMAND_ABORTED_BY_TIMEOUT' || err?.aborted === true || (err?.message && /aborted/i.test(err.message));
+
+        if (!isTransientButtonDisabled && (isTimeout || isAborted)) {
+          this.logger.warn('DISPATCHER', `Tier 1 submission cancelled due to timeout (${timeoutMs}ms). Cancellation signal registered with BridgeServer.`, {
+            timeoutMs,
+            targetWindow: commandOpts.windowKey,
+            error: err.message
+          });
+          const cancellationErr: any = new Error(`DOM Bridge submission cancellation: command timed out after ${timeoutMs}ms and cancellation signal registered with BridgeServer`);
+          cancellationErr.code = 'COMMAND_ABORTED_BY_TIMEOUT';
+          cancellationErr.isTimeout = true;
+          cancellationErr.isCancelled = true;
+          if (err.domSnapshot) cancellationErr.domSnapshot = err.domSnapshot;
+          if (err.steps) cancellationErr.steps = err.steps;
+          if (err.metadata) cancellationErr.metadata = err.metadata;
+          throw cancellationErr;
+        }
+
+        const isConnectionFailure = !this.bridgeServer.isListening() || this.bridgeServer.getConnectedClients().length === 0;
+        const errorCategory = isConnectionFailure ? 'DOM Bridge connection failure' : 'DOM Bridge execution error';
+        this.logger.error('DISPATCHER', `Tier 1 dispatch failed (${errorCategory}): ${err.message}`, {
+          domSnapshot: err.domSnapshot,
+          steps: err.steps,
+          metadata: err.metadata
+        }, err);
+        const formattedErr: any = new Error(`[${errorCategory}] ${err.message}`);
+        formattedErr.code = err.code || err.metadata?.code || (isTransientButtonDisabled ? 'BUTTON_DISABLED_TIMEOUT' : 'DOM_BRIDGE_EXECUTION_ERROR');
+        if (err.rejectionReason || err.metadata?.rejectionReason) {
+          formattedErr.rejectionReason = err.rejectionReason || err.metadata?.rejectionReason;
+        }
+        if (err.domSnapshot || err.metadata?.domSnapshot) {
+          formattedErr.domSnapshot = err.domSnapshot || err.metadata?.domSnapshot;
+        }
+        if (err.steps || err.metadata?.steps) {
+          formattedErr.steps = err.steps || err.metadata?.steps;
+        }
+        if (err.metadata) {
+          formattedErr.metadata = err.metadata;
+        }
+        if (err.diagnostics || err.metadata?.diagnostics) {
+          formattedErr.diagnostics = err.diagnostics || err.metadata?.diagnostics;
+        }
+        throw formattedErr;
       }
-
-      const isConnectionFailure = !this.bridgeServer.isListening() || this.bridgeServer.getConnectedClients().length === 0;
-      const errorCategory = isConnectionFailure ? 'DOM Bridge connection failure' : 'DOM Bridge execution error';
-      this.logger.error('DISPATCHER', `Tier 1 dispatch failed (${errorCategory}): ${err.message}`, {
-        domSnapshot: err.domSnapshot,
-        steps: err.steps,
-        metadata: err.metadata
-      }, err);
-      const formattedErr: any = new Error(`[${errorCategory}] ${err.message}`);
-      if (err.domSnapshot) formattedErr.domSnapshot = err.domSnapshot;
-      if (err.steps) formattedErr.steps = err.steps;
-      if (err.metadata) formattedErr.metadata = err.metadata;
-      throw formattedErr;
     }
 
     const durationMs = Date.now() - startTime;
 
-    if (!ackResult.success) {
-      const err: any = new Error(ackResult.error || `DOM Bridge rejected command ${ackResult.commandId}`);
-      if (ackResult.metadata) {
-        err.metadata = ackResult.metadata;
-        if (ackResult.metadata.domSnapshot) err.domSnapshot = ackResult.metadata.domSnapshot;
-        if (ackResult.metadata.steps) err.steps = ackResult.metadata.steps;
-      }
-      throw err;
-    }
-
     const resultMetadata: Record<string, any> = {
       ...(ackResult.metadata || {})
     };
+    if (retryCount > 0) {
+      resultMetadata.retries = retryCount;
+    }
     if (handshakeAck) {
       resultMetadata.handshake = handshakeAck;
       resultMetadata.handshakeStatus = handshakeAck.status;
@@ -593,6 +641,20 @@ export class PromptDispatcher {
       status: ackResult.status,
       metadata: resultMetadata
     };
+  }
+
+  /**
+   * Alias for dispatchTier1
+   */
+  public dispatchViaTier1(promptText: string, options?: DispatchOptions): Promise<DispatchResult> {
+    return this.dispatchTier1(promptText, options);
+  }
+
+  /**
+   * Alias for dispatchPrompt
+   */
+  public sendPromptWithFallback(promptText: string, options?: DispatchOptions): Promise<DispatchResult> {
+    return this.dispatchPrompt(promptText, options);
   }
 
   /**
@@ -682,7 +744,14 @@ export class PromptDispatcher {
         } catch (err: any) {
           const msg = `[DOM Bridge Transport Failed] ${err.message || String(err)}. Remediation: Ensure DOM Bridge injection is active in workbench.html or restart the bridge server.`;
           this.logger.error('DISPATCHER', msg, { tier: 'domBridge', error: err.stack || err.message }, err);
-          throw new Error(msg);
+          const strictErr: any = new Error(msg);
+          if (err.code) strictErr.code = err.code;
+          if (err.rejectionReason) strictErr.rejectionReason = err.rejectionReason;
+          if (err.domSnapshot) strictErr.domSnapshot = err.domSnapshot;
+          if (err.steps) strictErr.steps = err.steps;
+          if (err.metadata) strictErr.metadata = err.metadata;
+          if (err.diagnostics) strictErr.diagnostics = err.diagnostics;
+          throw strictErr;
         }
       }
 

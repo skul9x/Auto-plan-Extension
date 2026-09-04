@@ -692,6 +692,13 @@ export function analyzePhaseStallReason(
   // 3. If phase itself is Failed
   if (currentStatus === 'Failed') {
     const errorMsg = (phase as any).error || 'Phase execution failed with error';
+    if (/Verify prompt submission status/i.test(errorMsg)) {
+      return {
+        code: 'AI_RESPONSE_TIMEOUT',
+        description: errorMsg,
+        remediationAction: 'Verify prompt submission status in chat panel.'
+      };
+    }
     if (/timeout|timed\s*out/i.test(errorMsg)) {
       return {
         code: 'AI_RESPONSE_TIMEOUT',

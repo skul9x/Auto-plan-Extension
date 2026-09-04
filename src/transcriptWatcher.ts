@@ -632,7 +632,7 @@ export class TranscriptWatcher extends EventEmitter {
   public async waitForNewConversation(
     sinceTimestamp: number,
     excludeConvIdOrTimeout?: string | number,
-    timeoutMs: number = 3000,
+    timeoutMs: number = 8000,
     pollIntervalMs: number = 300
   ): Promise<string> {
     let excludeConvId: string | undefined;

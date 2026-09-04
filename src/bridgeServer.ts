@@ -8,7 +8,7 @@ import { DebugLogger, debugLogger, LogLevel, LogComponent } from './debugLogger'
 
 export const DEFAULT_PORT_START = 48860;
 export const DEFAULT_PORT_END = 48900;
-export const DEFAULT_COMMAND_TIMEOUT_MS = 5000;
+export const DEFAULT_COMMAND_TIMEOUT_MS = 6000;
 export const DEFAULT_STALE_CLIENT_MS = 120000;
 export const PORT_REGISTRY_FILENAME = 'ag-autoplan-ports.json';
 export const BRIDGE_SERVICE_NAME = 'autoplan-bridge-server';
@@ -526,6 +526,16 @@ export class BridgeServer {
   }
 
   /**
+   * Dispatches a new conversation command to the DOM client and awaits acknowledgment.
+   */
+  public dispatchNewConversationCommand(options: CommandOptions = {}): Promise<CommandAckResult> {
+    return this.dispatchPromptCommand('', {
+      ...options,
+      type: 'openNewConversation'
+    });
+  }
+
+  /**
    * Handles incoming HTTP requests with CORS, authentication, and endpoint routing.
    */
   private handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -563,7 +573,7 @@ export class BridgeServer {
       this.handleGetStatus(reqWindowKey, queryParams, res);
     } else if (req.method === 'POST' && pathname === '/autoplan-log') {
       this.handlePostLog(req, res, reqWindowKey);
-    } else if (req.method === 'POST' && pathname === '/autoplan-ack') {
+    } else if (req.method === 'POST' && (pathname === '/autoplan-ack' || pathname === '/ack')) {
       this.handlePostAck(req, res);
     } else if (req.method === 'POST' && pathname === '/autoplan-command') {
       this.handlePostCommand(req, res);
@@ -798,7 +808,7 @@ export class BridgeServer {
           abortErr.aborted = true;
           if (ack.metadata) abortErr.metadata = ack.metadata;
           deferred.reject(abortErr);
-        } else if (ack.status === 'error') {
+        } else if (ack.status === 'error' || ack.status === 'failed') {
           this.logger.error('SERVER', `Command ${ack.commandId} execution failed in DOM client: ${ack.error || 'unknown error'}`, {
             commandId: ack.commandId,
             status: ack.status,
@@ -808,8 +818,15 @@ export class BridgeServer {
           clearTimeout(deferred.timer);
           this.pendingCommands.delete(ack.commandId);
           const errObj: any = new Error(ack.error || 'DOM Bridge reported command error');
+          errObj.status = ack.status;
           if (ack.metadata) {
             errObj.metadata = ack.metadata;
+            if (ack.metadata.code) {
+              errObj.code = ack.metadata.code;
+            }
+            if (ack.metadata.rejectionReason) {
+              errObj.rejectionReason = ack.metadata.rejectionReason;
+            }
             if (ack.metadata.domSnapshot) {
               errObj.domSnapshot = ack.metadata.domSnapshot;
             }

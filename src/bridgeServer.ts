@@ -66,6 +66,8 @@ export interface BridgeServerStatus {
   serverPort: number;
   activeWindowKey: string | null;
   serverWindowKey?: string;
+  workspacePath?: string;
+  workspaceName?: string;
   isCompatible?: boolean;
   status?: string;
   bindRejected?: boolean;
@@ -93,6 +95,8 @@ export interface PortRegistryEntry {
   port: number;
   pid: number;
   windowKey: string;
+  workspacePath?: string;
+  workspaceName?: string;
   startedAt: number;
   updatedAt: number;
 }
@@ -109,6 +113,8 @@ export interface BridgeServerOptions {
   workbenchDir?: string;
   portsRegistryPath?: string;
   windowKey?: string;
+  workspacePath?: string;
+  workspaceName?: string;
   defaultTimeoutMs?: number;
   staleClientMs?: number;
   watchdogIntervalMs?: number;
@@ -137,6 +143,8 @@ export class BridgeServer {
   private host: string;
   private windowKey: string;
   private activeWindowKey: string | null = null;
+  private workspacePath?: string;
+  private workspaceName?: string;
   private defaultTimeoutMs: number;
   private staleClientMs: number;
   private serverStartedAt: number = 0;
@@ -188,6 +196,8 @@ export class BridgeServer {
     this.host = options.host || '127.0.0.1';
     this.windowKey = options.windowKey || `win_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     this.activeWindowKey = options.windowKey || null;
+    this.workspacePath = options.workspacePath;
+    this.workspaceName = options.workspaceName;
     this.defaultTimeoutMs = options.defaultTimeoutMs || DEFAULT_COMMAND_TIMEOUT_MS;
     this.staleClientMs = options.staleClientMs || DEFAULT_STALE_CLIENT_MS;
     this.watchdogIntervalMs = options.watchdogIntervalMs || 5000;
@@ -198,6 +208,22 @@ export class BridgeServer {
       this.logger.registerBridgeServer(this);
     } catch {
       // Non-fatal
+    }
+  }
+
+  public getWorkspacePath(): string | undefined {
+    return this.workspacePath;
+  }
+
+  public getWorkspaceName(): string | undefined {
+    return this.workspaceName;
+  }
+
+  public setWorkspace(workspacePath?: string, workspaceName?: string): void {
+    this.workspacePath = workspacePath;
+    this.workspaceName = workspaceName;
+    if (this.port) {
+      this.registerPortInRegistry();
     }
   }
 
@@ -411,6 +437,9 @@ export class BridgeServer {
       serverPort: this.port || 0,
       activeWindowKey: this.activeWindowKey || null,
       serverWindowKey: this.windowKey,
+      workspacePath: this.workspacePath,
+      workspaceName: this.workspaceName,
+      status: 'ready',
       pendingCommandsCount: this.queuedCommands.length + this.pendingCommands.size,
       connectedClients: this.getActiveClients().length,
       lastHeartbeatAt: this.lastHeartbeatAt || undefined,
@@ -598,14 +627,66 @@ export class BridgeServer {
         query
       });
 
-      // Probe request: if reqWindowKey conflicts with an already active, non-stale window, return 409
+      // 1. Workspace matching validation
+      // If query.workspaceName is supplied and does NOT match this server's workspaceName, return HTTP 409
+      const queryWsName = typeof query.workspaceName === 'string' ? query.workspaceName.trim() : undefined;
+      if (queryWsName && this.workspaceName && queryWsName !== this.workspaceName) {
+        this.logger.warn('SERVER', `Probe rejected: Workspace mismatch. Server workspace is "${this.workspaceName}", prober requested "${queryWsName}"`);
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          service: BRIDGE_SERVICE_NAME,
+          status: 'workspace-mismatch',
+          serverWindowKey: this.windowKey,
+          activeWindowKey: this.activeWindowKey,
+          workspaceName: this.workspaceName,
+          workspacePath: this.workspacePath,
+          isCompatible: false,
+          bindRejected: true,
+          rejectReason: 'workspace-mismatch'
+        }));
+        return;
+      }
+
+      // 2. Window rebind / conflict check
       if (reqWindowKey && this.activeWindowKey && reqWindowKey !== this.activeWindowKey && reqWindowKey !== this.windowKey) {
         const activeClient = this.clients.get(this.activeWindowKey);
-        const isStale = activeClient
-          ? (Date.now() - activeClient.lastSeenAt > this.staleClientMs)
-          : (Date.now() - this.serverStartedAt > this.staleClientMs);
+        const lastSeen = activeClient?.lastSeenAt;
+        const lastActiveTime = typeof lastSeen === 'number'
+          ? lastSeen
+          : (this.lastHeartbeatAt > 0 ? this.lastHeartbeatAt : this.serverStartedAt);
+        const isStale = (Date.now() - lastActiveTime > 5000);
+        const isForceRebind = query.forceRebind === '1' || query.forceRebind === 'true';
+        const isWorkspaceOwner = Boolean(this.workspaceName && queryWsName && queryWsName === this.workspaceName);
 
-        if (!isStale) {
+        if (isStale || isForceRebind || isWorkspaceOwner) {
+          const staleKey = this.activeWindowKey;
+          this.clients.delete(staleKey);
+          this.activeWindowKey = reqWindowKey;
+          this.clients.set(reqWindowKey, {
+            windowKey: reqWindowKey,
+            lastSeenAt: Date.now(),
+            clientVersion: typeof query.clientVersion === 'string' ? query.clientVersion : undefined,
+            status: 'active'
+          });
+          this.logger.info('SERVER', `Active window key dynamically rebound from stale "${staleKey}" to "${reqWindowKey}"`);
+
+          const cancelledList = Array.from(this.cancelledCommandIds.keys());
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            ...this.getStatus(),
+            status: 'ready',
+            serverWindowKey: this.windowKey,
+            activeWindowKey: this.activeWindowKey,
+            workspaceName: this.workspaceName,
+            workspacePath: this.workspacePath,
+            isCompatible: true,
+            bindRejected: false,
+            pendingCommands: [],
+            cancelledCommandIds: cancelledList,
+            cancelledCommands: cancelledList
+          }));
+          return;
+        } else {
           this.logger.warn('SERVER', `Probe rejected: Port is occupied by active window "${this.activeWindowKey}", prober is "${reqWindowKey}"`);
           res.writeHead(409, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -613,6 +694,8 @@ export class BridgeServer {
             status: 'occupied',
             serverWindowKey: this.windowKey,
             activeWindowKey: this.activeWindowKey,
+            workspaceName: this.workspaceName,
+            workspacePath: this.workspacePath,
             isCompatible: false,
             bindRejected: true,
             rejectReason: 'owner-mismatch'
@@ -642,6 +725,11 @@ export class BridgeServer {
             this.activeWindowKey = reqWindowKey;
             this.logger.info('SERVER', `Active window key switched from stale "${prev}" to "${reqWindowKey}"`);
           }
+        }
+      } else {
+        if (!this.activeWindowKey) {
+          this.activeWindowKey = reqWindowKey;
+          this.logger.info('SERVER', `Active window key set to "${reqWindowKey}" via probe`);
         }
       }
     }
@@ -678,8 +766,11 @@ export class BridgeServer {
 
     const responseData = {
       ...this.getStatus(),
+      status: 'ready',
       serverWindowKey: this.windowKey,
       activeWindowKey: this.activeWindowKey || null,
+      workspaceName: this.workspaceName,
+      workspacePath: this.workspacePath,
       isCompatible: Boolean(isCompatible),
       bindRejected: Boolean(windowMismatch),
       rejectReason: windowMismatch ? 'owner-mismatch' : undefined,
@@ -1007,6 +1098,8 @@ export class BridgeServer {
         port: this.port,
         pid: process.pid,
         windowKey: this.windowKey,
+        workspacePath: this.workspacePath,
+        workspaceName: this.workspaceName,
         startedAt: this.serverStartedAt || Date.now(),
         updatedAt: Date.now()
       };

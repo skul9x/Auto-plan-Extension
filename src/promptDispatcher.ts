@@ -116,6 +116,10 @@ export class PromptDispatcher {
     return this.bridgeServer;
   }
 
+  public setBridgeServer(server: BridgeServer): void {
+    this.bridgeServer = server;
+  }
+
   public getKeyboardManager(): KeyboardManager {
     return this.keyboardManager;
   }
@@ -418,6 +422,13 @@ export class PromptDispatcher {
     const timeoutMs = options?.timeoutMs ?? config.bridgeTimeoutMs ?? 6000;
     let openedViaCommand = false;
 
+    const currentWsName = this.bridgeServer.getWorkspaceName();
+    this.logger.debug('DISPATCHER', `Tier 1 dispatch initiated [workspace: ${currentWsName || 'unbound'}]`, {
+      workspaceName: currentWsName,
+      timeoutMs,
+      promptLength: promptText.length
+    });
+
     // Chat Reveal & New Conversation Hook: Guarantee fresh conversation thread and chat DOM tree
     if (options?.openNewConversation !== false) {
       try {
@@ -576,8 +587,11 @@ export class PromptDispatcher {
         const isTimeout = err?.message && /timed?\s*out/i.test(err.message);
         const isAborted = err?.code === 'COMMAND_ABORTED_BY_TIMEOUT' || err?.aborted === true || (err?.message && /aborted/i.test(err.message));
 
+        const wsName = this.bridgeServer.getWorkspaceName();
+
         if (!isTransientButtonDisabled && (isTimeout || isAborted)) {
-          this.logger.warn('DISPATCHER', `Tier 1 submission cancelled due to timeout (${timeoutMs}ms). Cancellation signal registered with BridgeServer.`, {
+          this.logger.warn('DISPATCHER', `Tier 1 submission cancelled due to timeout (${timeoutMs}ms) [workspace: ${wsName || 'unbound'}]. Cancellation signal registered with BridgeServer.`, {
+            workspaceName: wsName,
             timeoutMs,
             targetWindow: commandOpts.windowKey,
             error: err.message
@@ -586,6 +600,7 @@ export class PromptDispatcher {
           cancellationErr.code = 'COMMAND_ABORTED_BY_TIMEOUT';
           cancellationErr.isTimeout = true;
           cancellationErr.isCancelled = true;
+          cancellationErr.workspaceName = wsName;
           if (err.domSnapshot) cancellationErr.domSnapshot = err.domSnapshot;
           if (err.steps) cancellationErr.steps = err.steps;
           if (err.metadata) cancellationErr.metadata = err.metadata;
@@ -594,13 +609,15 @@ export class PromptDispatcher {
 
         const isConnectionFailure = !this.bridgeServer.isListening() || this.bridgeServer.getConnectedClients().length === 0;
         const errorCategory = isConnectionFailure ? 'DOM Bridge connection failure' : 'DOM Bridge execution error';
-        this.logger.error('DISPATCHER', `Tier 1 dispatch failed (${errorCategory}): ${err.message}`, {
+        this.logger.error('DISPATCHER', `Tier 1 dispatch failed (${errorCategory}) [workspace: ${wsName || 'unbound'}]: ${err.message}`, {
+          workspaceName: wsName,
           domSnapshot: err.domSnapshot,
           steps: err.steps,
           metadata: err.metadata
         }, err);
         const formattedErr: any = new Error(`[${errorCategory}] ${err.message}`);
         formattedErr.code = err.code || err.metadata?.code || (isTransientButtonDisabled ? 'BUTTON_DISABLED_TIMEOUT' : 'DOM_BRIDGE_EXECUTION_ERROR');
+        formattedErr.workspaceName = wsName;
         if (err.rejectionReason || err.metadata?.rejectionReason) {
           formattedErr.rejectionReason = err.rejectionReason || err.metadata?.rejectionReason;
         }
@@ -614,7 +631,9 @@ export class PromptDispatcher {
           formattedErr.metadata = err.metadata;
         }
         if (err.diagnostics || err.metadata?.diagnostics) {
-          formattedErr.diagnostics = err.diagnostics || err.metadata?.diagnostics;
+          formattedErr.diagnostics = { ...err.diagnostics, workspaceName: wsName };
+        } else {
+          formattedErr.diagnostics = { workspaceName: wsName };
         }
         throw formattedErr;
       }
@@ -739,18 +758,22 @@ export class PromptDispatcher {
       if (targetTier === 'domBridge') {
         try {
           const res = await this.dispatchTier1(promptText, options);
-          this.logger.info('DISPATCHER', `Strict Tier 1 (domBridge) succeeded in ${res.durationMs}ms`);
+          const wsName = this.bridgeServer.getWorkspaceName();
+          this.logger.info('DISPATCHER', `Strict Tier 1 (domBridge) succeeded in ${res.durationMs}ms [workspace: ${wsName || 'unbound'}]`);
           return res;
         } catch (err: any) {
+          const wsName = this.bridgeServer.getWorkspaceName();
           const msg = `[DOM Bridge Transport Failed] ${err.message || String(err)}. Remediation: Ensure DOM Bridge injection is active in workbench.html or restart the bridge server.`;
-          this.logger.error('DISPATCHER', msg, { tier: 'domBridge', error: err.stack || err.message }, err);
+          this.logger.error('DISPATCHER', msg, { tier: 'domBridge', workspaceName: wsName, error: err.stack || err.message }, err);
           const strictErr: any = new Error(msg);
+          strictErr.workspaceName = wsName;
           if (err.code) strictErr.code = err.code;
           if (err.rejectionReason) strictErr.rejectionReason = err.rejectionReason;
           if (err.domSnapshot) strictErr.domSnapshot = err.domSnapshot;
           if (err.steps) strictErr.steps = err.steps;
           if (err.metadata) strictErr.metadata = err.metadata;
-          if (err.diagnostics) strictErr.diagnostics = err.diagnostics;
+          if (err.diagnostics) strictErr.diagnostics = { ...err.diagnostics, workspaceName: wsName };
+          else strictErr.diagnostics = { workspaceName: wsName };
           throw strictErr;
         }
       }
@@ -786,20 +809,24 @@ export class PromptDispatcher {
       const t1Start = Date.now();
       try {
         const res = await this.dispatchTier1(promptText, options);
-        this.logger.info('DISPATCHER', `Tier 1 (domBridge) succeeded in ${res.durationMs}ms`);
+        const wsName = this.bridgeServer.getWorkspaceName();
+        this.logger.info('DISPATCHER', `Tier 1 (domBridge) succeeded in ${res.durationMs}ms [workspace: ${wsName || 'unbound'}]`);
         return res;
       } catch (err: any) {
         const durationMs = Date.now() - t1Start;
+        const wsName = this.bridgeServer.getWorkspaceName();
         const isTimeout = err?.isTimeout || err?.isCancelled || (err?.message && /timed?\s*out|cancellation/i.test(err.message));
         if (isTimeout) {
-          this.logger.warn('DISPATCHER', `Tier 1 (domBridge) timed out after ${durationMs}ms; cancellation signal registered with BridgeServer. Falling back to Tier 2 (nativeCommand)...`, {
+          this.logger.warn('DISPATCHER', `Tier 1 (domBridge) timed out after ${durationMs}ms [workspace: ${wsName || 'unbound'}]; cancellation signal registered with BridgeServer. Falling back to Tier 2 (nativeCommand)...`, {
             tier: 'domBridge',
+            workspaceName: wsName,
             durationMs,
             error: err.stack || err.message
           }, err);
         } else {
-          this.logger.warn('DISPATCHER', `Tier 1 (domBridge) failed in ${durationMs}ms: ${err.message}. Falling back to Tier 2 (nativeCommand)...`, {
+          this.logger.warn('DISPATCHER', `Tier 1 (domBridge) failed in ${durationMs}ms [workspace: ${wsName || 'unbound'}]: ${err.message}. Falling back to Tier 2 (nativeCommand)...`, {
             tier: 'domBridge',
+            workspaceName: wsName,
             durationMs,
             error: err.stack || err.message
           }, err);

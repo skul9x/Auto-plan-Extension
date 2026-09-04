@@ -6,7 +6,16 @@ import { getConfig, setPromptText, writeConfigJson } from './config';
 import { orchestrator, OrchestratorProgressInfo } from './orchestrator';
 import { scanPlanFolder, scanPlanFolderAsync, sortPhaseFiles, getPhasesFrom, normalizePath, PhaseFile, auditPlanPhases, auditPlanPhasesAsync } from './planScanner';
 import { getDefaultBrainDir, getTranscriptPath, findLatestConversation, transcriptWatcher } from './transcriptWatcher';
-import { bridgeServer, BRIDGE_PROTOCOL_VERSION } from './bridgeServer';
+import { BridgeServer, bridgeServer as defaultBridgeServer, BRIDGE_PROTOCOL_VERSION } from './bridgeServer';
+
+const activeWorkspaceFolder = vscode.workspace?.workspaceFolders?.[0];
+const workspaceName = activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined;
+const workspacePath = activeWorkspaceFolder ? activeWorkspaceFolder.uri.fsPath : undefined;
+
+export const bridgeServer = new BridgeServer({
+  workspaceName,
+  workspacePath
+});
 import {
   isBridgeInstalled,
   installBridgeScript,
@@ -704,6 +713,11 @@ export async function executePhases(
 
   currentPlanFolder = folderPath;
   runStartTime = Date.now();
+
+  const activeWs = vscode.workspace.workspaceFolders?.[0];
+  const wsName = activeWs ? activeWs.name : undefined;
+  const wsPath = activeWs ? activeWs.uri.fsPath : folderPath;
+  orchestrator.setWorkspace(wsPath, wsName);
 
   const folderName = path.basename(folderPath);
   vscode.window.showInformationMessage(`Auto-Plan: Starting execution of ${phases.length} phases in "${folderName}"...`);
@@ -1449,6 +1463,27 @@ export function activate(context: vscode.ExtensionContext) {
   transcriptWatcher.on('logUpdate', (log: string) => {
     sidebarProvider?.appendTranscriptLog(log);
   });
+
+  // Setup BridgeServer, PromptDispatcher, and Orchestrator workspace binding
+  const activeWsFolder = vscode.workspace.workspaceFolders?.[0];
+  const activeWsName = activeWsFolder ? activeWsFolder.name : undefined;
+  const activeWsPath = activeWsFolder ? activeWsFolder.uri.fsPath : undefined;
+
+  bridgeServer.setWorkspace(activeWsPath, activeWsName);
+  defaultBridgeServer.setWorkspace(activeWsPath, activeWsName);
+  promptDispatcher.setBridgeServer(bridgeServer);
+  orchestrator.setWorkspace(activeWsPath, activeWsName);
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      const updatedFolder = vscode.workspace.workspaceFolders?.[0];
+      const updatedName = updatedFolder ? updatedFolder.name : undefined;
+      const updatedPath = updatedFolder ? updatedFolder.uri.fsPath : undefined;
+      bridgeServer.setWorkspace(updatedPath, updatedName);
+      defaultBridgeServer.setWorkspace(updatedPath, updatedName);
+      orchestrator.setWorkspace(updatedPath, updatedName);
+    })
+  );
 
   // Start BridgeServer during extension activation
   bridgeServer.start().catch((err: any) => {

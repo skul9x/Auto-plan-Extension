@@ -5,6 +5,12 @@ import { EventEmitter } from 'events';
 import { StringDecoder } from 'string_decoder';
 import { DEFAULT_CONFIG } from './config';
 
+export interface ConversationOwnershipCriteria {
+  expectedPromptSnippet?: string;
+  workspacePath?: string;
+  workspaceName?: string;
+}
+
 export interface WatcherOptions {
   brainDir?: string;
   keyword?: string;
@@ -14,7 +20,12 @@ export interface WatcherOptions {
   settleQuietPeriodMs?: number;
   arbitrationTimeoutMs?: number;
   sinceTimestamp?: number;
+  ownershipCriteria?: ConversationOwnershipCriteria;
 }
+
+export type EffectiveWatcherOptions = Required<Omit<WatcherOptions, 'ownershipCriteria'>> & {
+  ownershipCriteria?: ConversationOwnershipCriteria;
+};
 
 export interface CompletionEventData {
   conversationId: string;
@@ -126,6 +137,101 @@ export function getTranscriptPath(conversationDir: string): string | null {
 }
 
 /**
+ * Asynchronously verifies if candidate conversation belongs to current phase/workspace
+ * by reading the first 8KB of the transcript and checking for prompt/workspace fingerprint.
+ */
+export async function verifyConversationOwnershipAsync(
+  transcriptPath: string,
+  criteria: ConversationOwnershipCriteria
+): Promise<boolean> {
+  if (!criteria || (!criteria.expectedPromptSnippet && !criteria.workspacePath && !criteria.workspaceName)) {
+    return true;
+  }
+
+  let fileHandle: fs.promises.FileHandle | null = null;
+  try {
+    fileHandle = await fs.promises.open(transcriptPath, 'r');
+    const stat = await fileHandle.stat();
+    if (stat.size === 0) {
+      return false;
+    }
+
+    const maxBytes = Math.min(8192, stat.size);
+    const buffer = Buffer.alloc(maxBytes);
+    const { bytesRead } = await fileHandle.read(buffer, 0, maxBytes, 0);
+    if (bytesRead === 0) {
+      return false;
+    }
+
+    const chunkStr = buffer.toString('utf8', 0, bytesRead);
+
+    // Extract step 0 content
+    let promptContent = '';
+    const firstNewlineIdx = chunkStr.indexOf('\n');
+    const firstLine = firstNewlineIdx !== -1 ? chunkStr.substring(0, firstNewlineIdx) : chunkStr;
+
+    try {
+      const parsed = JSON.parse(firstLine);
+      if (parsed && typeof parsed === 'object') {
+        promptContent = parsed.content || parsed.text || parsed.response || '';
+        if (typeof promptContent !== 'string') {
+          promptContent = JSON.stringify(promptContent);
+        }
+      }
+    } catch {
+      const contentMatch = /"content"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(chunkStr);
+      if (contentMatch && contentMatch[1]) {
+        try {
+          promptContent = JSON.parse(`"${contentMatch[1]}"`);
+        } catch {
+          promptContent = contentMatch[1];
+        }
+      } else {
+        promptContent = chunkStr;
+      }
+    }
+
+    const fullSearchText = promptContent + '\n' + chunkStr;
+
+    if (criteria.expectedPromptSnippet) {
+      if (
+        !promptContent.includes(criteria.expectedPromptSnippet) &&
+        !chunkStr.includes(criteria.expectedPromptSnippet)
+      ) {
+        return false;
+      }
+    }
+
+    if (criteria.workspacePath) {
+      const normWp = criteria.workspacePath.replace(/\\/g, '/');
+      const normSearch = fullSearchText.replace(/\\/g, '/');
+      if (!normSearch.includes(normWp)) {
+        const base = path.basename(criteria.workspacePath);
+        if (!normSearch.includes(base)) {
+          return false;
+        }
+      }
+    }
+
+    if (criteria.workspaceName) {
+      if (!fullSearchText.includes(criteria.workspaceName)) {
+        return false;
+      }
+    }
+
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (fileHandle) {
+      try {
+        await fileHandle.close();
+      } catch {}
+    }
+  }
+}
+
+/**
  * Asynchronously retrieves and evaluates all candidate conversations in brainDir matching sinceTimestamp,
  * sorted by:
  * 1. Most recent transcript modification time (transcriptMtime)
@@ -135,7 +241,9 @@ export function getTranscriptPath(conversationDir: string): string | null {
 export async function getCandidateConversationsAsync(
   brainDir: string,
   sinceTimestamp?: number,
-  excludeConvId?: string
+  excludeConvId?: string,
+  criteria?: ConversationOwnershipCriteria,
+  onCandidateSkipped?: (convId: string, criteria: ConversationOwnershipCriteria) => void
 ): Promise<CandidateConversation[]> {
   try {
     const exists = await fs.promises
@@ -187,6 +295,19 @@ export async function getCandidateConversationsAsync(
         continue;
       }
 
+      if (criteria && (criteria.expectedPromptSnippet || criteria.workspacePath || criteria.workspaceName)) {
+        if (!transcriptPath) {
+          continue;
+        }
+        const isOwner = await verifyConversationOwnershipAsync(transcriptPath, criteria);
+        if (!isOwner) {
+          if (transcriptSize > 0 && onCandidateSkipped) {
+            onCandidateSkipped(entry.name, criteria);
+          }
+          continue;
+        }
+      }
+
       candidates.push({
         convId: entry.name,
         fullPath,
@@ -225,10 +346,11 @@ export async function getCandidateConversationsAsync(
 export async function findLatestConversationAsync(
   brainDir: string,
   sinceTimestamp?: number,
-  excludeConvId?: string
+  excludeConvId?: string,
+  criteria?: ConversationOwnershipCriteria
 ): Promise<string | null> {
   try {
-    const candidates = await getCandidateConversationsAsync(brainDir, sinceTimestamp, excludeConvId);
+    const candidates = await getCandidateConversationsAsync(brainDir, sinceTimestamp, excludeConvId, criteria);
     if (candidates.length > 0) {
       return candidates[0].convId;
     }
@@ -470,7 +592,7 @@ export function isValidCompletionStep(
  * Real-time Transcript Watcher Engine with Multi-Conversation Discovery & Dynamic Stream Arbitration
  */
 export class TranscriptWatcher extends EventEmitter {
-  private options: Required<WatcherOptions>;
+  private options: EffectiveWatcherOptions;
   private isWatching: boolean = false;
   public activePollIntervalMs: number = 300;
   private sinceTimestamp: number = 0;
@@ -518,10 +640,24 @@ export class TranscriptWatcher extends EventEmitter {
       relaxedPollIntervalMs: options?.relaxedPollIntervalMs || 1200,
       settleQuietPeriodMs: options?.settleQuietPeriodMs ?? 1500,
       arbitrationTimeoutMs: options?.arbitrationTimeoutMs ?? 15000,
-      sinceTimestamp: options?.sinceTimestamp ?? 0
+      sinceTimestamp: options?.sinceTimestamp ?? 0,
+      ownershipCriteria: options?.ownershipCriteria
     };
     this.sinceTimestamp = this.options.sinceTimestamp;
     this.activePollIntervalMs = this.options.pollIntervalMs;
+  }
+
+  public setOptions(options: Partial<WatcherOptions>): void {
+    this.options = {
+      ...this.options,
+      ...options
+    };
+    if (options.sinceTimestamp !== undefined) {
+      this.sinceTimestamp = options.sinceTimestamp;
+    }
+    if (options.pollIntervalMs !== undefined) {
+      this.activePollIntervalMs = options.pollIntervalMs;
+    }
   }
 
   public getActivePollIntervalMs(): number {
@@ -613,6 +749,7 @@ export class TranscriptWatcher extends EventEmitter {
     this.removeAllListeners('onCompletionDetected');
     this.removeAllListeners('conversationDetected');
     this.removeAllListeners('conversationRebound');
+    this.removeAllListeners('candidateSkipped');
     this.removeAllListeners('settleStarted');
     this.removeAllListeners('settleCancelled');
     this.removeAllListeners('fileTruncated');
@@ -621,7 +758,7 @@ export class TranscriptWatcher extends EventEmitter {
     this.removeAllListeners('logUpdate');
   }
 
-  public getOptions(): Required<WatcherOptions> {
+  public getOptions(): EffectiveWatcherOptions {
     return { ...this.options };
   }
 
@@ -633,7 +770,8 @@ export class TranscriptWatcher extends EventEmitter {
     sinceTimestamp: number,
     excludeConvIdOrTimeout?: string | number,
     timeoutMs: number = 8000,
-    pollIntervalMs: number = 300
+    pollIntervalMs: number = 300,
+    criteria?: ConversationOwnershipCriteria
   ): Promise<string> {
     let excludeConvId: string | undefined;
     let actualTimeoutMs = timeoutMs;
@@ -647,6 +785,9 @@ export class TranscriptWatcher extends EventEmitter {
     } else if (typeof excludeConvIdOrTimeout === 'string') {
       excludeConvId = excludeConvIdOrTimeout;
     }
+
+    const effectiveCriteria = criteria || this.options.ownershipCriteria;
+    const loggedSkippedCandidates = new Set<string>();
 
     this.stop();
     this.isWatching = true;
@@ -673,7 +814,14 @@ export class TranscriptWatcher extends EventEmitter {
           const candidates = await getCandidateConversationsAsync(
             this.options.brainDir,
             sinceTimestamp,
-            excludeConvId
+            excludeConvId,
+            effectiveCriteria,
+            (skippedId, crit) => {
+              if (!loggedSkippedCandidates.has(skippedId)) {
+                loggedSkippedCandidates.add(skippedId);
+                this.emit('candidateSkipped', { convId: skippedId, criteria: crit });
+              }
+            }
           );
 
           if (candidates.length > 0) {
@@ -703,7 +851,7 @@ export class TranscriptWatcher extends EventEmitter {
               try {
                 this.brainFsWatcher.close();
               } catch {}
-              this.brainFsWatcher = null;
+                this.brainFsWatcher = null;
             }
             this.convReject = null;
             reject(
@@ -1000,7 +1148,8 @@ export class TranscriptWatcher extends EventEmitter {
       const candidates = await getCandidateConversationsAsync(
         brainDir,
         this.sinceTimestamp > 0 ? this.sinceTimestamp : undefined,
-        this.activeConvId || undefined
+        this.activeConvId || undefined,
+        this.options.ownershipCriteria
       );
 
       // Look for candidates that strictly satisfy:
@@ -1132,7 +1281,12 @@ export class TranscriptWatcher extends EventEmitter {
     initialTranscriptLength?: number
   ): Promise<CompletionResult> {
     const effectiveSince = sinceTimestamp !== undefined && sinceTimestamp > 0 ? sinceTimestamp : this.sinceTimestamp;
-    const candidates = await getCandidateConversationsAsync(this.options.brainDir, effectiveSince, excludeConvId);
+    const candidates = await getCandidateConversationsAsync(
+      this.options.brainDir,
+      effectiveSince,
+      excludeConvId,
+      this.options.ownershipCriteria
+    );
     let convId: string | null = null;
     let transcriptPath: string | null = null;
 
@@ -1140,7 +1294,12 @@ export class TranscriptWatcher extends EventEmitter {
       convId = candidates[0].convId;
       transcriptPath = candidates[0].transcriptPath || getTranscriptPath(candidates[0].fullPath);
     } else {
-      convId = await findLatestConversationAsync(this.options.brainDir, undefined, excludeConvId);
+      convId = await findLatestConversationAsync(
+        this.options.brainDir,
+        undefined,
+        excludeConvId,
+        this.options.ownershipCriteria
+      );
       if (convId) {
         transcriptPath = getTranscriptPath(path.join(this.options.brainDir, convId));
       }

@@ -2253,6 +2253,89 @@
   }
 
   /**
+   * Parses workspace folder name from title string (document.title or .window-title text)
+   */
+  function parseWorkspaceFromTitleString(str) {
+    if (!str || typeof str !== 'string') return '';
+    const cleanStr = str.replace(/^●\s*/, '').trim();
+    if (!cleanStr) return '';
+
+    // Split on common dashes
+    const parts = cleanStr.split(/\s+[-—–]\s+/).map(p => p.trim()).filter(Boolean);
+    if (parts.length === 0) return '';
+    if (parts.length === 1) return parts[0];
+
+    // Filter out common app names from the end
+    const appNames = [
+      'visual studio code',
+      'cursor',
+      'vscodium',
+      'antigravity',
+      'code',
+      'extension development host'
+    ];
+
+    while (parts.length > 1) {
+      const last = parts[parts.length - 1].toLowerCase().replace(/[\[\]]/g, '').trim();
+      if (appNames.some(app => last === app || last.includes('visual studio code') || last.includes('antigravity'))) {
+        parts.pop();
+      } else {
+        break;
+      }
+    }
+
+    if (parts.length === 1) {
+      return parts[0].replace(/\[.*?\]/g, '').trim();
+    }
+
+    // If multiple parts remain (e.g. ["app.ts", "TramsacEV"]):
+    const candidate = parts[parts.length - 1].replace(/\[.*?\]/g, '').trim();
+    return candidate || parts[0];
+  }
+
+  /**
+   * Detects workspace folder name from doc.title or DOM element .window-title
+   */
+  function detectWorkspaceName(doc) {
+    if (!doc) {
+      if (typeof document !== 'undefined') {
+        doc = document;
+      } else {
+        return '';
+      }
+    }
+
+    // 1. Try DOM element .window-title or [class*="window-title"]
+    try {
+      if (typeof doc.querySelector === 'function') {
+        const titleEl = doc.querySelector('.window-title') || doc.querySelector('[class*="window-title"]');
+        if (titleEl && titleEl.textContent) {
+          const raw = titleEl.textContent.trim();
+          if (raw) {
+            const parsed = parseWorkspaceFromTitleString(raw);
+            if (parsed) return parsed;
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 2. Try doc.title
+    try {
+      const title = doc.title;
+      if (typeof title === 'string' && title.trim()) {
+        const parsed = parseWorkspaceFromTitleString(title.trim());
+        if (parsed) return parsed;
+      }
+    } catch (_) {}
+
+    return '';
+  }
+
+  function getWorkspaceIdentifier(doc) {
+    return detectWorkspaceName(doc);
+  }
+
+  /**
    * DOM Bridge Client Coordinator
    * Connects to local Bridge Server, polls for commands, executes actions, streams telemetry, and returns ACKs.
    */
@@ -2262,6 +2345,7 @@
       this.portEnd = options.portEnd || DEFAULT_PORT_END;
       this.serverPort = options.serverPort || null;
       this.windowKey = options.windowKey || (typeof window !== 'undefined' && window.__AUTOPLAN_WINDOW_KEY__) || `dom_win_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      this.workspaceName = options.workspaceName || null;
       this.pollIntervalMs = options.pollIntervalMs || DEFAULT_POLL_INTERVAL_MS;
       this.heartbeatIntervalMs = options.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS;
       this.fetchFn = options.fetch || (typeof fetch !== 'undefined' ? fetch.bind(global) : null);
@@ -2293,6 +2377,18 @@
         item.details = { ...(item.details || {}), windowKey: this.windowKey };
         this.logQueue.push(item);
       }
+    }
+
+    detectWorkspaceName(doc) {
+      if (this.workspaceName) {
+        return this.workspaceName;
+      }
+      const targetDoc = doc || this.customDocument || (typeof document !== 'undefined' ? document : null);
+      return detectWorkspaceName(targetDoc);
+    }
+
+    getWorkspaceIdentifier(doc) {
+      return this.detectWorkspaceName(doc);
     }
 
     /**
@@ -2432,12 +2528,14 @@
       const doc = this.customDocument || (typeof document !== 'undefined' ? document : null);
       const windowUrl = (win && win.location && win.location.href) ? win.location.href : (typeof location !== 'undefined' ? location.href : 'electron://workbench.html');
       const docTitle = doc?.title || (typeof document !== 'undefined' ? document.title : 'Antigravity Workbench');
+      const detectedWs = this.detectWorkspaceName(doc);
 
       await this.sendClientLog('INFO', `Initializing DOM Bridge Client v${this.clientVersion}`, {
         clientVersion: this.clientVersion,
         windowKey: this.windowKey,
         url: windowUrl,
-        documentTitle: docTitle
+        documentTitle: docTitle,
+        workspaceName: detectedWs || undefined
       });
 
       if (this.serverPort) {
@@ -2470,7 +2568,10 @@
         try {
           const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
           const timeoutId = controller ? setTimeout(() => controller.abort(), 200) : null;
-          const url = `http://127.0.0.1:${port}/autoplan-status?probe=1&windowKey=${encodeURIComponent(this.windowKey)}`;
+          let url = `http://127.0.0.1:${port}/autoplan-status?probe=1&windowKey=${encodeURIComponent(this.windowKey)}`;
+          if (detectedWs) {
+            url += `&workspaceName=${encodeURIComponent(detectedWs)}&forceRebind=1`;
+          }
 
           const res = await this.fetchFn(url, {
             method: 'GET',
@@ -2487,6 +2588,15 @@
             } catch (_) {}
 
             if (data && data.service === 'autoplan-bridge-server') {
+              if (res.status === 409 && data.rejectReason === 'workspace-mismatch') {
+                await this.sendClientLog('INFO', `Skipping port ${port}: workspace mismatch (server: "${data.workspaceName}", client: "${detectedWs}")`, {
+                  port,
+                  serverWorkspace: data.workspaceName,
+                  clientWorkspace: detectedWs
+                });
+                continue;
+              }
+
               const isOccupiedByOther = Boolean(
                 data.status === 'occupied' ||
                 data.isCompatible === false ||
@@ -2504,6 +2614,16 @@
                 continue;
               }
 
+              // Validate that data.workspaceName matches the client's detected workspace name before confirming port ownership
+              if (detectedWs && data.workspaceName && data.workspaceName !== detectedWs) {
+                await this.sendClientLog('INFO', `Skipping port ${port}: server workspace "${data.workspaceName}" does not match detected workspace "${detectedWs}"`, {
+                  port,
+                  serverWorkspace: data.workspaceName,
+                  clientWorkspace: detectedWs
+                });
+                continue;
+              }
+
               // Server confirms ownership: no active window key, or active window key matches this.windowKey
               const confirmsOwnership = Boolean(
                 !data.activeWindowKey ||
@@ -2517,9 +2637,11 @@
                   port: this.serverPort,
                   windowKey: this.windowKey,
                   activeWindowKey: data.activeWindowKey,
-                  serverWindowKey: data.serverWindowKey
+                  serverWindowKey: data.serverWindowKey,
+                  workspaceName: data.workspaceName
                 });
                 await this.flushStartupLogQueue();
+                await this.sendHeartbeatPing();
                 return port;
               }
             }
@@ -2892,6 +3014,8 @@
     handleOpenNewConversation,
     startAutoApprovalObserver,
     createWorkerTimer,
+    detectWorkspaceName,
+    getWorkspaceIdentifier,
     DomBridgeClient
   };
 

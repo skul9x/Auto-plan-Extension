@@ -16,10 +16,11 @@ import {
   transcriptWatcher as defaultTranscriptWatcher,
   CompletionResult,
   getTranscriptPath,
-  NewConversationTimeoutError
+  NewConversationTimeoutError,
+  ConversationOwnershipCriteria
 } from './transcriptWatcher';
 
-export { NewConversationTimeoutError };
+export { NewConversationTimeoutError, ConversationOwnershipCriteria };
 import {
   PhaseFile,
   scanPlanFolder,
@@ -106,6 +107,8 @@ export interface OrchestratorOptions {
   stallTimeoutMs?: number;
   stallWatchdogThresholdMs?: number;
   actionableErrorNotifier?: ActionableErrorNotifier;
+  workspaceName?: string;
+  workspacePath?: string;
   onStateChange?: (info: OrchestratorProgressInfo) => void;
   onIterationComplete?: (iteration: number, total: number, result: CompletionResult) => void;
   onPhaseStart?: (phase: PhaseItem, index: number, total: number) => void;
@@ -132,6 +135,8 @@ export class Orchestrator extends EventEmitter {
   private stallWatchdogThresholdMs: number = 120000;
   private lastConversationId: string | undefined = undefined;
   private lastPreflightResult: DispatchReadinessResult | null = null;
+  private workspaceName?: string;
+  private workspacePath?: string;
 
   private configProvider: () => AutoPlanConfig;
   private keyboardManager: KeyboardManager;
@@ -149,6 +154,8 @@ export class Orchestrator extends EventEmitter {
     this.debugLogger = options?.debugLogger ?? defaultDebugLogger;
     this.stallWatchdogThresholdMs =
       options?.stallTimeoutMs ?? options?.stallWatchdogThresholdMs ?? 120000;
+    this.workspaceName = options?.workspaceName;
+    this.workspacePath = options?.workspacePath;
 
     this.promptDispatcher =
       options?.promptDispatcher ??
@@ -233,6 +240,19 @@ export class Orchestrator extends EventEmitter {
 
   public getLastPreflightResult(): DispatchReadinessResult | null {
     return this.lastPreflightResult;
+  }
+
+  public setWorkspace(workspacePath?: string, workspaceName?: string): void {
+    this.workspacePath = workspacePath;
+    this.workspaceName = workspaceName;
+  }
+
+  public getWorkspaceName(): string | undefined {
+    return this.workspaceName;
+  }
+
+  public getWorkspacePath(): string | undefined {
+    return this.workspacePath;
   }
 
   public get config(): AutoPlanConfig {
@@ -743,7 +763,8 @@ export class Orchestrator extends EventEmitter {
     timeoutMs: number = 8000,
     pollIntervalMs?: number,
     expectNew: boolean = true,
-    diagnosticContext?: { phaseIndex?: number; fileName?: string }
+    diagnosticContext?: { phaseIndex?: number; fileName?: string },
+    ownershipCriteria?: ConversationOwnershipCriteria
   ): Promise<string> {
     const actualTimeoutMs = timeoutMs ?? 8000;
     const heartbeatTimers: NodeJS.Timeout[] = [];
@@ -753,6 +774,20 @@ export class Orchestrator extends EventEmitter {
       }
       heartbeatTimers.length = 0;
     };
+
+    const onCandidateSkipped = (data: { convId: string; criteria?: ConversationOwnershipCriteria }) => {
+      const fileName = data.criteria?.expectedPromptSnippet || diagnosticContext?.fileName || 'phase';
+      this.debugLogger.warn(
+        'ORCHESTRATOR',
+        `Skipping foreign conversation ${data.convId} (failed ownership verification for ${fileName})`,
+        {
+          convId: data.convId,
+          fileName,
+          criteria: data.criteria
+        }
+      );
+    };
+    this.transcriptWatcher.on('candidateSkipped', onCandidateSkipped);
 
     if (actualTimeoutMs > 3000) {
       const t3 = setTimeout(() => {
@@ -816,7 +851,8 @@ export class Orchestrator extends EventEmitter {
         phaseStartTime,
         lastConvId,
         actualTimeoutMs,
-        pollIntervalMs
+        pollIntervalMs,
+        ownershipCriteria
       );
     } catch (err: any) {
       if (!expectNew) {
@@ -852,6 +888,7 @@ export class Orchestrator extends EventEmitter {
         }
       );
     } finally {
+      this.transcriptWatcher.removeListener('candidateSkipped', onCandidateSkipped);
       clearHeartbeats();
     }
   }
@@ -1107,13 +1144,24 @@ export class Orchestrator extends EventEmitter {
 
         try {
           try {
+            const activeWorkspaceFolder = vscode?.workspace?.workspaceFolders?.[0];
+            const activeWsName = this.workspaceName || (activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined);
+            const activeWsPath = this.workspacePath || (activeWorkspaceFolder ? activeWorkspaceFolder.uri?.fsPath : undefined) || this.currentPlanFolder || undefined;
+            const ownershipCriteria: ConversationOwnershipCriteria = {
+              expectedPromptSnippet: phase.fileName,
+              workspacePath: activeWsPath,
+              workspaceName: activeWsName
+            };
+            this.transcriptWatcher.setOptions({ ownershipCriteria });
+
             convId = await this.waitForNewConversation(
               phaseStartTime,
               this.lastConversationId,
               convTimeoutMs,
               this.transcriptWatcher.getOptions().pollIntervalMs,
               dispatchOptions.openNewConversation !== false,
-              { phaseIndex: i, fileName: phase.fileName }
+              { phaseIndex: i, fileName: phase.fileName },
+              ownershipCriteria
             );
           } catch (err: any) {
             if (this.isSkippingCurrentPhase) {
@@ -1497,12 +1545,23 @@ export class Orchestrator extends EventEmitter {
         try {
           try {
             const convTimeoutMs = config.newConversationTimeoutMs || 8000;
+            const activeWorkspaceFolder = vscode?.workspace?.workspaceFolders?.[0];
+            const activeWsName = this.workspaceName || (activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined);
+            const activeWsPath = this.workspacePath || (activeWorkspaceFolder ? activeWorkspaceFolder.uri?.fsPath : undefined) || this.currentPlanFolder || undefined;
+            const ownershipCriteria: ConversationOwnershipCriteria = {
+              workspacePath: activeWsPath,
+              workspaceName: activeWsName
+            };
+            this.transcriptWatcher.setOptions({ ownershipCriteria });
+
             convId = await this.waitForNewConversation(
               timestampBeforeSend,
               this.lastConversationId,
               convTimeoutMs,
               100,
-              dispatchOptions.openNewConversation !== false
+              dispatchOptions.openNewConversation !== false,
+              { phaseIndex: i },
+              ownershipCriteria
             );
           } catch (err: any) {
             if (this.isAborted) break;

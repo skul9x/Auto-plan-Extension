@@ -630,7 +630,10 @@ export class BridgeServer {
       // 1. Workspace matching validation
       // If query.workspaceName is supplied and does NOT match this server's workspaceName, return HTTP 409
       const queryWsName = typeof query.workspaceName === 'string' ? query.workspaceName.trim() : undefined;
-      if (queryWsName && this.workspaceName && queryWsName !== this.workspaceName) {
+      const isWsMatch = queryWsName && this.workspaceName
+        ? (queryWsName === this.workspaceName || queryWsName.toLowerCase() === this.workspaceName.toLowerCase())
+        : true;
+      if (queryWsName && this.workspaceName && !isWsMatch) {
         this.logger.warn('SERVER', `Probe rejected: Workspace mismatch. Server workspace is "${this.workspaceName}", prober requested "${queryWsName}"`);
         res.writeHead(409, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({

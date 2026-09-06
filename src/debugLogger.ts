@@ -507,7 +507,7 @@ export class DebugLogger {
       allowTierFallback: true,
       strictMode: false,
       bridgeTimeoutMs: 5000,
-      timeoutPerLoopMinutes: 30,
+      timeoutPerLoopMinutes: 15,
       enableVerboseBridgeLogs: false,
       maxLogEntries: 500,
       autoOpenBridgeLogOnError: false
@@ -519,7 +519,7 @@ export class DebugLogger {
         allowTierFallback: cfg.allowTierFallback ?? true,
         strictMode: cfg.strictMode ?? false,
         bridgeTimeoutMs: cfg.bridgeTimeoutMs ?? 5000,
-        timeoutPerLoopMinutes: cfg.timeoutPerLoopMinutes ?? 30,
+        timeoutPerLoopMinutes: cfg.timeoutPerLoopMinutes ?? 15,
         enableVerboseBridgeLogs: cfg.enableVerboseBridgeLogs ?? false,
         maxLogEntries: cfg.maxLogEntries ?? 500,
         autoOpenBridgeLogOnError: cfg.autoOpenBridgeLogOnError ?? false

@@ -185,7 +185,7 @@ async function runPhase05ComprehensiveE2ETests() {
 
   assert.strictEqual(props['autoplan.completionKeyword'].default, 'Done skul9x.');
   assert.strictEqual(props['autoplan.delayBetweenLoopsMs'].default, 2000);
-  assert.strictEqual(props['autoplan.timeoutPerLoopMinutes'].default, 30);
+  assert.strictEqual(props['autoplan.timeoutPerLoopMinutes'].default, 15);
   assert.strictEqual(props['autoplan.focusDelayMs'].default, 800);
   assert.ok(props['autoplan.defaultPromptTemplate'].default.includes('{xxx}'));
 

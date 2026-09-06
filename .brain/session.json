@@ -1,65 +1,44 @@
 {
-  "updated_at": "2026-09-06T16:35:00+07:00",
+  "updated_at": "2026-09-06T23:49:00+07:00",
   "working_on": {
-    "feature": "Tiered DOM Bridge Workspace Detection",
-    "task": "Completed Tier 1 (DOM Explorer), Tier 2 (Position-Agnostic Title Parser), and Tier 3 (Safe Fallback) End-to-End Integration",
+    "feature": "Antigravity IDE Window Title & Workspace Resolution Fix",
+    "task": "Fixed workspace mismatch issue in DOM Bridge client when running inside Antigravity IDE on Linux, implemented triple-tier title/DOM parsing fallback, and created 16-case regression test suite",
     "status": "completed",
     "files": [
       "media/autoplan-dom-bridge.js",
-      "src/test/phase01_tier1_explorer_workspace_detection.test.ts",
-      "src/test/phase02_tier2_title_parser_resilience.test.ts",
-      "src/test/phase03_tiered_workspace_detection_e2e.test.ts",
-      "plans/260906-1620-tiered-dom-bridge-workspace-detection/plan.md",
-      "plans/260906-1620-tiered-dom-bridge-workspace-detection/phase-01-tier1-dom-explorer-detection.md",
-      "plans/260906-1620-tiered-dom-bridge-workspace-detection/phase-02-tier2-title-parser-resilience.md",
-      "plans/260906-1620-tiered-dom-bridge-workspace-detection/phase-03-tiered-detection-e2e-integration.md"
+      "src/bridgeServer.ts",
+      "src/test/phase04_antigravity_workspace_detection.test.ts",
+      "package.json",
+      "CHANGELOG.md"
     ],
     "blockers": [],
-    "notes": "All 3 phases completed with 100% test pass rate across unit and full live BridgeServer e2e integration tests. Real DOM fixture (body2.txt) verified."
+    "notes": "DOM Bridge script updated, tested (16/16 tests passing), packaged into VSIX, and live injected script synced to Antigravity IDE workbench."
   },
   "pending_tasks": [],
   "recent_changes": [
     {
-      "timestamp": "2026-09-06T16:33:00+07:00",
-      "type": "feature",
-      "description": "Completed Phase 03: Integrated 3-Tier detection cascade (Tier 1 Explorer DOM -> Tier 2 Title -> Tier 3 Safe Fallback) into detectWorkspaceName and verified live BridgeServer discovery and port isolation without 409 mismatch.",
+      "timestamp": "2026-09-06T23:48:00+07:00",
+      "type": "bugfix",
+      "description": "Fixed parseWorkspaceFromTitleString in media/autoplan-dom-bridge.js to extract workspace correctly from Antigravity IDE title layout [Workspace] - [Antigravity IDE] - [File], and added DOM fallbacks to Explorer Section and Agent header.",
       "files": [
         "media/autoplan-dom-bridge.js",
-        "src/test/phase03_tiered_workspace_detection_e2e.test.ts",
-        "plans/260906-1620-tiered-dom-bridge-workspace-detection/phase-03-tiered-detection-e2e-integration.md"
-      ]
-    },
-    {
-      "timestamp": "2026-09-06T16:26:00+07:00",
-      "type": "feature",
-      "description": "Completed Phase 02: Refactored parseWorkspaceFromTitleString in media/autoplan-dom-bridge.js to be position-agnostic, supporting Antigravity IDE [Workspace] - [App] - [File] layout, stripping active tabs (Auto-Plan Settings), and normalizing (Workspace) suffixes.",
-      "files": [
-        "media/autoplan-dom-bridge.js",
-        "src/test/phase02_tier2_title_parser_resilience.test.ts",
-        "plans/260906-1620-tiered-dom-bridge-workspace-detection/phase-02-tier2-title-parser-resilience.md"
-      ]
-    },
-    {
-      "timestamp": "2026-09-06T16:23:00+07:00",
-      "type": "feature",
-      "description": "Completed Phase 01: Added extractWorkspaceFromExplorerDOM and getActiveEditorOrTabNames to media/autoplan-dom-bridge.js for direct DOM extraction from Explorer section headers.",
-      "files": [
-        "media/autoplan-dom-bridge.js",
-        "src/test/phase01_tier1_explorer_workspace_detection.test.ts",
-        "plans/260906-1620-tiered-dom-bridge-workspace-detection/phase-01-tier1-dom-explorer-detection.md"
+        "src/bridgeServer.ts",
+        "src/test/phase04_antigravity_workspace_detection.test.ts",
+        "package.json",
+        "CHANGELOG.md"
       ]
     }
   ],
   "errors_encountered": [
     {
-      "error": "HTTP 409 (workspace-mismatch) returned during BridgeServer probe on port 48860 when window title was 'Auto-plan-Extension-main - Antigravity IDE - Auto-Plan Settings' or active file name.",
-      "solution": "Implemented 3-Tier detection cascade: Tier 1 directly reads aria-label='Explorer Section: <Workspace>' from DOM; Tier 2 filters out app names and active tab/file names position-agnostically; Tier 3 safely defaults to empty string without sending invalid workspace names.",
+      "error": "Probe rejected: Workspace mismatch. Server workspace is 'EV-Plus-main', prober requested 'Auto-Plan Settings' or 'phase-01-focus-mode-20kw.md'",
+      "solution": "Rewrote parseWorkspaceFromTitleString to locate appName ('Antigravity IDE' / 'Visual Studio Code') index and extract preceding workspace folder part, added non-workspace tab filter and DOM fallback.",
       "resolved": true
     }
   ],
   "decisions_made": [
-    "Prioritize Tier 1 DOM Explorer extraction over title parsing for highest confidence",
-    "Make title parser position-agnostic to support both Antigravity IDE and standard VS Code window title patterns",
-    "Filter out active tabs and known system screens (like Auto-Plan Settings) from title parser candidates"
+    "In Antigravity IDE and VS Code, the workspace name is always the segment immediately preceding the AppName segment in the window title.",
+    "Support Native Titlebar mode where .window-title is absent in DOM by falling back to document.title and DOM Explorer/Agent headers.",
+    "Allow case-insensitive matching for workspace probe validation in BridgeServer."
   ]
 }

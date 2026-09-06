@@ -2,6 +2,19 @@
 
 All notable changes to the **Antigravity Auto-Plan Runner** extension will be documented in this file.
 
+## [1.6.1] - 2026-09-06
+
+### ⚡ Fixed & Enhanced
+- **Antigravity IDE Workspace Resolution Fix**:
+  - Fixed `parseWorkspaceFromTitleString` in `media/autoplan-dom-bridge.js` to correctly parse window titles matching Antigravity IDE's layout structure: `[Workspace] - [Antigravity IDE] - [File]`.
+  - Added support for Native Titlebar environments on Linux where `.window-title` DOM elements are not present, falling back gracefully to `document.title`.
+  - Added 3rd tier DOM discovery fallback in `detectWorkspaceName`: resolves workspace folder name directly from the **Explorer Section Header** (`aria-label="Explorer Section: ..."`) or the **Agent Sidepanel Header** (`#conversation .text-lg.font-medium`).
+  - Added non-workspace tab filter (`Auto-Plan Settings`, `Settings`, `Welcome`) to prevent false-positive `Workspace mismatch` probe rejections.
+  - Updated `BridgeServer` probe validation in `src/bridgeServer.ts` to support case-insensitive workspace name comparison.
+  - Created automated test suite `src/test/phase04_antigravity_workspace_detection.test.ts` (16 tests covering all title variations, DOM fallbacks, and server handshakes).
+
+---
+
 ## [1.4.0] - 2026-08-30
 
 ### 🚀 Added

@@ -187,7 +187,7 @@
         },
         "autoplan.timeoutPerLoopMinutes": {
           "type": "number",
-          "default": 15,
+          "default": 30,
           "description": "Giới hạn thời gian tối đa cho 1 lượt chạy (phút)"
         },
         "autoplan.focusDelayMs": {

@@ -107,7 +107,7 @@ All settings are available under the `autoplan.*` namespace in VS Code Settings 
 | `autoplan.repeatCount` | `number` | `5` | Repetition count for static prompt execution cycles. |
 | `autoplan.completionKeyword` | `string` | `"Done skul9x."` | Completion keyword in AI response marking phase completion. |
 | `autoplan.delayBetweenLoopsMs` | `number` | `2000` | Inter-loop delay in milliseconds between consecutive phase runs. |
-| `autoplan.timeoutPerLoopMinutes` | `number` | `15` | Maximum timeout in minutes per individual phase execution. |
+| `autoplan.timeoutPerLoopMinutes` | `number` | `30` | Maximum timeout in minutes per individual phase execution. |
 | `autoplan.focusDelayMs` | `number` | `800` | Delay in milliseconds after opening chat before focusing input field. |
 | `autoplan.executionMode` | `string` | `"auto"` | Transport mode: `"auto"`, `"domBridge"`, `"nativeCommand"`, or `"keyboard"`. |
 | `autoplan.allowTierFallback` | `boolean` | `true` | Allow automated fallback to secondary tiers when primary tier encounters errors. |

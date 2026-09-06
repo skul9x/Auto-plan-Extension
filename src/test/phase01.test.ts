@@ -62,7 +62,7 @@ function runPhase01Tests() {
   assert.strictEqual(properties['autoplan.delayBetweenLoopsMs']?.type, 'number');
   assert.strictEqual(properties['autoplan.delayBetweenLoopsMs']?.default, 2000);
   assert.strictEqual(properties['autoplan.timeoutPerLoopMinutes']?.type, 'number');
-  assert.strictEqual(properties['autoplan.timeoutPerLoopMinutes']?.default, 15);
+  assert.strictEqual(properties['autoplan.timeoutPerLoopMinutes']?.default, 30);
 
   // Scripts
   assert.ok(pkg.scripts?.compile, 'compile script must exist');
@@ -99,7 +99,7 @@ function runPhase01Tests() {
   assert.strictEqual(DEFAULT_CONFIG.repeatCount, 5);
   assert.strictEqual(DEFAULT_CONFIG.completionKeyword, 'Done skul9x.');
   assert.strictEqual(DEFAULT_CONFIG.delayBetweenLoopsMs, 2000);
-  assert.strictEqual(DEFAULT_CONFIG.timeoutPerLoopMinutes, 15);
+  assert.strictEqual(DEFAULT_CONFIG.timeoutPerLoopMinutes, 30);
 
   const cfg = getConfig();
   assert.strictEqual(cfg.promptText, DEFAULT_CONFIG.promptText);

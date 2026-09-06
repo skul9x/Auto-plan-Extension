@@ -2252,49 +2252,380 @@
     };
   }
 
+  const DEFAULT_SYSTEM_VIEW_NAMES = [
+    'Auto-Plan Settings',
+    'Settings',
+    'Welcome',
+    'Release Notes',
+    'Keyboard Shortcuts',
+    'Extensions'
+  ];
+
   /**
-   * Parses workspace folder name from title string (document.title or .window-title text)
+   * Tier 2: Position-agnostic workspace parser from title string (document.title or .window-title text).
+   * Strips app names regardless of position, filters active editors, untitled buffers, and known file extensions.
    */
-  function parseWorkspaceFromTitleString(str) {
+  function parseWorkspaceFromTitleString(str, doc) {
     if (!str || typeof str !== 'string') return '';
-    const cleanStr = str.replace(/^●\s*/, '').trim();
+
+    // 1. Clean dirty dot prefix
+    const cleanStr = str.replace(/^[●*]\s*/, '').trim();
     if (!cleanStr) return '';
 
-    // Split on common dashes
-    const parts = cleanStr.split(/\s+[-—–]\s+/).map(p => p.trim()).filter(Boolean);
-    if (parts.length === 0) return '';
-    if (parts.length === 1) return parts[0];
+    // 2. Split on common dash separators (hyphen, em dash, en dash)
+    const rawParts = cleanStr.split(/\s+[-—–]\s+/).map(p => p.trim()).filter(Boolean);
+    if (rawParts.length === 0) return '';
 
-    // Filter out common app names from the end
-    const appNames = [
+    // 3. Known app identifiers
+    const APP_IDENTIFIERS = [
+      'antigravity ide',
+      'antigravity',
       'visual studio code',
+      'code',
       'cursor',
       'vscodium',
-      'antigravity',
-      'code',
       'extension development host'
     ];
 
-    while (parts.length > 1) {
-      const last = parts[parts.length - 1].toLowerCase().replace(/[\[\]]/g, '').trim();
-      if (appNames.some(app => last === app || last.includes('visual studio code') || last.includes('antigravity'))) {
-        parts.pop();
-      } else {
-        break;
+    const isAppIdentifier = (part) => {
+      if (!part || typeof part !== 'string') return false;
+      const norm = part.toLowerCase().replace(/^[\[\(]+|[\]\)]+$/g, '').trim();
+      return APP_IDENTIFIERS.includes(norm);
+    };
+
+    // 4. Query active tabs, breadcrumbs, and system view names for exclusion
+    let activeExclusions = null;
+    try {
+      if (typeof getActiveEditorOrTabNames === 'function') {
+        activeExclusions = getActiveEditorOrTabNames(doc);
+      }
+    } catch (_) {}
+
+    const isSystemViewOrActiveTab = (part) => {
+      if (!part || typeof part !== 'string') return false;
+      const lower = part.toLowerCase().trim();
+      if (activeExclusions && typeof activeExclusions.has === 'function' && activeExclusions.has(part)) {
+        return true;
+      }
+      if (DEFAULT_SYSTEM_VIEW_NAMES.some(sys => sys.toLowerCase() === lower)) {
+        return true;
+      }
+      return false;
+    };
+
+    // 5. Filter untitled editors, files with known extensions, and file paths
+    const isFileOrUntitled = (part) => {
+      if (!part || typeof part !== 'string') return false;
+      const norm = part.trim();
+      // Match untitled buffers (e.g. Untitled-1, Untitled)
+      if (/^untitled(-\d+)?$/i.test(norm)) {
+        return true;
+      }
+      // Match known file extensions (e.g. .md, .txt, .ts, .js, .json, .kt, .py, etc.)
+      if (/\.[a-zA-Z0-9_\-]{1,8}$/i.test(norm) && !/^\d+\.\d+$/.test(norm)) {
+        return true;
+      }
+      // Match path separators
+      if (/[\\\/]/.test(norm)) {
+        return true;
+      }
+      return false;
+    };
+
+    // 6. Clean workspace tags like (Workspace) or [Workspace]
+    const cleanWorkspacePart = (part) => {
+      if (!part || typeof part !== 'string') return '';
+      let res = part.trim();
+      res = res.replace(/\s*[\(\[]workspace[\)\]]\s*$/i, '').trim();
+      res = res.replace(/^[\[\("']+|[\]\)"']+$/g, '').trim();
+      return res;
+    };
+
+    // 7. Position-agnostic filtering pipeline
+    const filteredParts = [];
+    for (const part of rawParts) {
+      if (isAppIdentifier(part)) {
+        continue;
+      }
+      if (isSystemViewOrActiveTab(part)) {
+        continue;
+      }
+      if (isFileOrUntitled(part)) {
+        continue;
+      }
+      const cleaned = cleanWorkspacePart(part);
+      if (cleaned) {
+        filteredParts.push(cleaned);
       }
     }
 
-    if (parts.length === 1) {
-      return parts[0].replace(/\[.*?\]/g, '').trim();
+    // 8. Resolution strategy
+    if (filteredParts.length === 1) {
+      return filteredParts[0];
     }
 
-    // If multiple parts remain (e.g. ["app.ts", "TramsacEV"]):
-    const candidate = parts[parts.length - 1].replace(/\[.*?\]/g, '').trim();
-    return candidate || parts[0];
+    if (filteredParts.length > 1) {
+      const best = filteredParts.find(p => !isFileOrUntitled(p) && !isSystemViewOrActiveTab(p));
+      return best || filteredParts[0];
+    }
+
+    // 0 parts remain (e.g. title only had app name or untitled file)
+    return '';
   }
 
   /**
-   * Detects workspace folder name from doc.title or DOM element .window-title
+   * Cleans a candidate workspace folder name, stripping prefixes/suffixes and generic system names.
+   */
+  function cleanCandidateWorkspace(raw) {
+    if (!raw || typeof raw !== 'string') return '';
+    let candidate = raw.trim();
+
+    // Strip "Explorer Section:" prefix if present
+    candidate = candidate.replace(/^Explorer Section:\s*/i, '').trim();
+
+    // Strip (Workspace) or [Workspace] suffix
+    candidate = candidate.replace(/\s*[\(\[]workspace[\)\]]\s*$/i, '').trim();
+
+    // Strip enclosing brackets/quotes if any
+    candidate = candidate.replace(/^["'\[]+|["'\]]+$/g, '').trim();
+
+    if (!candidate) return '';
+
+    const lower = candidate.toLowerCase();
+    const genericSystemStrings = [
+      'explorer',
+      'explorer section',
+      'open editors',
+      'outline',
+      'timeline',
+      'loaded scripts',
+      'npm scripts',
+      'no folder opened',
+      'search',
+      'source control',
+      'run and debug',
+      'extensions'
+    ];
+
+    if (genericSystemStrings.includes(lower)) {
+      return '';
+    }
+
+    return candidate;
+  }
+
+  /**
+   * Tier 1: Extracts workspace folder name directly from the DOM Explorer tree.
+   * Returns clean workspace name, or empty string if not found, collapsed, or hidden.
+   */
+  function extractWorkspaceFromExplorerDOM(doc) {
+    if (!doc) {
+      if (typeof document !== 'undefined') {
+        doc = document;
+      } else {
+        return '';
+      }
+    }
+
+    if (typeof doc.querySelector !== 'function') {
+      return '';
+    }
+
+    try {
+      // 1. Check if the entire sidebar is hidden or collapsed
+      const sidebar = doc.querySelector('#workbench\\.parts\\.sidebar, .part.sidebar');
+      if (sidebar) {
+        if (!isElementVisible(sidebar, { allowDisabled: true })) {
+          return '';
+        }
+        if (sidebar.classList && sidebar.classList.contains('hidden')) {
+          return '';
+        }
+        if (sidebar.style && sidebar.style.display === 'none') {
+          return '';
+        }
+        if (sidebar.getAttribute && sidebar.getAttribute('aria-hidden') === 'true') {
+          return '';
+        }
+      }
+
+      // Helper to check if a header element is hidden or collapsed
+      const isHeaderCollapsedOrHidden = (el) => {
+        if (!el) return true;
+        if (!isElementVisible(el, { allowDisabled: true })) return true;
+        if (el.getAttribute && el.getAttribute('aria-expanded') === 'false') return true;
+        if (el.classList && el.classList.contains('collapsed')) return true;
+        return false;
+      };
+
+      // 2. Primary check: Query pane-header with aria-label matching Explorer Section
+      const primarySelectors = [
+        '.pane-header[aria-label^="Explorer Section: "]',
+        '[aria-label^="Explorer Section: "]',
+        '.pane-header[aria-label*="Explorer Section"]',
+        '[aria-label*="Explorer Section"]'
+      ];
+
+      for (const sel of primarySelectors) {
+        const el = doc.querySelector(sel);
+        if (!el) continue;
+
+        if (isHeaderCollapsedOrHidden(el)) {
+          // Explicitly collapsed or hidden explorer section
+          return '';
+        }
+
+        // Try extracting from aria-label attribute first
+        const ariaLabel = el.getAttribute ? el.getAttribute('aria-label') : null;
+        if (ariaLabel && /Explorer Section/i.test(ariaLabel)) {
+          const candidate = cleanCandidateWorkspace(ariaLabel);
+          if (candidate) {
+            return candidate;
+          }
+        }
+
+        // Try child .title element
+        const titleChild = typeof el.querySelector === 'function' ? el.querySelector('.title') : null;
+        if (titleChild && titleChild.textContent) {
+          const candidate = cleanCandidateWorkspace(titleChild.textContent);
+          if (candidate) {
+            return candidate;
+          }
+        }
+      }
+
+      // 3. Secondary check: Query title within explorer folders view or pane header
+      const secondarySelectors = [
+        '.pane-header[aria-label*="Explorer Section"] .title',
+        '.explorer-folders-view .pane-header .title',
+        '.explorer-viewlet .pane-header .title'
+      ];
+
+      for (const sel of secondarySelectors) {
+        const titleEl = doc.querySelector(sel);
+        if (!titleEl) continue;
+
+        const headerParent = titleEl.closest ? titleEl.closest('.pane-header') : titleEl.parentElement;
+        if (headerParent && isHeaderCollapsedOrHidden(headerParent)) {
+          return '';
+        }
+        if (!isElementVisible(titleEl, { allowDisabled: true })) {
+          continue;
+        }
+
+        const candidate = cleanCandidateWorkspace(titleEl.textContent);
+        if (candidate) {
+          return candidate;
+        }
+      }
+    } catch (_) {
+      // Safe execution: zero throw on detached/mock DOM
+    }
+
+    return '';
+  }
+
+  /**
+   * Collects active editor tab names, breadcrumb items, and known system view names.
+   * Returns a normalized array of strings with a Set-compatible .has() method.
+   */
+  function getActiveEditorOrTabNames(doc) {
+    const namesSet = new Set();
+
+    // 1. Seed with known system screens and views
+    for (const sysName of DEFAULT_SYSTEM_VIEW_NAMES) {
+      if (sysName) {
+        namesSet.add(sysName);
+      }
+    }
+
+    if (!doc) {
+      if (typeof document !== 'undefined') {
+        doc = document;
+      } else {
+        const arr = Array.from(namesSet);
+        arr.has = function (item) {
+          if (!item || typeof item !== 'string') return false;
+          const lower = item.toLowerCase().trim();
+          return arr.some(n => n.toLowerCase().trim() === lower);
+        };
+        return arr;
+      }
+    }
+
+    if (typeof doc.querySelectorAll !== 'function') {
+      const arr = Array.from(namesSet);
+      arr.has = function (item) {
+        if (!item || typeof item !== 'string') return false;
+        const lower = item.toLowerCase().trim();
+        return arr.some(n => n.toLowerCase().trim() === lower);
+      };
+      return arr;
+    }
+
+    try {
+      // 2. Query active editor tabs
+      const activeTabSelectors = [
+        '.tab.active .label-name',
+        '.tab[aria-selected="true"] .label-name',
+        '.tabs-and-actions-container .tab.active .label-name',
+        '.tabs-and-actions-container .tab.active',
+        '.tab.active'
+      ];
+
+      for (const sel of activeTabSelectors) {
+        const nodes = doc.querySelectorAll(sel);
+        if (!nodes || nodes.length === 0) continue;
+        for (let i = 0; i < nodes.length; i++) {
+          const node = nodes[i];
+          let rawName = (node.textContent || node.getAttribute?.('aria-label') || node.getAttribute?.('title') || '').trim();
+          // Clean leading dirty markers
+          rawName = rawName.replace(/^[●*]\s*/, '').trim();
+          if (rawName && rawName.length > 0 && rawName.length < 200) {
+            namesSet.add(rawName);
+          }
+        }
+      }
+    } catch (_) {}
+
+    try {
+      // 3. Query current breadcrumb names
+      const breadcrumbSelectors = [
+        '.breadcrumbs-control .monaco-breadcrumb-item.last',
+        '.breadcrumbs-container .monaco-breadcrumb-item',
+        '.monaco-breadcrumb-item'
+      ];
+      for (const sel of breadcrumbSelectors) {
+        const nodes = doc.querySelectorAll(sel);
+        if (!nodes || nodes.length === 0) continue;
+        for (let i = 0; i < nodes.length; i++) {
+          const node = nodes[i];
+          let rawName = (node.textContent || node.getAttribute?.('aria-label') || '').trim();
+          rawName = rawName.replace(/^[●*]\s*/, '').trim();
+          if (rawName && rawName.length > 0 && rawName.length < 200) {
+            namesSet.add(rawName);
+          }
+        }
+      }
+    } catch (_) {}
+
+    const resultArr = Array.from(namesSet);
+    resultArr.has = function (item) {
+      if (!item || typeof item !== 'string') return false;
+      const lower = item.toLowerCase().trim();
+      return resultArr.some(n => n.toLowerCase().trim() === lower);
+    };
+
+    return resultArr;
+  }
+
+
+  /**
+   * Tiered workspace detection cascade:
+   * Step 1 (Tier 1): Call extractWorkspaceFromExplorerDOM(doc). If non-empty, return immediately with high confidence.
+   * Step 2 (Tier 2): Check .window-title or [class*="window-title"]. If present, run parseWorkspaceFromTitleString(raw, doc). If non-empty, return it.
+   * Step 3 (Tier 2 Fallback): Check doc.title. If present, run parseWorkspaceFromTitleString(title, doc). If non-empty, return it.
+   * Step 4 (Tier 3): Safe fallback returning empty string "".
    */
   function detectWorkspaceName(doc) {
     if (!doc) {
@@ -2305,29 +2636,40 @@
       }
     }
 
-    // 1. Try DOM element .window-title or [class*="window-title"]
+    // Step 1 (Tier 1): DOM Explorer extraction
+    try {
+      if (typeof extractWorkspaceFromExplorerDOM === 'function') {
+        const wsExplorer = extractWorkspaceFromExplorerDOM(doc);
+        if (wsExplorer && typeof wsExplorer === 'string' && wsExplorer.trim()) {
+          return wsExplorer.trim();
+        }
+      }
+    } catch (_) {}
+
+    // Step 2 (Tier 2): Check DOM element .window-title or [class*="window-title"]
     try {
       if (typeof doc.querySelector === 'function') {
         const titleEl = doc.querySelector('.window-title') || doc.querySelector('[class*="window-title"]');
         if (titleEl && titleEl.textContent) {
           const raw = titleEl.textContent.trim();
           if (raw) {
-            const parsed = parseWorkspaceFromTitleString(raw);
+            const parsed = parseWorkspaceFromTitleString(raw, doc);
             if (parsed) return parsed;
           }
         }
       }
     } catch (_) {}
 
-    // 2. Try doc.title
+    // Step 3 (Tier 2 Fallback): Check doc.title
     try {
       const title = doc.title;
       if (typeof title === 'string' && title.trim()) {
-        const parsed = parseWorkspaceFromTitleString(title.trim());
+        const parsed = parseWorkspaceFromTitleString(title.trim(), doc);
         if (parsed) return parsed;
       }
     } catch (_) {}
 
+    // Step 4 (Tier 3): Safe fallback
     return '';
   }
 
@@ -3016,6 +3358,9 @@
     createWorkerTimer,
     detectWorkspaceName,
     getWorkspaceIdentifier,
+    parseWorkspaceFromTitleString,
+    extractWorkspaceFromExplorerDOM,
+    getActiveEditorOrTabNames,
     DomBridgeClient
   };
 

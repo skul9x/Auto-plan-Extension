@@ -182,7 +182,13 @@
       return;
     }
 
-    phaseList.innerHTML = '';
+    // Remove empty state if present
+    const emptyState = phaseList.querySelector('.empty-state');
+    if (emptyState) {
+      emptyState.remove();
+    }
+
+    const existingItems = Array.from(phaseList.children).filter(el => el.classList && el.classList.contains('phase-item'));
     let selectedCount = 0;
 
     phases.forEach((phase, index) => {
@@ -195,48 +201,35 @@
       const isStopped = phase.status === 'Stopped' || phase.status === 'stopped';
       const isSkipped = phase.status === 'Skipped' || phase.status === 'skipped';
 
-      const item = document.createElement('div');
-      item.className = `phase-item ${isCurrent ? 'running' : ''} ${isDone ? 'completed' : ''} ${isFailed ? 'failed' : ''} ${isStopped ? 'stopped' : ''}`;
+      const desiredItemClass = `phase-item ${isCurrent ? 'running' : ''} ${isDone ? 'completed' : ''} ${isFailed ? 'failed' : ''} ${isStopped ? 'stopped' : ''}`.replace(/\s+/g, ' ').trim();
 
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = isSelected;
-      checkbox.addEventListener('change', () => {
-        vscode.postMessage({ command: 'togglePhase', index, selected: checkbox.checked });
-      });
-
-      const nameSpan = document.createElement('span');
-      nameSpan.className = 'phase-name';
-      nameSpan.textContent = phase.fileName;
-
-      const tagSpan = document.createElement('span');
-      tagSpan.className = 'status-tag ';
-
+      let tagClass = 'status-tag ';
+      let tagText = '';
       let tooltipText = '';
 
       if (isCurrent) {
-        tagSpan.className += 'tag-running';
-        tagSpan.textContent = '🔄 Running';
+        tagClass += 'tag-running';
+        tagText = '🔄 Running';
         tooltipText = 'Phase is currently executing...';
       } else if (isDone) {
-        tagSpan.className += 'tag-done';
-        tagSpan.textContent = '✅ Completed';
+        tagClass += 'tag-done';
+        tagText = '✅ Completed';
         tooltipText = 'Phase marked as completed.';
       } else if (isFailed) {
-        tagSpan.className += 'tag-failed';
-        tagSpan.textContent = '❌ Failed';
+        tagClass += 'tag-failed';
+        tagText = '❌ Failed';
         tooltipText = phase.error || (phase.stallReason ? phase.stallReason.description : 'Phase execution failed.');
       } else if (isStopped) {
-        tagSpan.className += 'tag-stopped';
-        tagSpan.textContent = '⏹️ Stopped';
+        tagClass += 'tag-stopped';
+        tagText = '⏹️ Stopped';
         tooltipText = 'Execution was stopped.';
       } else if (isSkipped) {
-        tagSpan.className += 'tag-skipped';
-        tagSpan.textContent = '⏭️ Skipped';
+        tagClass += 'tag-skipped';
+        tagText = '⏭️ Skipped';
         tooltipText = phase.stallReason ? phase.stallReason.description : 'Phase was skipped.';
       } else {
-        tagSpan.className += 'tag-pending';
-        tagSpan.textContent = '⏳ Pending';
+        tagClass += 'tag-pending';
+        tagText = '⏳ Pending';
         if (phase.stallReason && phase.stallReason.description) {
           tooltipText = phase.stallReason.description;
         } else {
@@ -248,16 +241,88 @@
         tooltipText += ` (${phase.stallReason.remediationAction})`;
       }
 
-      tagSpan.title = tooltipText;
-      nameSpan.title = `${phase.filePath || phase.fileName}\n${tooltipText}`;
-      item.title = tooltipText;
+      const nameTitle = `${phase.filePath || phase.fileName}\n${tooltipText}`;
 
-      item.appendChild(checkbox);
-      item.appendChild(nameSpan);
-      item.appendChild(tagSpan);
+      let item = existingItems[index];
 
-      phaseList.appendChild(item);
+      if (item) {
+        // Reconcile in-place without destroying DOM node or event listeners
+        if (item.className !== desiredItemClass) {
+          item.className = desiredItemClass;
+        }
+        if (item.title !== tooltipText) {
+          item.title = tooltipText;
+        }
+
+        const checkbox = item.querySelector('input[type="checkbox"]');
+        if (checkbox) {
+          checkbox.dataset.phaseIndex = String(index);
+          if (checkbox.checked !== isSelected) {
+            checkbox.checked = isSelected;
+          }
+        }
+
+        const nameSpan = item.querySelector('.phase-name');
+        if (nameSpan) {
+          if (nameSpan.textContent !== phase.fileName) {
+            nameSpan.textContent = phase.fileName;
+          }
+          if (nameSpan.title !== nameTitle) {
+            nameSpan.title = nameTitle;
+          }
+        }
+
+        const tagSpan = item.querySelector('.status-tag');
+        if (tagSpan) {
+          if (tagSpan.className !== tagClass) {
+            tagSpan.className = tagClass;
+          }
+          if (tagSpan.textContent !== tagText) {
+            tagSpan.textContent = tagText;
+          }
+          if (tagSpan.title !== tooltipText) {
+            tagSpan.title = tooltipText;
+          }
+        }
+      } else {
+        // Create new item DOM structure
+        item = document.createElement('div');
+        item.className = desiredItemClass;
+        item.title = tooltipText;
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = isSelected;
+        checkbox.dataset.phaseIndex = String(index);
+        checkbox.addEventListener('change', () => {
+          const idx = parseInt(checkbox.dataset.phaseIndex || String(index), 10);
+          vscode.postMessage({ command: 'togglePhase', index: isNaN(idx) ? index : idx, selected: checkbox.checked });
+        });
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'phase-name';
+        nameSpan.textContent = phase.fileName;
+        nameSpan.title = nameTitle;
+
+        const tagSpan = document.createElement('span');
+        tagSpan.className = tagClass;
+        tagSpan.textContent = tagText;
+        tagSpan.title = tooltipText;
+
+        item.appendChild(checkbox);
+        item.appendChild(nameSpan);
+        item.appendChild(tagSpan);
+
+        phaseList.appendChild(item);
+      }
     });
+
+    // Prune excess items if phases count decreased
+    if (existingItems.length > phases.length) {
+      for (let i = phases.length; i < existingItems.length; i++) {
+        existingItems[i].remove();
+      }
+    }
 
     selectedCountBadge.textContent = `${selectedCount} / ${phases.length} selected`;
     toggleAllPhases.checked = phases.length > 0 && selectedCount === phases.length;
@@ -339,7 +404,26 @@
     }
   }
 
+  // Expose internals for testing and diagnostics
+  const sidebarInternals = {
+    renderPhaseList,
+    renderProgress,
+    renderBridgeStatus,
+    renderStateUpdate,
+    appendAndPruneLogLines,
+    setCurrentState: (s) => { currentState = s; }
+  };
+
+  if (typeof window !== 'undefined') {
+    window.__SIDEBAR_INTERNALS__ = sidebarInternals;
+  }
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = sidebarInternals;
+  }
+
   // Dispatch ready handshake to Extension Host
-  vscode.postMessage({ command: 'ready', type: 'ready' });
+  if (vscode && typeof vscode.postMessage === 'function') {
+    vscode.postMessage({ command: 'ready', type: 'ready' });
+  }
 })();
 

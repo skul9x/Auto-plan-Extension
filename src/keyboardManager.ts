@@ -74,14 +74,15 @@ export function isApprovedEditor(windowTitle: string, processName?: string, pid?
     return true;
   }
 
-  const approvedProcesses = ['code', 'electron', 'visual studio code', 'antigravity', 'vscodium', 'cursor', 'windsurf'];
+  const approvedProcesses = ['code', 'electron', 'visual studio code', 'antigravity', 'vscodium', 'cursor', 'windsurf', 'trae'];
   const titlePatterns = [
     /visual studio code/i,
     /(?:^|\s|-|_|\/)code(?:\s|-|_|\/|$)/i,
     /antigravity/i,
     /vscodium/i,
     /cursor/i,
-    /windsurf/i
+    /windsurf/i,
+    /trae/i
   ];
 
   const cleanTitle = (windowTitle || '').trim();
@@ -126,31 +127,30 @@ export async function inspectActiveWindow(): Promise<ActiveWindowInfo> {
   };
 }
 
-async function inspectLinuxActiveWindow(): Promise<ActiveWindowInfo> {
+/**
+ * Inspects active window on Linux using a single unified asynchronous pipeline.
+ * Tries a consolidated async xdotool query, falling back to a consolidated async xprop pipeline.
+ */
+export async function inspectLinuxActiveWindow(
+  customExecAsync?: (cmd: string, opts?: any) => Promise<{ stdout: string; stderr: string }>
+): Promise<ActiveWindowInfo> {
+  const runner = customExecAsync || execAsync;
   try {
-    // Try xdotool first
+    // 1. Try single unified xdotool + ps async command pipeline
     try {
-      const winId = execSync('xdotool getactivewindow', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 }).trim();
-      if (winId) {
-        let windowTitle = '';
-        let pid: number | undefined;
-        try {
-          windowTitle = execSync(`xdotool getwindowname ${winId}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 }).trim();
-        } catch {}
-        try {
-          const pidStr = execSync(`xdotool getwindowpid ${winId}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 }).trim();
-          if (pidStr && !isNaN(parseInt(pidStr, 10))) {
-            pid = parseInt(pidStr, 10);
-          }
-        } catch {}
+      const cmd = `wid=$(xdotool getactivewindow 2>/dev/null) || exit 1; ` +
+        `pid=$(xdotool getwindowpid "$wid" 2>/dev/null); ` +
+        `comm=""; [ -n "$pid" ] && comm=$(ps -p "$pid" -o comm= 2>/dev/null); ` +
+        `name=$(xdotool getwindowname "$wid" 2>/dev/null); ` +
+        `printf "%s\\n---AUTOPLAN_DELIM---\\n%s\\n---AUTOPLAN_DELIM---\\n%s" "$pid" "$comm" "$name"`;
 
-        let processName: string | undefined;
-        if (pid) {
-          try {
-            processName = execSync(`ps -p ${pid} -o comm=`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 }).trim();
-          } catch {}
-        }
-
+      const { stdout } = await runner(cmd, { timeout: 1500 });
+      const parts = stdout.split('\n---AUTOPLAN_DELIM---\n');
+      if (parts.length >= 3) {
+        const pidStr = parts[0]?.trim();
+        const processName = parts[1]?.trim() || undefined;
+        const windowTitle = parts[2]?.trim() || '';
+        const pid = pidStr && !isNaN(parseInt(pidStr, 10)) ? parseInt(pidStr, 10) : undefined;
         const isTarget = isApprovedEditor(windowTitle, processName, pid);
         return { isTarget, windowTitle, processName, pid };
       }
@@ -158,37 +158,29 @@ async function inspectLinuxActiveWindow(): Promise<ActiveWindowInfo> {
       // Fallback to xprop below
     }
 
-    // Fallback: xprop
+    // 2. Fallback: unified asynchronous xprop pipeline
     try {
-      const rootOut = execSync('xprop -root _NET_ACTIVE_WINDOW', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 }).trim();
-      const match = rootOut.match(/window id #\s*(0x[0-9a-fA-F]+|\d+)/);
-      if (match) {
-        const winId = match[1];
-        let windowTitle = '';
-        try {
-          const titleOut = execSync(`xprop -id ${winId} _NET_WM_NAME WM_NAME`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 });
-          const titleMatch = titleOut.match(/(?:_NET_WM_NAME|WM_NAME)\([^)]*\)\s*=\s*"([^"]*)"/);
-          if (titleMatch) {
-            windowTitle = titleMatch[1];
-          }
-        } catch {}
+      const xpropCmd = `winId=$(xprop -root _NET_ACTIVE_WINDOW 2>/dev/null | grep -o '0x[0-9a-fA-F]\\+' | head -n 1) || exit 1; ` +
+        `[ -z "$winId" ] && exit 1; ` +
+        `pid=$(xprop -id "$winId" _NET_WM_PID 2>/dev/null | grep -o '[0-9]\\+' | head -n 1); ` +
+        `comm=""; [ -n "$pid" ] && comm=$(ps -p "$pid" -o comm= 2>/dev/null); ` +
+        `name=$(xprop -id "$winId" _NET_WM_NAME WM_NAME 2>/dev/null); ` +
+        `printf "%s\\n---AUTOPLAN_DELIM---\\n%s\\n---AUTOPLAN_DELIM---\\n%s" "$pid" "$comm" "$name"`;
 
-        let pid: number | undefined;
-        let processName: string | undefined;
-        try {
-          const pidOut = execSync(`xprop -id ${winId} _NET_WM_PID`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 });
-          const pidMatch = pidOut.match(/_NET_WM_PID\([^)]*\)\s*=\s*(\d+)/);
-          if (pidMatch) {
-            pid = parseInt(pidMatch[1], 10);
-            processName = execSync(`ps -p ${pid} -o comm=`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 1500 }).trim();
-          }
-        } catch {}
-
+      const { stdout } = await runner(xpropCmd, { timeout: 1500 });
+      const parts = stdout.split('\n---AUTOPLAN_DELIM---\n');
+      if (parts.length >= 3) {
+        const pidStr = parts[0]?.trim();
+        const processName = parts[1]?.trim() || undefined;
+        const rawName = parts[2]?.trim() || '';
+        const match = rawName.match(/(?:_NET_WM_NAME|WM_NAME)\([^)]*\)\s*=\s*"([^"]*)"/);
+        const windowTitle = match ? match[1] : rawName;
+        const pid = pidStr && !isNaN(parseInt(pidStr, 10)) ? parseInt(pidStr, 10) : undefined;
         const isTarget = isApprovedEditor(windowTitle, processName, pid);
         return { isTarget, windowTitle, processName, pid };
       }
     } catch {
-      // xprop failed or headless
+      // Both xdotool and xprop failed or headless
     }
   } catch {}
 
@@ -200,7 +192,31 @@ async function inspectLinuxActiveWindow(): Promise<ActiveWindowInfo> {
   };
 }
 
-async function inspectWindowsActiveWindow(): Promise<ActiveWindowInfo> {
+interface WindowsActiveWindowCache {
+  info: ActiveWindowInfo;
+  timestamp: number;
+}
+let cachedWindowsActiveWindow: WindowsActiveWindowCache | null = null;
+const WINDOWS_WINDOW_CACHE_TTL_MS = 500;
+
+export function clearWindowsActiveWindowCache(): void {
+  cachedWindowsActiveWindow = null;
+}
+
+/**
+ * Inspects active window on Windows.
+ * Caches results with a 500ms TTL to eliminate repetitive Roslyn JIT compilation (Add-Type).
+ */
+export async function inspectWindowsActiveWindow(
+  forceRefresh: boolean = false,
+  customExecAsync?: (cmd: string, opts?: any) => Promise<{ stdout: string; stderr: string }>
+): Promise<ActiveWindowInfo> {
+  const now = Date.now();
+  if (!forceRefresh && cachedWindowsActiveWindow && (now - cachedWindowsActiveWindow.timestamp < WINDOWS_WINDOW_CACHE_TTL_MS)) {
+    return cachedWindowsActiveWindow.info;
+  }
+
+  const runner = customExecAsync || execAsync;
   try {
     const psCmd = `powershell -NoProfile -NonInteractive -Command "Add-Type @'
 using System;
@@ -221,20 +237,24 @@ $title = $sb.ToString();
 $proc = if ($pidVal -gt 0) { (Get-Process -Id $pidVal -ErrorAction SilentlyContinue).ProcessName } else { '' };
 [PSCustomObject]@{ Title = $title; Process = $proc; Pid = $pidVal } | ConvertTo-Json -Compress"`;
 
-    const { stdout } = await execAsync(psCmd, { timeout: 2500 });
+    const { stdout } = await runner(psCmd, { timeout: 2500 });
     const parsed = JSON.parse(stdout.trim());
     const windowTitle = parsed.Title || '';
     const processName = parsed.Process || undefined;
     const pid = typeof parsed.Pid === 'number' && parsed.Pid > 0 ? parsed.Pid : undefined;
     const isTarget = isApprovedEditor(windowTitle, processName, pid);
-    return { isTarget, windowTitle, processName, pid };
+    const result: ActiveWindowInfo = { isTarget, windowTitle, processName, pid };
+    cachedWindowsActiveWindow = { info: result, timestamp: Date.now() };
+    return result;
   } catch {
-    return {
+    const fallback: ActiveWindowInfo = {
       isTarget: false,
       windowTitle: 'Unknown / Headless Window',
       processName: undefined,
       pid: undefined
     };
+    cachedWindowsActiveWindow = { info: fallback, timestamp: Date.now() };
+    return fallback;
   }
 }
 
@@ -268,23 +288,36 @@ end tell'`;
   }
 }
 
+let cachedLinuxPrereqs: { available: boolean; binary: string | null; error?: string } | null = null;
+
+export function clearLinuxKeyboardPrerequisitesCache(): void {
+  cachedLinuxPrereqs = null;
+}
+
 /**
- * Checks whether xdotool is available on the system PATH
+ * Checks whether xdotool is available on the system PATH.
+ * Memoizes the check result to eliminate repetitive child process spawning.
+ * Pass forceRefresh: true to bypass cache and re-check.
  */
-export function checkLinuxKeyboardPrerequisites(): { available: boolean; binary: string | null; error?: string } {
+export function checkLinuxKeyboardPrerequisites(forceRefresh: boolean = false): { available: boolean; binary: string | null; error?: string } {
+  if (!forceRefresh && cachedLinuxPrereqs !== null) {
+    return cachedLinuxPrereqs;
+  }
   try {
     const stdout = execSync('which xdotool', { stdio: ['pipe', 'pipe', 'ignore'], encoding: 'utf8' }).trim();
     if (stdout) {
-      return { available: true, binary: stdout };
+      cachedLinuxPrereqs = { available: true, binary: stdout };
+      return cachedLinuxPrereqs;
     }
   } catch {
     // which returned non-zero
   }
-  return {
+  cachedLinuxPrereqs = {
     available: false,
     binary: null,
     error: 'xdotool is not installed or not found in system PATH. Install it via `sudo apt-get install xdotool` (Debian/Ubuntu) or `sudo pacman -S xdotool` (Arch).'
   };
+  return cachedLinuxPrereqs;
 }
 
 /**
@@ -407,10 +440,11 @@ export class KeyboardManager {
   }
 
   /**
-   * Checks whether Linux keyboard prerequisites (xdotool) are available
+   * Checks whether Linux keyboard prerequisites (xdotool) are available.
+   * Uses cached status unless forceRefresh is true.
    */
-  public checkLinuxKeyboardPrerequisites(): { available: boolean; binary: string | null; error?: string } {
-    return checkLinuxKeyboardPrerequisites();
+  public checkLinuxKeyboardPrerequisites(forceRefresh: boolean = false): { available: boolean; binary: string | null; error?: string } {
+    return checkLinuxKeyboardPrerequisites(forceRefresh);
   }
 
   /**

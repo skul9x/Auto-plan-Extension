@@ -74,10 +74,16 @@ export interface CandidateConversation {
   transcriptBirthtime?: number;
 }
 
+export interface CachedDirInfo {
+  time: number;
+  isCold?: boolean;
+  transcriptPath?: string | null;
+}
+
 export interface BrainDirCacheEntry {
   rootMtimeMs: number;
   directories: ConversationDirEntry[];
-  dirMap: Map<string, { time: number }>;
+  dirMap: Map<string, CachedDirInfo>;
 }
 
 export const MAX_CHUNK_SIZE = 64 * 1024; // 64KB
@@ -134,6 +140,73 @@ export function getTranscriptPath(conversationDir: string): string | null {
 
   // Return primary standard location even if not created yet
   return possiblePaths[0];
+}
+
+/**
+ * Asynchronously counts non-empty lines in a transcript file without buffering the entire file in RAM.
+ * Uses chunked stream decoding (64KB chunks) scanning for newline characters ('\n')
+ * and preserving existing `.filter(l => l.trim().length > 0)` counting semantics.
+ * If maxOffset is provided and >= 0, only counts lines within the [0, maxOffset) byte range.
+ */
+export async function countTranscriptLinesAsync(filePath: string, maxOffset?: number): Promise<number> {
+  if (maxOffset !== undefined && maxOffset <= 0) {
+    return 0;
+  }
+
+  return new Promise<number>((resolve, reject) => {
+    const streamOptions: { highWaterMark: number; end?: number } = {
+      highWaterMark: MAX_CHUNK_SIZE // 64KB
+    };
+
+    if (maxOffset !== undefined && maxOffset > 0) {
+      // fs.createReadStream 'end' option is inclusive byte index
+      streamOptions.end = maxOffset - 1;
+    }
+
+    let stream: fs.ReadStream;
+    try {
+      stream = fs.createReadStream(filePath, streamOptions);
+    } catch (err) {
+      return reject(err);
+    }
+
+    let lineCount = 0;
+    let currentLineHasNonWhitespace = false;
+
+    stream.on('data', (chunk: Buffer | string) => {
+      const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+      for (let i = 0; i < buf.length; i++) {
+        const byte = buf[i];
+        if (byte === 0x0A) { // '\n'
+          if (currentLineHasNonWhitespace) {
+            lineCount++;
+            currentLineHasNonWhitespace = false;
+          }
+        } else if (
+          !currentLineHasNonWhitespace &&
+          byte !== 0x20 && // ' '
+          byte !== 0x09 && // '\t'
+          byte !== 0x0D && // '\r'
+          byte !== 0x0B && // '\v'
+          byte !== 0x0C    // '\f'
+        ) {
+          currentLineHasNonWhitespace = true;
+        }
+      }
+    });
+
+    stream.on('end', () => {
+      // If stream ended and last line had non-whitespace without trailing newline
+      if (currentLineHasNonWhitespace) {
+        lineCount++;
+      }
+      resolve(lineCount);
+    });
+
+    stream.on('error', (err) => {
+      reject(err);
+    });
+  });
 }
 
 /**
@@ -246,35 +319,149 @@ export async function getCandidateConversationsAsync(
   onCandidateSkipped?: (convId: string, criteria: ConversationOwnershipCriteria) => void
 ): Promise<CandidateConversation[]> {
   try {
-    const exists = await fs.promises
-      .access(brainDir, fs.constants.F_OK)
-      .then(() => true)
-      .catch(() => false);
-    if (!exists) {
+    let rootStat: fs.Stats;
+    try {
+      rootStat = await fs.promises.stat(brainDir);
+      if (!rootStat.isDirectory()) {
+        return [];
+      }
+    } catch {
       return [];
     }
 
-    const entries = await fs.promises.readdir(brainDir, { withFileTypes: true });
+    const rootMtimeMs = rootStat.mtimeMs;
+    let cache = brainDirCacheMap.get(brainDir);
+
+    if (!cache || cache.rootMtimeMs !== rootMtimeMs) {
+      // Invalidate or initialize cache when root brainDir mtimeMs changes
+      const entries = await fs.promises.readdir(brainDir, { withFileTypes: true });
+      const directories: ConversationDirEntry[] = [];
+      const dirMap = new Map<string, CachedDirInfo>();
+
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name === 'scratch') {
+          continue;
+        }
+
+        const fullPath = path.join(brainDir, entry.name);
+        const prevInfo = cache?.dirMap.get(entry.name);
+        let dirTime = prevInfo?.time;
+
+        if (dirTime === undefined) {
+          try {
+            const stats = await fs.promises.stat(fullPath);
+            dirTime = Math.max(stats.birthtimeMs || 0, stats.mtimeMs || 0, stats.ctimeMs || 0);
+          } catch {
+            continue;
+          }
+        }
+
+        const dirEntry: ConversationDirEntry = {
+          name: entry.name,
+          fullPath,
+          time: dirTime
+        };
+        directories.push(dirEntry);
+        dirMap.set(entry.name, {
+          time: dirTime,
+          transcriptPath: prevInfo?.transcriptPath,
+          isCold: prevInfo?.isCold
+        });
+      }
+
+      cache = {
+        rootMtimeMs,
+        directories,
+        dirMap
+      };
+      brainDirCacheMap.set(brainDir, cache);
+    }
+
     const candidates: CandidateConversation[] = [];
 
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name === 'scratch') {
-        continue;
-      }
-      if (excludeConvId && entry.name === excludeConvId) {
+    for (const dirEntry of cache.directories) {
+      if (excludeConvId && dirEntry.name === excludeConvId) {
         continue;
       }
 
-      const fullPath = path.join(brainDir, entry.name);
-      let dirTime = 0;
-      try {
-        const stats = await fs.promises.stat(fullPath);
-        dirTime = Math.max(stats.birthtimeMs || 0, stats.mtimeMs || 0, stats.ctimeMs || 0);
-      } catch {
-        continue;
+      const cachedInfo = cache.dirMap.get(dirEntry.name);
+      const dirTime = cachedInfo?.time ?? dirEntry.time;
+
+      // Two-Tier Cold/Hot Filtering
+      if (sinceTimestamp !== undefined && sinceTimestamp > 0) {
+        if (dirTime < sinceTimestamp) {
+          // If already marked cold, skip redundant stat calls entirely
+          if (cachedInfo?.isCold) {
+            continue;
+          }
+
+          // Evaluate transcript activity once before marking cold
+          let transcriptPath = cachedInfo?.transcriptPath;
+          if (transcriptPath === undefined) {
+            transcriptPath = getTranscriptPath(dirEntry.fullPath);
+            if (transcriptPath && cachedInfo) {
+              cachedInfo.transcriptPath = transcriptPath;
+            }
+          }
+
+          if (!transcriptPath) {
+            if (cachedInfo) {
+              cachedInfo.isCold = true;
+            }
+            continue;
+          }
+
+          let tStats: fs.Stats | null = null;
+          try {
+            tStats = await fs.promises.stat(transcriptPath);
+          } catch {
+            tStats = null;
+          }
+
+          const tMtime = tStats ? tStats.mtimeMs : 0;
+          if (tMtime < sinceTimestamp) {
+            if (cachedInfo) {
+              cachedInfo.isCold = true;
+            }
+            continue;
+          }
+
+          // Active/hot transcript despite older folder creation
+          const tSize = tStats ? tStats.size : 0;
+          const tBirthtime = tStats ? Math.max(tStats.birthtimeMs || 0, tStats.ctimeMs || 0) : 0;
+
+          if (criteria && (criteria.expectedPromptSnippet || criteria.workspacePath || criteria.workspaceName)) {
+            const isOwner = await verifyConversationOwnershipAsync(transcriptPath, criteria);
+            if (!isOwner) {
+              if (tSize > 0 && onCandidateSkipped) {
+                onCandidateSkipped(dirEntry.name, criteria);
+              }
+              continue;
+            }
+          }
+
+          candidates.push({
+            convId: dirEntry.name,
+            fullPath: dirEntry.fullPath,
+            time: dirTime,
+            transcriptPath,
+            transcriptMtime: tMtime,
+            transcriptSize: tSize,
+            transcriptBirthtime: tBirthtime
+          });
+          continue;
+        }
       }
 
-      const transcriptPath = getTranscriptPath(fullPath);
+      // Hot candidate (dirTime >= sinceTimestamp or sinceTimestamp not set):
+      let transcriptPath = cachedInfo?.transcriptPath;
+      if (transcriptPath === undefined) {
+        transcriptPath = getTranscriptPath(dirEntry.fullPath);
+        if (transcriptPath && cachedInfo) {
+          cachedInfo.transcriptPath = transcriptPath;
+        }
+      }
+
       let transcriptMtime = 0;
       let transcriptSize = 0;
       let transcriptBirthtime = 0;
@@ -302,15 +489,15 @@ export async function getCandidateConversationsAsync(
         const isOwner = await verifyConversationOwnershipAsync(transcriptPath, criteria);
         if (!isOwner) {
           if (transcriptSize > 0 && onCandidateSkipped) {
-            onCandidateSkipped(entry.name, criteria);
+            onCandidateSkipped(dirEntry.name, criteria);
           }
           continue;
         }
       }
 
       candidates.push({
-        convId: entry.name,
-        fullPath,
+        convId: dirEntry.name,
+        fullPath: dirEntry.fullPath,
         time: dirTime,
         transcriptPath,
         transcriptMtime,
@@ -681,13 +868,13 @@ export class TranscriptWatcher extends EventEmitter {
   }
 
   /**
-   * Initializes candidate baselines to track pre-existing files and sizes before phase start.
+   * Initializes candidate baselines asynchronously to track pre-existing files and sizes before phase start.
    */
-  private initializeBaselineCandidates(): void {
+  public async initializeBaselineCandidatesAsync(): Promise<void> {
     this.candidateBaselineSizes.clear();
     this.candidatePreExisted.clear();
     let brainDir = this.options.brainDir;
-    if (this.currentFilePath && (!brainDir || !fs.existsSync(brainDir))) {
+    if (this.currentFilePath && (!brainDir || !(await fs.promises.access(brainDir, fs.constants.F_OK).then(() => true).catch(() => false)))) {
       const normalized = path.normalize(this.currentFilePath);
       const parts = normalized.split(path.sep);
       const brainIdx = parts.lastIndexOf('brain');
@@ -698,25 +885,70 @@ export class TranscriptWatcher extends EventEmitter {
       }
     }
 
-    if (brainDir && fs.existsSync(brainDir)) {
+    if (brainDir) {
       try {
-        const entries = fs.readdirSync(brainDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.isDirectory() || entry.name === 'scratch') continue;
-          const fullPath = path.join(brainDir, entry.name);
-          const tPath = getTranscriptPath(fullPath);
-          if (tPath && fs.existsSync(tPath)) {
-            try {
-              const stats = fs.statSync(tPath);
-              const birthtime = stats.birthtimeMs || 0;
-              this.candidateBaselineSizes.set(tPath, stats.size);
-              const existedBefore =
-                (birthtime > 0 && this.sinceTimestamp > 0 && birthtime < this.sinceTimestamp) ||
-                (this.sinceTimestamp > 0 && stats.mtimeMs < this.sinceTimestamp);
-              if (existedBefore) {
-                this.candidatePreExisted.add(tPath);
+        const rootStat = await fs.promises.stat(brainDir).catch(() => null);
+        if (rootStat && rootStat.isDirectory()) {
+          const cached = brainDirCacheMap.get(brainDir);
+          let dirEntries: ConversationDirEntry[];
+
+          if (cached && cached.rootMtimeMs === rootStat.mtimeMs) {
+            dirEntries = cached.directories;
+          } else {
+            const dirents = await fs.promises.readdir(brainDir, { withFileTypes: true });
+            dirEntries = [];
+            const dirMap = new Map<string, CachedDirInfo>();
+
+            for (const dirent of dirents) {
+              if (!dirent.isDirectory() || dirent.name === 'scratch') {
+                continue;
               }
-            } catch {}
+              const fullPath = path.join(brainDir, dirent.name);
+              let dirTime = cached?.dirMap.get(dirent.name)?.time;
+              if (dirTime === undefined) {
+                try {
+                  const s = await fs.promises.stat(fullPath);
+                  dirTime = Math.max(s.birthtimeMs || 0, s.mtimeMs || 0, s.ctimeMs || 0);
+                } catch {
+                  continue;
+                }
+              }
+              dirEntries.push({ name: dirent.name, fullPath, time: dirTime });
+              dirMap.set(dirent.name, { time: dirTime });
+            }
+
+            brainDirCacheMap.set(brainDir, {
+              rootMtimeMs: rootStat.mtimeMs,
+              directories: dirEntries,
+              dirMap
+            });
+          }
+
+          const currentCache = brainDirCacheMap.get(brainDir);
+
+          for (const entry of dirEntries) {
+            const cachedInfo = currentCache?.dirMap.get(entry.name);
+            let tPath = cachedInfo?.transcriptPath;
+            if (!tPath) {
+              tPath = getTranscriptPath(entry.fullPath) || undefined;
+              if (tPath && cachedInfo) {
+                cachedInfo.transcriptPath = tPath;
+              }
+            }
+
+            if (tPath) {
+              try {
+                const stats = await fs.promises.stat(tPath);
+                const birthtime = stats.birthtimeMs || 0;
+                this.candidateBaselineSizes.set(tPath, stats.size);
+                const existedBefore =
+                  (birthtime > 0 && this.sinceTimestamp > 0 && birthtime < this.sinceTimestamp) ||
+                  (this.sinceTimestamp > 0 && stats.mtimeMs < this.sinceTimestamp);
+                if (existedBefore) {
+                  this.candidatePreExisted.add(tPath);
+                }
+              } catch {}
+            }
           }
         }
       } catch {}
@@ -724,11 +956,10 @@ export class TranscriptWatcher extends EventEmitter {
 
     if (
       this.currentFilePath &&
-      fs.existsSync(this.currentFilePath) &&
       !this.candidateBaselineSizes.has(this.currentFilePath)
     ) {
       try {
-        const stats = fs.statSync(this.currentFilePath);
+        const stats = await fs.promises.stat(this.currentFilePath);
         const birthtime = stats.birthtimeMs || 0;
         this.candidateBaselineSizes.set(this.currentFilePath, stats.size);
         const existedBefore =
@@ -739,6 +970,10 @@ export class TranscriptWatcher extends EventEmitter {
         }
       } catch {}
     }
+  }
+
+  private initializeBaselineCandidates(): void {
+    void this.initializeBaselineCandidatesAsync();
   }
 
   /**
@@ -793,7 +1028,7 @@ export class TranscriptWatcher extends EventEmitter {
     this.isWatching = true;
     this.isCheckingConv = false;
     this.sinceTimestamp = sinceTimestamp;
-    this.initializeBaselineCandidates();
+    await this.initializeBaselineCandidatesAsync();
 
     const startTime = Date.now();
     return new Promise<string>((resolve, reject) => {
@@ -924,38 +1159,39 @@ export class TranscriptWatcher extends EventEmitter {
     this.activeConvId = conversationId;
     this.readOffset = initialOffset >= 0 ? initialOffset : 0;
     this.initialTranscriptLength = initialTranscriptLength ?? 0;
-    if (this.initialTranscriptLength === 0 && fs.existsSync(filePath)) {
-      try {
-        const content = fs.readFileSync(filePath, 'utf8');
-        const slice = this.readOffset > 0 ? content.slice(0, this.readOffset) : content;
-        const lines = slice.split('\n').filter(l => l.trim().length > 0);
-        this.initialTranscriptLength = lines.length;
-      } catch {
-        this.initialTranscriptLength = 0;
-      }
-    }
-    this.lineCounter = this.readOffset > 0 ? this.initialTranscriptLength : 0;
     this.lineBuffer = '';
     this.stringDecoder = new StringDecoder('utf8');
     this.isCheckingFile = false;
     this.isArbitrating = false;
     this.lastActivityTime = Date.now();
 
-    if (sinceTimestamp !== undefined && sinceTimestamp > 0) {
-      this.sinceTimestamp = sinceTimestamp;
-    } else if (this.sinceTimestamp <= 0) {
-      try {
-        const stats = fs.statSync(filePath);
-        this.sinceTimestamp = Math.max(stats.birthtimeMs || 0, stats.ctimeMs || 0, Date.now() - 60000);
-      } catch {
-        this.sinceTimestamp = this.options.sinceTimestamp || (Date.now() - 60000);
-      }
-    }
-
     this.initializeBaselineCandidates();
 
-    return new Promise<CompletionResult>((resolve) => {
+    return new Promise<CompletionResult>(async (resolve) => {
       this.activeResolve = resolve;
+
+      await this.initializeBaselineCandidatesAsync();
+
+      // Asynchronously calculate initial transcript length without blocking event loop
+      if (this.initialTranscriptLength === 0 && fs.existsSync(filePath)) {
+        try {
+          this.initialTranscriptLength = await countTranscriptLinesAsync(filePath, this.readOffset > 0 ? this.readOffset : undefined);
+        } catch {
+          this.initialTranscriptLength = 0;
+        }
+      }
+      this.lineCounter = this.readOffset > 0 ? this.initialTranscriptLength : 0;
+
+      if (sinceTimestamp !== undefined && sinceTimestamp > 0) {
+        this.sinceTimestamp = sinceTimestamp;
+      } else if (this.sinceTimestamp <= 0) {
+        try {
+          const stats = await fs.promises.stat(filePath);
+          this.sinceTimestamp = Math.max(stats.birthtimeMs || 0, stats.ctimeMs || 0, Date.now() - 60000);
+        } catch {
+          this.sinceTimestamp = this.options.sinceTimestamp || (Date.now() - 60000);
+        }
+      }
 
       // Setup timeout
       if (this.options.timeoutMs > 0) {
@@ -1212,7 +1448,7 @@ export class TranscriptWatcher extends EventEmitter {
             preExistingOffset = this.candidateBaselineSizes.get(newFilePath) || 0;
           } else if (this.sinceTimestamp > 0 && fs.existsSync(newFilePath)) {
             try {
-              const stats = fs.statSync(newFilePath);
+              const stats = await fs.promises.stat(newFilePath);
               const birthtime = stats.birthtimeMs || 0;
               if ((birthtime > 0 && birthtime < this.sinceTimestamp) || stats.mtimeMs < this.sinceTimestamp) {
                 filePreExisted = true;
@@ -1224,9 +1460,7 @@ export class TranscriptWatcher extends EventEmitter {
           this.readOffset = filePreExisted ? preExistingOffset : 0;
           if (filePreExisted && fs.existsSync(newFilePath)) {
             try {
-              const content = fs.readFileSync(newFilePath, 'utf8');
-              const slice = preExistingOffset > 0 ? content.slice(0, preExistingOffset) : content;
-              this.initialTranscriptLength = slice.split('\n').filter(l => l.trim().length > 0).length;
+              this.initialTranscriptLength = await countTranscriptLinesAsync(newFilePath, preExistingOffset > 0 ? preExistingOffset : undefined);
               this.lineCounter = this.initialTranscriptLength;
             } catch {
               this.initialTranscriptLength = 0;

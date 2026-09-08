@@ -52,21 +52,43 @@ function escapeRegex(str: string): string {
 }
 
 /**
- * Recursively search for a file within a directory up to maxDepth levels
+ * Directories ignored during recursive search to avoid scanning massive dependency and build trees
  */
-export function findFileRecursive(dir: string, filename: string, maxDepth: number = 6): string | null {
+export const IGNORED_SEARCH_DIRS = new Set([
+  'node_modules',
+  'languages',
+  'extensions',
+  'test',
+  'media',
+  'static'
+]);
+
+/**
+ * Recursively search for a file within a directory up to maxDepth levels.
+ * Non-target subdirectories (node_modules, languages, extensions, test, media, static)
+ * are pruned to avoid scanning tens of thousands of compiled files in the out/ directory.
+ */
+export function findFileRecursive(
+  dir: string,
+  filename: string,
+  maxDepth: number = 3,
+  ignoredDirs: Set<string> = IGNORED_SEARCH_DIRS
+): string | null {
   if (maxDepth < 0 || !fs.existsSync(dir)) {
     return null;
   }
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
+      if (entry.name.startsWith('.') || ignoredDirs.has(entry.name.toLowerCase())) {
+        continue;
+      }
       const fullPath = path.join(dir, entry.name);
       if (entry.isFile() && entry.name === filename) {
         return fullPath;
       }
       if (entry.isDirectory()) {
-        const found = findFileRecursive(fullPath, filename, maxDepth - 1);
+        const found = findFileRecursive(fullPath, filename, maxDepth - 1, ignoredDirs);
         if (found) {
           return found;
         }
@@ -79,7 +101,7 @@ export function findFileRecursive(dir: string, filename: string, maxDepth: numbe
 }
 
 /**
- * Discovers the absolute path to workbench.html across Antigravity IDE, VS Code, or Cursor.
+ * Discovers the absolute path to workbench.html across Antigravity IDE, VS Code, Cursor, Windsurf, and Trae.
  * Checks candidate directory structures first, falling back to bounded recursive search.
  */
 export function getWorkbenchPath(customAppRoot?: string): string | null {
@@ -111,13 +133,27 @@ export function getWorkbenchPath(customAppRoot?: string): string | null {
     return null;
   }
 
-  // Candidate paths across various VS Code and Electron layouts
+  // Candidate paths across various VS Code, Antigravity, Cursor, Windsurf, and Trae layouts
   const candidates = [
+    // Standard VS Code / Electron sandbox & browser
     path.join(appRoot, 'out', 'vs', 'code', 'electron-sandbox', 'workbench', 'workbench.html'),
     path.join(appRoot, 'out', 'vs', 'code', 'electron-browser', 'workbench', 'workbench.html'),
     path.join(appRoot, 'out', 'vs', 'workbench', 'workbench.html'),
     path.join(appRoot, 'out', 'vs', 'code', 'browser', 'workbench', 'workbench.html'),
     path.join(appRoot, 'out', 'vs', 'code', 'electron-main', 'workbench', 'workbench.html'),
+    // Antigravity standard layouts
+    path.join(appRoot, 'out', 'antigravity', 'workbench.html'),
+    path.join(appRoot, 'out', 'vs', 'antigravity', 'workbench.html'),
+    // Cursor standard layouts
+    path.join(appRoot, 'out', 'cursor', 'workbench.html'),
+    path.join(appRoot, 'out', 'vs', 'cursor', 'workbench.html'),
+    // Windsurf standard layouts
+    path.join(appRoot, 'out', 'windsurf', 'workbench.html'),
+    path.join(appRoot, 'out', 'vs', 'windsurf', 'workbench.html'),
+    // Trae standard layouts
+    path.join(appRoot, 'out', 'trae', 'workbench.html'),
+    path.join(appRoot, 'out', 'vs', 'trae', 'workbench.html'),
+    // Flat / fallback layouts
     path.join(appRoot, 'out', 'workbench.html'),
     path.join(appRoot, 'workbench.html')
   ];
@@ -128,16 +164,16 @@ export function getWorkbenchPath(customAppRoot?: string): string | null {
     }
   }
 
-  // Fallback: Search recursively inside appRoot/out or appRoot with maxDepth 6
+  // Fallback: Search recursively inside appRoot/out or appRoot with maxDepth 3
   const outDir = path.join(appRoot, 'out');
   if (fs.existsSync(outDir)) {
-    const foundInOut = findFileRecursive(outDir, 'workbench.html', 6);
+    const foundInOut = findFileRecursive(outDir, 'workbench.html', 3);
     if (foundInOut) {
       return foundInOut;
     }
   }
 
-  return findFileRecursive(appRoot, 'workbench.html', 6);
+  return findFileRecursive(appRoot, 'workbench.html', 3);
 }
 
 /**

@@ -201,24 +201,19 @@
                 }
 
                 if (typeof container.querySelectorAll === 'function') {
-                  const innerNodes = container.querySelectorAll('*');
-                  for (let i = 0; i < innerNodes.length; i++) {
-                    const el = innerNodes[i];
-                    if (el.shadowRoot && !visited.has(el.shadowRoot)) {
-                      results = results.concat(queryDeep(selector, el.shadowRoot, visited));
-                    }
-                    if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
-                      try {
-                        const frameDoc = el.contentDocument || (el.contentWindow && el.contentWindow.document);
-                        if (frameDoc && !visited.has(frameDoc)) {
-                          results = results.concat(queryDeep(selector, frameDoc, visited));
-                        }
-                      } catch (frameErr) {
-                        logBridge('WARN', `Cross-origin iframe access restricted in container query: ${frameErr?.message || frameErr}`, {
-                          iframeId: el.id,
-                          iframeSrc: el.src
-                        }, frameErr);
+                  const frames = container.querySelectorAll('iframe, frame');
+                  for (let i = 0; i < frames.length; i++) {
+                    const el = frames[i];
+                    try {
+                      const frameDoc = el.contentDocument || (el.contentWindow && el.contentWindow.document);
+                      if (frameDoc && !visited.has(frameDoc)) {
+                        results = results.concat(queryDeep(selector, frameDoc, visited));
                       }
+                    } catch (frameErr) {
+                      logBridge('WARN', `Cross-origin iframe access restricted in container query: ${frameErr?.message || frameErr}`, {
+                        iframeId: el.id,
+                        iframeSrc: el.src
+                      }, frameErr);
                     }
                   }
                 }
@@ -253,25 +248,24 @@
             }
           }
 
+          if (doc.shadowRoot && !visited.has(doc.shadowRoot)) {
+            results = results.concat(queryDeep(selector, doc.shadowRoot, visited));
+          }
+
           try {
-            const allNodes = doc.querySelectorAll('*');
-            for (let i = 0; i < allNodes.length; i++) {
-              const el = allNodes[i];
-              if (el.shadowRoot && !visited.has(el.shadowRoot)) {
-                results = results.concat(queryDeep(selector, el.shadowRoot, visited));
-              }
-              if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
-                try {
-                  const src = el.src || el.getAttribute?.('src') || '';
-                  if (!src.startsWith('vscode-webview:') && !src.startsWith('http:') && !src.startsWith('https:')) {
-                    const frameDoc = el.contentDocument || (el.contentWindow && el.contentWindow.document);
-                    if (frameDoc && !visited.has(frameDoc)) {
-                      results = results.concat(queryDeep(selector, frameDoc, visited));
-                    }
+            const frames = (typeof doc.querySelectorAll === 'function') ? doc.querySelectorAll('iframe, frame') : [];
+            for (let i = 0; i < frames.length; i++) {
+              const el = frames[i];
+              try {
+                const src = el.src || el.getAttribute?.('src') || '';
+                if (!src.startsWith('vscode-webview:') && !src.startsWith('http:') && !src.startsWith('https:')) {
+                  const frameDoc = el.contentDocument || (el.contentWindow && el.contentWindow.document);
+                  if (frameDoc && !visited.has(frameDoc)) {
+                    results = results.concat(queryDeep(selector, frameDoc, visited));
                   }
-                } catch (_) {
-                  // Silently ignore cross-origin restrictions on iframes
                 }
+              } catch (_) {
+                // Silently ignore cross-origin restrictions on iframes
               }
             }
           } catch (traverseErr) {
@@ -2020,6 +2014,72 @@
     return triggerNewConversation(options);
   }
 
+  const DIALOG_CONTAINER_SELECTORS = [
+    '.notifications-toasts',
+    '.monaco-dialog-box',
+    '.action-widget',
+    '.monaco-dialog-modal-block',
+    '.dialog-buttons',
+    '.notification-toast-container',
+    '.monaco-notification-toast'
+  ];
+  const DIALOG_SELECTORS_STRING = DIALOG_CONTAINER_SELECTORS.join(', ');
+  const BUTTON_SELECTORS_STRING = 'button, [role="button"], .monaco-button, .dialog-button, a.monaco-button';
+
+  function isNodeMatchingOrContainingDialog(node) {
+    if (!node || node.nodeType !== 1) return false;
+    try {
+      if (typeof node.matches === 'function') {
+        if (node.matches(DIALOG_SELECTORS_STRING) || node.matches(BUTTON_SELECTORS_STRING)) {
+          return true;
+        }
+      }
+      if (typeof node.querySelector === 'function') {
+        if (node.querySelector(DIALOG_SELECTORS_STRING) || node.querySelector(BUTTON_SELECTORS_STRING)) {
+          return true;
+        }
+      }
+      if (typeof node.closest === 'function') {
+        if (node.closest(DIALOG_SELECTORS_STRING)) {
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function isRelevantDialogMutation(mutationList) {
+    if (!mutationList || (!Array.isArray(mutationList) && !mutationList.length)) return false;
+    for (let m = 0; m < mutationList.length; m++) {
+      const mutation = mutationList[m];
+      if (!mutation) continue;
+
+      // 1. Check mutation target
+      const target = mutation.target;
+      if (target && target.nodeType === 1) {
+        try {
+          if (typeof target.closest === 'function' && target.closest(DIALOG_SELECTORS_STRING)) {
+            return true;
+          }
+          if (typeof target.matches === 'function' && target.matches(DIALOG_SELECTORS_STRING)) {
+            return true;
+          }
+        } catch (_) {}
+      }
+
+      // 2. Check addedNodes
+      const added = mutation.addedNodes;
+      if (added && added.length > 0) {
+        for (let i = 0; i < added.length; i++) {
+          if (isNodeMatchingOrContainingDialog(added[i])) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   /**
    * Background Permission Auto-Approver
    * Continuously scans for modal/inline permission buttons and clicks them immediately.
@@ -2027,13 +2087,15 @@
   function startAutoApprovalObserver(patterns, options = {}) {
     const targetPatterns = patterns || DEFAULT_APPROVAL_PATTERNS;
     const doc = options.document || (typeof document !== 'undefined' ? document : null);
-    const intervalMs = options.intervalMs || 1000;
     const onApproved = options.onApproved || null;
     const throttleMs = options.throttleMs || 300;
     const maxWaitMs = options.maxWaitMs || 500;
+    const idleIntervalMs = options.idleIntervalMs || Math.max(800, options.intervalMs || 1000);
+    const activeIntervalMs = options.activeIntervalMs || 50;
+    let currentIntervalMs = options.initialIntervalMs || (options.intervalMs !== undefined ? options.intervalMs : idleIntervalMs);
 
     if (!doc) {
-      return { stop: () => {}, scanNow: () => 0 };
+      return { stop: () => {}, scanNow: () => 0, getCurrentIntervalMs: () => currentIntervalMs };
     }
 
     let isStopped = false;
@@ -2043,6 +2105,8 @@
       let approvedCount = 0;
 
       const candidates = queryDeep('button, [role="button"], .monaco-button, .dialog-button, a.monaco-button', doc);
+      let foundMatchingDialogButton = false;
+
       for (let i = 0; i < candidates.length; i++) {
         const btn = candidates[i];
         if (!btn || !isElementVisible(btn)) continue;
@@ -2053,6 +2117,7 @@
         for (let p = 0; p < targetPatterns.length; p++) {
           const pat = targetPatterns[p];
           if (text === pat || text.toLowerCase() === pat.toLowerCase() || (text.length < 50 && text.includes(pat))) {
+            foundMatchingDialogButton = true;
             try {
               if (typeof btn.click === 'function') {
                 btn.click();
@@ -2068,6 +2133,14 @@
             break;
           }
         }
+      }
+
+      // Adaptive throttle & backoff:
+      if (foundMatchingDialogButton || approvedCount > 0) {
+        currentIntervalMs = activeIntervalMs;
+      } else {
+        // When no dialog buttons are detected, increase idle polling interval from 50ms up to 800ms–1000ms
+        currentIntervalMs = Math.min(idleIntervalMs, Math.max(currentIntervalMs * 1.5, 800));
       }
 
       return approvedCount;
@@ -2124,14 +2197,43 @@
 
     // 2. MutationObserver
     let observer = null;
+    const scopedObservers = [];
     const win = options.window || (typeof window !== 'undefined' ? window : null);
     const MutationObserverClass = options.MutationObserver || (win && win.MutationObserver) || (typeof MutationObserver !== 'undefined' ? MutationObserver : null);
 
     if (MutationObserverClass) {
       try {
-        observer = new MutationObserverClass(() => {
-          throttledScan();
+        // Dynamically target dialog/toast containers when present
+        if (typeof doc.querySelectorAll === 'function') {
+          const dialogContainers = doc.querySelectorAll('.notifications-toasts, .monaco-dialog-box, .action-widget');
+          for (let i = 0; i < dialogContainers.length; i++) {
+            try {
+              const cObs = new MutationObserverClass(() => {
+                currentIntervalMs = activeIntervalMs;
+                executeScan();
+                schedulePoll(activeIntervalMs);
+              });
+              cObs.observe(dialogContainers[i], { childList: true, subtree: true });
+              scopedObservers.push(cObs);
+            } catch (_) {}
+          }
+        }
+
+        observer = new MutationObserverClass((mutations) => {
+          if (mutations && mutations.length > 0) {
+            if (isRelevantDialogMutation(mutations)) {
+              currentIntervalMs = activeIntervalMs;
+              // Instantly trigger immediate scan upon detecting relevant dialog mutations
+              executeScan();
+              schedulePoll(activeIntervalMs);
+            }
+            // Unrelated editor cursor blinks, typing, terminal mutations, minimap are ignored
+          } else {
+            // Synthetic / legacy trigger without mutation records
+            throttledScan();
+          }
         });
+
         const targetNode = doc.body || doc.documentElement || doc;
         if (targetNode && typeof observer.observe === 'function') {
           observer.observe(targetNode, {
@@ -2145,15 +2247,29 @@
       }
     }
 
-    // 3. Fallback interval
-    const intervalId = setInterval(() => {
-      scanAndApprove();
-    }, intervalMs);
+    // 3. Fallback adaptive polling interval
+    let pollTimer = null;
+    function schedulePoll(delay) {
+      if (isStopped) return;
+      if (pollTimer) clearTimeout(pollTimer);
+      const nextDelay = delay !== undefined ? delay : currentIntervalMs;
+      pollTimer = setTimeout(() => {
+        if (isStopped) return;
+        scanAndApprove();
+        schedulePoll();
+      }, nextDelay);
+    }
+    schedulePoll(currentIntervalMs);
 
     return {
       scanNow: () => scanAndApprove(),
+      getCurrentIntervalMs: () => currentIntervalMs,
       stop: () => {
         isStopped = true;
+        if (pollTimer) {
+          clearTimeout(pollTimer);
+          pollTimer = null;
+        }
         if (throttleTimer) {
           clearTimeout(throttleTimer);
           throttleTimer = null;
@@ -2165,7 +2281,12 @@
         if (observer && typeof observer.disconnect === 'function') {
           observer.disconnect();
         }
-        clearInterval(intervalId);
+        for (let i = 0; i < scopedObservers.length; i++) {
+          if (typeof scopedObservers[i].disconnect === 'function') {
+            scopedObservers[i].disconnect();
+          }
+        }
+        scopedObservers.length = 0;
       }
     };
   }
@@ -3067,6 +3188,8 @@
     triggerNewConversation,
     handleOpenNewConversation,
     startAutoApprovalObserver,
+    isRelevantDialogMutation,
+    DIALOG_CONTAINER_SELECTORS,
     createWorkerTimer,
     detectWorkspaceName,
     parseWorkspaceFromTitleString,

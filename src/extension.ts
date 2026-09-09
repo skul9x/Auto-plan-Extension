@@ -18,6 +18,7 @@ export const bridgeServer = new BridgeServer({
 });
 import {
   isBridgeInstalled,
+  isBridgeScriptUpToDate,
   installBridgeScript,
   installBridgeScriptAsync,
   uninstallBridgeScript,
@@ -1503,15 +1504,28 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Non-blocking bridge status inspection on startup (LOGIC-007)
   const startupConfig = getConfig();
-  if (startupConfig.autoInjectWorkbench !== false && !isBridgeInstalled()) {
+  const bridgeInstalled = isBridgeInstalled();
+  const bridgeUpToDate = bridgeInstalled && isBridgeScriptUpToDate(undefined, context);
+  if (startupConfig.autoInjectWorkbench !== false && (!bridgeInstalled || !bridgeUpToDate)) {
     const wbPath = getWorkbenchPath();
     if (wbPath && canWriteWorkbenchPath(wbPath)) {
       // Non-elevated write permissions exist: install asynchronously in background
-      installBridgeScriptAsync({ updateChecksums: true, context })
+      installBridgeScriptAsync({ updateChecksums: true, context, forceReinject: !bridgeUpToDate })
         .then((res) => {
           if (res.success) {
             updateBridgeStatusBar();
             sidebarProvider?.sendBridgeStatus();
+            if (!bridgeUpToDate && bridgeInstalled) {
+              vscode.window.showInformationMessage(
+                'Auto-Plan: DOM Bridge has been updated. Reload IDE to apply changes.',
+                '🔄 Reload Window',
+                'Later'
+              ).then((sel) => {
+                if (sel === '🔄 Reload Window') {
+                  vscode.commands.executeCommand('workbench.action.reloadWindow');
+                }
+              });
+            }
           }
         })
         .catch((err) => {
@@ -1520,7 +1534,7 @@ export function activate(context: vscode.ExtensionContext) {
     } else {
       // Elevated permissions required: prompt user with actionable notification instead of popping root prompt during boot
       vscode.window.showInformationMessage(
-        'Auto-Plan: DOM Bridge requires installation. Click Install to proceed.',
+        'Auto-Plan: DOM Bridge requires installation or update. Click Install to proceed.',
         'Install',
         'Later'
       ).then((selection) => {

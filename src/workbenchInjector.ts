@@ -658,6 +658,27 @@ export function buildBridgeScriptContent(_context?: any): string {
 }
 
 /**
+ * Checks whether the installed DOM bridge script matches the latest extension bundle.
+ */
+export function isBridgeScriptUpToDate(workbenchPath?: string, context?: any): boolean {
+  const wbPath = workbenchPath || getWorkbenchPath();
+  if (!wbPath) {
+    return false;
+  }
+  const scriptFilePath = path.join(path.dirname(wbPath), DEFAULT_BRIDGE_SCRIPT_NAME);
+  if (!fs.existsSync(scriptFilePath)) {
+    return false;
+  }
+  try {
+    const existing = fs.readFileSync(scriptFilePath, 'utf8');
+    const latest = buildBridgeScriptContent(context);
+    return existing.trim() === latest.trim();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Installs the DOM bridge script tag into workbench.html.
  * Idempotent: replaces previous version tag without duplicate entries.
  * Automatically manages backup (workbench.html.autoplan.bak).

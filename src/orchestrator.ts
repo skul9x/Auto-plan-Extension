@@ -1,9 +1,11 @@
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import * as vscode from 'vscode';
 import { AutoPlanConfig, getConfig, DEFAULT_PROMPT_TEMPLATE } from './config';
 import { KeyboardManager, keyboardManager as defaultKeyboardManager } from './keyboardManager';
+import { BridgeServer, bridgeServer as defaultBridgeServer } from './bridgeServer';
 import {
   PromptDispatcher,
   promptDispatcher as defaultPromptDispatcher,
@@ -103,6 +105,7 @@ export interface OrchestratorOptions {
   keyboardManager?: KeyboardManager;
   transcriptWatcher?: TranscriptWatcher;
   promptDispatcher?: PromptDispatcher;
+  bridgeServer?: BridgeServer;
   debugLogger?: DebugLogger;
   stallTimeoutMs?: number;
   stallWatchdogThresholdMs?: number;
@@ -142,6 +145,7 @@ export class Orchestrator extends EventEmitter {
   private keyboardManager: KeyboardManager;
   private transcriptWatcher: TranscriptWatcher;
   private promptDispatcher: PromptDispatcher;
+  private bridgeServer?: BridgeServer;
   private debugLogger: DebugLogger;
   private actionableErrorNotifier: ActionableErrorNotifier;
 
@@ -151,6 +155,7 @@ export class Orchestrator extends EventEmitter {
     this.configProvider = options?.configProvider ?? getConfig;
     this.keyboardManager = options?.keyboardManager ?? defaultKeyboardManager;
     this.transcriptWatcher = options?.transcriptWatcher ?? defaultTranscriptWatcher;
+    this.bridgeServer = options?.bridgeServer;
     this.debugLogger = options?.debugLogger ?? defaultDebugLogger;
     this.stallWatchdogThresholdMs =
       options?.stallTimeoutMs ?? options?.stallWatchdogThresholdMs ?? 120000;
@@ -253,6 +258,86 @@ export class Orchestrator extends EventEmitter {
 
   public getWorkspacePath(): string | undefined {
     return this.workspacePath;
+  }
+
+  public getBridgeServer(): BridgeServer | undefined {
+    return this.bridgeServer || (this.promptDispatcher ? this.promptDispatcher.getBridgeServer() : defaultBridgeServer);
+  }
+
+  public setBridgeServer(server: BridgeServer): void {
+    this.bridgeServer = server;
+  }
+
+  /**
+   * Captures and saves full workbench DOM HTML snapshots to the global filesystem storage directory.
+   */
+  public async saveWorkbenchSnapshot(options: {
+    phaseIndex: number;
+    phaseName?: string;
+    attempt: number;
+    triggerType: 'initial' | 'retry';
+  }): Promise<string | undefined> {
+    if (this.isAborted) {
+      return undefined;
+    }
+    const cfg = this.configProvider ? this.configProvider() : getConfig();
+    if (cfg.enableDomSnapshots === false) {
+      return undefined;
+    }
+
+    try {
+      // 1. Resolve current workspace name dynamically
+      const activeWsFolder = (typeof vscode !== 'undefined' && vscode?.workspace?.workspaceFolders)
+        ? vscode.workspace.workspaceFolders[0]
+        : undefined;
+      const wsName = this.workspaceName ||
+        (activeWsFolder ? activeWsFolder.name : undefined) ||
+        (this.workspacePath ? path.basename(this.workspacePath) : 'default_project');
+      const sanitizedWsName = wsName.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+      // 2. Resolve destination directory
+      const homeDir = os.homedir();
+      const targetDir = cfg.domSnapshotFolder && path.isAbsolute(cfg.domSnapshotFolder)
+        ? cfg.domSnapshotFolder
+        : path.join(homeDir, '.autoplan', 'snapshots', sanitizedWsName);
+
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+
+      // 3. Generate ISO-like filesystem-safe timestamp: YYYY-MM-DD_HH-mm-ss
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const timestampStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+
+      const fileName = `snapshot_phase_${pad(options.phaseIndex + 1)}_${options.triggerType}_attempt_${options.attempt}_${timestampStr}.html`;
+      const fullPath = path.join(targetDir, fileName);
+
+      const server = this.getBridgeServer();
+      if (!server) {
+        this.debugLogger.warn('ORCHESTRATOR', 'Failed to capture DOM snapshot: BridgeServer instance not available');
+        return undefined;
+      }
+
+      // 4. Retrieve HTML from bridgeServer.captureDomSnapshot(6000)
+      const res = await server.captureDomSnapshot(6000);
+      if (this.isAborted) {
+        return undefined;
+      }
+      if (res && res.success && typeof res.html === 'string') {
+        fs.writeFileSync(fullPath, res.html, 'utf8');
+        this.debugLogger.info(
+          'ORCHESTRATOR',
+          `[DOM-SNAPSHOT] Saved workbench snapshot to ${fullPath} (${(res.html.length / 1024).toFixed(1)} KB)`
+        );
+        return fullPath;
+      } else {
+        this.debugLogger.warn('ORCHESTRATOR', `Failed to capture DOM snapshot: ${res?.error || 'Unknown error'}`);
+      }
+    } catch (snapshotErr: any) {
+      this.debugLogger.warn('ORCHESTRATOR', `Failed to capture DOM snapshot: ${snapshotErr?.message || snapshotErr}`);
+    }
+    return undefined;
   }
 
   public get config(): AutoPlanConfig {
@@ -1093,6 +1178,16 @@ export class Orchestrator extends EventEmitter {
             renderedPrompt = renderPromptTemplate(template, phase.filePath);
             phaseStartTime = Date.now();
 
+            if (phaseRetryCount === 0) {
+              await this.saveWorkbenchSnapshot({
+                phaseIndex: i,
+                phaseName: phase.fileName,
+                attempt: 1,
+                triggerType: 'initial'
+              });
+            }
+            if (this.isAborted) break;
+
             // 3. New Conversation Trigger, Focus, Paste & Submit via PromptDispatcher (3-Tier)
             this.setState('sending', `Phase ${i + 1}/${this.phases.length}: Sending prompt for ${phase.fileName}`);
 
@@ -1231,6 +1326,15 @@ export class Orchestrator extends EventEmitter {
                 if (phaseRetryCount < maxRetries) {
                   phaseRetryCount++;
                   this.stopStallWatchdog();
+
+                  await this.saveWorkbenchSnapshot({
+                    phaseIndex: i,
+                    phaseName: phase.fileName,
+                    attempt: phaseRetryCount,
+                    triggerType: 'retry'
+                  });
+                  if (this.isAborted) break;
+
                   const retryStatusMessage = `Auto-Plan: Retrying Phase ${phase.phaseNumber || i + 1} (${phaseRetryCount}/${maxRetries}) in ${retryDelaySeconds}s...`;
                   this.setState('delaying', retryStatusMessage);
                   this.debugLogger.info(

@@ -14,7 +14,7 @@ export const PORT_REGISTRY_FILENAME = 'ag-autoplan-ports.json';
 export const BRIDGE_SERVICE_NAME = 'autoplan-bridge-server';
 export const BRIDGE_PROTOCOL_VERSION = '2.0.0';
 
-export type CommandType = 'sendPrompt' | 'openNewConversation' | 'clickApproval' | 'ping' | string;
+export type CommandType = 'sendPrompt' | 'openNewConversation' | 'clickApproval' | 'ping' | 'captureWorkbenchDom' | string;
 
 export interface BridgeCommand {
   id: string;
@@ -565,6 +565,43 @@ export class BridgeServer {
   }
 
   /**
+   * Dispatches a captureWorkbenchDom command to the active DOM client and retrieves the full HTML snapshot.
+   */
+  public async captureDomSnapshot(timeoutMs: number = 8000, windowKey?: string): Promise<{ success: boolean; html?: string; error?: string }> {
+    try {
+      if (!this.isListening()) {
+        return { success: false, error: 'BridgeServer is not listening' };
+      }
+
+      const activeClients = this.getActiveClients();
+      if (activeClients.length === 0) {
+        return { success: false, error: 'No active connected DOM bridge clients found' };
+      }
+
+      const ackResult = await this.dispatchPromptCommand('', {
+        type: 'captureWorkbenchDom',
+        timeoutMs,
+        windowKey
+      });
+
+      const html = ackResult.metadata?.html;
+      if (typeof html !== 'string') {
+        return { success: false, error: 'DOM bridge ACK did not contain valid HTML string' };
+      }
+
+      return {
+        success: true,
+        html
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || String(err)
+      };
+    }
+  }
+
+  /**
    * Handles incoming HTTP requests with CORS, authentication, and endpoint routing.
    */
   private handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -1028,14 +1065,19 @@ export class BridgeServer {
 
   private readJsonBody<T>(req: http.IncomingMessage, callback: (err: Error | null, data?: T) => void): void {
     let body = '';
+    let destroyed = false;
+    const MAX_PAYLOAD_BYTES = 20 * 1024 * 1024;
     req.on('data', (chunk) => {
+      if (destroyed) return;
       body += chunk;
-      if (body.length > 1024 * 1024) {
-        // Prevent payload flood
+      if (body.length > MAX_PAYLOAD_BYTES) {
+        destroyed = true;
+        this.logger.warn('SERVER', `Payload flood detected: request body exceeded ${MAX_PAYLOAD_BYTES} bytes (${body.length} bytes), terminating socket`);
         req.destroy();
       }
     });
     req.on('end', () => {
+      if (destroyed) return;
       try {
         const parsed = JSON.parse(body || '{}');
         callback(null, parsed as T);

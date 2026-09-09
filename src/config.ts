@@ -32,6 +32,8 @@ export interface AutoPlanConfig {
   autoRetryOnTimeout?: boolean;
   retryDelaySeconds?: number;
   maxAutoRetries?: number;
+  enableDomSnapshots?: boolean;
+  domSnapshotFolder?: string;
 }
 
 export const DEFAULT_PROMPT_TEMPLATE = `Implement the code closely following the file {xxx}
@@ -64,7 +66,9 @@ export const DEFAULT_CONFIG: AutoPlanConfig = {
   autoOpenBridgeLogOnError: false,
   autoRetryOnTimeout: true,
   retryDelaySeconds: 3,
-  maxAutoRetries: 5
+  maxAutoRetries: 5,
+  enableDomSnapshots: true,
+  domSnapshotFolder: ''
 };
 
 export const CONFIG_SECTION = 'autoplan';
@@ -109,7 +113,9 @@ export function getConfig(): AutoPlanConfig {
     autoOpenBridgeLogOnError: config.get<boolean>('autoOpenBridgeLogOnError', DEFAULT_CONFIG.autoOpenBridgeLogOnError ?? false),
     autoRetryOnTimeout: config.get<boolean>('autoRetryOnTimeout', DEFAULT_CONFIG.autoRetryOnTimeout ?? true),
     retryDelaySeconds: config.get<number>('retryDelaySeconds', DEFAULT_CONFIG.retryDelaySeconds ?? 3),
-    maxAutoRetries: config.get<number>('maxAutoRetries', DEFAULT_CONFIG.maxAutoRetries ?? 5)
+    maxAutoRetries: config.get<number>('maxAutoRetries', DEFAULT_CONFIG.maxAutoRetries ?? 5),
+    enableDomSnapshots: config.get<boolean>('enableDomSnapshots', DEFAULT_CONFIG.enableDomSnapshots ?? true),
+    domSnapshotFolder: config.get<string>('domSnapshotFolder', DEFAULT_CONFIG.domSnapshotFolder ?? '')
   };
 }
 

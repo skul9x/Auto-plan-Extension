@@ -249,6 +249,16 @@
           "default": true,
           "description": "Suppress warning toast popups when falling back between prompt dispatch tiers"
         },
+        "autoplan.enableDomSnapshots": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically capture and save full workbench DOM HTML snapshots when creating or retrying conversations."
+        },
+        "autoplan.domSnapshotFolder": {
+          "type": "string",
+          "default": "",
+          "description": "Custom directory path for DOM snapshots. When empty, defaults to centralized global directory ~/.autoplan/snapshots/<project_name>."
+        },
         "autoplan.autoRetryOnTimeout": {
           "type": "boolean",
           "default": true,

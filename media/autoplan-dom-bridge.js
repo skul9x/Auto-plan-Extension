@@ -2523,7 +2523,7 @@
       this.workspaceName = options.workspaceName || null;
       this.pollIntervalMs = options.pollIntervalMs || DEFAULT_POLL_INTERVAL_MS;
       this.heartbeatIntervalMs = options.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS;
-      this.fetchFn = options.fetch || (typeof fetch !== 'undefined' ? fetch.bind(global) : null);
+      this.fetchFn = options.fetch || options.fetchFn || (typeof fetch !== 'undefined' ? fetch.bind(global) : null);
       this.approvalObserver = null;
       this.pollTimer = null;
       this.workerTimer = null;
@@ -3034,6 +3034,37 @@
             isSuccess ? null : (result?.error || 'Failed to find new conversation button'),
             typeof result === 'object' ? result : { success: isSuccess }
           );
+        } else if (cmd.type === 'captureWorkbenchDom') {
+          try {
+            const doc = this.customDocument || (typeof document !== 'undefined' ? document : null);
+            if (!doc || !doc.documentElement || typeof doc.documentElement.outerHTML !== 'string') {
+              logBridge('WARN', 'captureWorkbenchDom: document.documentElement is inaccessible');
+              await this.sendAck(cmd.id, 'error', 'DOM documentElement is inaccessible');
+              return;
+            }
+            const html = doc.documentElement.outerHTML;
+            const win = this.customWindow || (typeof window !== 'undefined' ? window : null);
+            const currentUrl = (win && win.location) ? (typeof win.location === 'string' ? win.location : win.location.href || '') : (doc && doc.location ? (typeof doc.location === 'string' ? doc.location : doc.location.href || '') : '');
+            let byteLength = 0;
+            if (typeof Buffer !== 'undefined' && Buffer.byteLength) {
+              byteLength = Buffer.byteLength(html, 'utf8');
+            } else if (typeof TextEncoder !== 'undefined') {
+              byteLength = new TextEncoder().encode(html).length;
+            } else {
+              byteLength = html.length;
+            }
+            const timestamp = Date.now();
+
+            await this.sendAck(cmd.id, 'completed', null, {
+              html,
+              byteLength,
+              url: currentUrl,
+              timestamp
+            });
+          } catch (captureErr) {
+            logBridge('WARN', `captureWorkbenchDom error: ${captureErr?.message || captureErr}`, {}, captureErr);
+            await this.sendAck(cmd.id, 'error', captureErr?.message || String(captureErr));
+          }
         } else if (cmd.type === 'clickApproval') {
           const count = this.approvalObserver ? this.approvalObserver.scanNow() : 0;
           await this.sendAck(cmd.id, 'completed', null, { clickedCount: count });
@@ -3194,7 +3225,8 @@
     detectWorkspaceName,
     parseWorkspaceFromTitleString,
     getWorkspaceIdentifier,
-    DomBridgeClient
+    DomBridgeClient,
+    BridgeClient: DomBridgeClient
   };
 
   if (typeof module !== 'undefined' && module.exports) {

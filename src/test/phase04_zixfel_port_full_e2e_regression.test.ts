@@ -17,7 +17,6 @@ const mockConfigValues: Record<string, any> = {
   focusDelayMs: 10,
   executionMode: 'auto',
   bridgeTimeoutMs: 100,
-  autoApprovePermissions: true,
   autoInjectWorkbench: true,
   suppressFallbackWarnings: true
 };

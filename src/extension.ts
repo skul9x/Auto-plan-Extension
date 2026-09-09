@@ -1063,7 +1063,6 @@ export interface BridgeDiagnosticReport {
   connectedClients: any[];
   executionMode: string;
   autoInjectWorkbench: boolean;
-  autoApprovePermissions: boolean;
   bridgeTimeoutMs: number;
   protocolVersion: string;
 }
@@ -1201,7 +1200,6 @@ export function runBridgeDiagnostic(): BridgeDiagnosticReport {
     connectedClients: bridgeServer.getConnectedClients(),
     executionMode: config.executionMode || 'auto',
     autoInjectWorkbench: config.autoInjectWorkbench ?? true,
-    autoApprovePermissions: config.autoApprovePermissions ?? true,
     bridgeTimeoutMs: config.bridgeTimeoutMs ?? 5000,
     protocolVersion: status.protocolVersion || BRIDGE_PROTOCOL_VERSION
   };

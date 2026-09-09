@@ -46,7 +46,6 @@ function createMockConfig(overrides: Partial<AutoPlanConfig> = {}): AutoPlanConf
     strictMode: true,
     bridgeTimeoutMs: 6000,
     staleClientMs: 120000,
-    autoApprovePermissions: true,
     autoInjectWorkbench: false,
     suppressFallbackWarnings: true,
     enableVerboseBridgeLogs: false,

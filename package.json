@@ -234,11 +234,6 @@
           "default": 120000,
           "description": "Timeout in milliseconds before an inactive DOM bridge client is marked stale"
         },
-        "autoplan.autoApprovePermissions": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically approve execution permissions via DOM bridge"
-        },
         "autoplan.autoInjectWorkbench": {
           "type": "boolean",
           "default": true,

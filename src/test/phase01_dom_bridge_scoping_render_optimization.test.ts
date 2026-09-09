@@ -416,42 +416,9 @@ async function runPhase01Verification() {
   assert.strictEqual(isRelevantDialogMutation([{ type: 'childList', addedNodes: [actionWidgetNode] }]), true, 'action-widget addition must be recognized');
   assert.strictEqual(isRelevantDialogMutation([{ type: 'childList', addedNodes: [buttonContainerNode] }]), true, 'Button addition must be recognized');
 
-  // 1c. Verify startAutoApprovalObserver ignores typing mutations and triggers on dialog
-  const testDoc = new MockDocument();
-  MockMutationObserver.instances = [];
-  let approvedCalls = 0;
-
-  const approvalHandle = domBridge.startAutoApprovalObserver(['Allow', 'Continue'], {
-    document: testDoc,
-    MutationObserver: MockMutationObserver,
-    activeIntervalMs: 50,
-    idleIntervalMs: 800,
-    onApproved: () => {
-      approvedCalls++;
-    }
-  });
-
-  const rootObs = MockMutationObserver.instances[MockMutationObserver.instances.length - 1];
-  assert.ok(rootObs, 'Root MockMutationObserver should be active');
-
-  // Trigger editor typing mutations -> approvedCalls must not increase
-  rootObs.trigger(editorMutations);
-  assert.strictEqual(approvedCalls, 0, 'Editor typing mutations must be ignored by startAutoApprovalObserver');
-
-  // Now attach a dialog button into DOM and trigger a dialog mutation
-  const dialogBox = new MockElement('div', 'monaco-dialog-box');
-  const allowBtn = new MockElement('button', 'dialog-button');
-  allowBtn.textContent = 'Allow';
-  dialogBox.appendChild(allowBtn);
-  testDoc.body.appendChild(dialogBox);
-
-  // Trigger dialog mutation -> must immediately scan and click
-  rootObs.trigger([{ type: 'childList', target: dialogBox, addedNodes: [allowBtn] }]);
-  assert.strictEqual(approvedCalls, 1, 'Dialog mutation must immediately trigger scanAndApprove');
-  assert.strictEqual(allowBtn.clicked, true, 'Dialog button must be clicked');
-
-  approvalHandle.stop();
-  console.log('  -> Passed: Editor mutations filtered; dialog mutations instantly approve.\n');
+  // 1c. Verify startAutoApprovalObserver is cleanly removed
+  assert.strictEqual((domBridge as any).startAutoApprovalObserver, undefined, 'startAutoApprovalObserver must not be exported');
+  console.log('  -> Passed: Editor mutations filtered; startAutoApprovalObserver cleanly removed.\n');
 
   // ----------------------------------------------------------------------
   // Test 2: Elimination of querySelectorAll('*') in queryDeep

@@ -22,7 +22,6 @@ const configStore: { [key: string]: any } = {
   defaultPlanFolder: '',
   executionMode: 'auto',
   bridgeTimeoutMs: 3000,
-  autoApprovePermissions: true,
   autoInjectWorkbench: true
 };
 
@@ -80,6 +79,9 @@ Module.prototype.require = function (moduleName: string) {
           }
         }),
         onDidChangeConfiguration: (_cb: any) => ({
+          dispose: () => {}
+        }),
+        onDidChangeWorkspaceFolders: (_cb: any) => ({
           dispose: () => {}
         }),
         openTextDocument: async (uri: any) => {
@@ -409,7 +411,10 @@ async function runPhase05FullRegressionTests() {
         completionTimeMs: 20
       }),
       stop: () => {},
-      readConversationMessages: async () => []
+      readConversationMessages: async () => [],
+      on: () => mockWatcher,
+      off: () => mockWatcher,
+      removeListener: () => mockWatcher
     };
 
     const mockKeyboard: any = {
@@ -544,7 +549,6 @@ async function runPhase05FullRegressionTests() {
     const props = pkg.contributes?.configuration?.properties || {};
     assert.ok(props['autoplan.executionMode'], 'Configuration must include autoplan.executionMode');
     assert.ok(props['autoplan.autoInjectWorkbench'], 'Configuration must include autoplan.autoInjectWorkbench');
-    assert.ok(props['autoplan.autoApprovePermissions'], 'Configuration must include autoplan.autoApprovePermissions');
     assert.ok(props['autoplan.bridgeTimeoutMs'], 'Configuration must include autoplan.bridgeTimeoutMs');
 
     await deactivate();

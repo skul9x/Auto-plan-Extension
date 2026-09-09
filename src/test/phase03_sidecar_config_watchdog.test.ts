@@ -70,7 +70,6 @@ async function runPhase03SidecarConfigWatchdogTestSuite() {
       assert.strictEqual(parsed.repeatCount, DEFAULT_CONFIG.repeatCount, 'repeatCount must match default config');
       assert.strictEqual(parsed.completionKeyword, DEFAULT_CONFIG.completionKeyword, 'completionKeyword must match default config');
       assert.strictEqual(parsed.executionMode, DEFAULT_CONFIG.executionMode, 'executionMode must match default config');
-      assert.strictEqual(parsed.autoApprovePermissions, DEFAULT_CONFIG.autoApprovePermissions, 'autoApprovePermissions must match default config');
 
       console.log('  ✓ writeConfigJson successfully created valid ag-autoplan-config.json file.');
     }
@@ -132,7 +131,7 @@ async function runPhase03SidecarConfigWatchdogTestSuite() {
       assert.strictEqual(evictedWatchdogStatus.evictedCount >= 1, true, 'Evicted count must be at least 1');
       assert.strictEqual(evictedWatchdogStatus.lastEvictedWindowKey, 'test-win-watchdog-1', 'Last evicted key must match client key');
       assert.strictEqual(evictedWatchdogStatus.activeClientsCount, 0, 'Active clients count must be 0');
-      assert.ok(evictedWatchdogStatus.logs.some(l => l.includes('evicted')), 'Watchdog logs should record eviction transition');
+      assert.ok(evictedWatchdogStatus.logs.some(l => l.toLowerCase().includes('evicted')), 'Watchdog logs should record eviction transition');
 
       // Test clean disposal on stop
       await server.stop();
@@ -153,7 +152,6 @@ async function runPhase03SidecarConfigWatchdogTestSuite() {
         completionKeyword: 'Done Phase 03 Test',
         executionMode: 'domBridge',
         bridgeTimeoutMs: 12000,
-        autoApprovePermissions: true,
         autoInjectWorkbench: true
       };
 

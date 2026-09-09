@@ -526,49 +526,15 @@ async function runPhase03Tests() {
   console.log('  -> Passed: Send button and New Conversation button located and triggered (including Antigravity IDE anchor).');
 
   // ----------------------------------------------------------------------
-  // Test 4: Background Permission Auto-Approval Scanner
+  // Test 4: Verification of Permission Auto-Approval Scanner Removal
   // ----------------------------------------------------------------------
-  console.log('\n[Test 4] Verifying background permission auto-approver and MutationObserver...');
-
-  const docApproval = new MockDocument();
-  let approvedActions: string[] = [];
-
-  // Create approval observer
-  const observerController = domBridge.startAutoApprovalObserver(
-    ['Allow', 'Always Allow', 'Run', 'Submit'],
-    {
-      document: docApproval,
-      window: mockWin,
-      MutationObserver: MockMutationObserver,
-      intervalMs: 100000, // Large interval to test observer/scanNow manually
-      onApproved: (pat: string) => {
-        approvedActions.push(pat);
-      }
-    }
+  console.log('\n[Test 4] Verifying removal of startAutoApprovalObserver...');
+  assert.strictEqual(
+    (domBridge as any).startAutoApprovalObserver,
+    undefined,
+    'startAutoApprovalObserver must not be exported by DOM bridge'
   );
-
-  // Add permission buttons into DOM
-  const allowBtn = docApproval.createElement('button');
-  allowBtn.textContent = 'Always Allow';
-  docApproval.body.appendChild(allowBtn);
-
-  const runBtn = docApproval.createElement('button');
-  runBtn.textContent = 'Run';
-  docApproval.body.appendChild(runBtn);
-
-  const unmatchBtn = docApproval.createElement('button');
-  unmatchBtn.textContent = 'Cancel';
-  docApproval.body.appendChild(unmatchBtn);
-
-  // Trigger scan
-  const approvedCount = observerController.scanNow();
-  assert.strictEqual(approvedCount, 2, 'Should have approved 2 matching buttons');
-  assert.strictEqual(allowBtn.clicked, true, 'Always Allow button should be clicked');
-  assert.strictEqual(runBtn.clicked, true, 'Run button should be clicked');
-  assert.strictEqual(unmatchBtn.clicked, false, 'Cancel button should not be clicked');
-
-  observerController.stop();
-  console.log('  -> Passed: Auto-approval observer clicked modal permission buttons.');
+  console.log('  -> Passed: startAutoApprovalObserver cleanly removed.');
 
   // ----------------------------------------------------------------------
   // Test 5: Bridge Server Integration Loop & Command Acknowledgment

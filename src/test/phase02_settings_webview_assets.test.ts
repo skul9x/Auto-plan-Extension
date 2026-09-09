@@ -226,7 +226,6 @@ async function runPhase02TestSuite() {
         'txtBridgeTimeoutMs',
         'txtDefaultPlanFolder',
         'btnBrowseFolder',
-        'chkAutoApprovePermissions',
         'chkAutoInjectWorkbench',
         'chkSuppressFallbackWarnings',
         'btnSetupBridge',
@@ -370,7 +369,6 @@ async function runPhase02TestSuite() {
         txtBridgeTimeoutMs: new MockElement('txtBridgeTimeoutMs', 'INPUT'),
         txtDefaultPlanFolder: new MockElement('txtDefaultPlanFolder', 'INPUT'),
         btnBrowseFolder: new MockElement('btnBrowseFolder', 'BUTTON'),
-        chkAutoApprovePermissions: new MockElement('chkAutoApprovePermissions', 'INPUT'),
         chkAutoInjectWorkbench: new MockElement('chkAutoInjectWorkbench', 'INPUT'),
         chkSuppressFallbackWarnings: new MockElement('chkSuppressFallbackWarnings', 'INPUT'),
         txtPromptTemplate: new MockElement('txtPromptTemplate', 'TEXTAREA'),
@@ -518,7 +516,6 @@ async function runPhase02TestSuite() {
             promptTemplate: 'Run phase {xxx} carefully',
             promptText: 'Run phase {xxx} carefully',
             completionKeyword: 'Done phase test.',
-            autoApprovePermissions: false,
             autoInjectWorkbench: true,
             suppressFallbackWarnings: false
           }
@@ -539,7 +536,6 @@ async function runPhase02TestSuite() {
       assert.strictEqual(elements.txtDefaultPlanFolder.value, 'plans/test-suite');
       assert.strictEqual(elements.txtPromptTemplate.value, 'Run phase {xxx} carefully');
       assert.strictEqual(elements.txtCompletionKeyword.value, 'Done phase test.');
-      assert.strictEqual(elements.chkAutoApprovePermissions.checked, false);
       assert.strictEqual(elements.chkAutoInjectWorkbench.checked, true);
       assert.strictEqual(elements.chkSuppressFallbackWarnings.checked, false);
 

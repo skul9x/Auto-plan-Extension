@@ -21,7 +21,6 @@ const configStore: { [key: string]: any } = {
   defaultPlanFolder: '',
   executionMode: 'auto',
   bridgeTimeoutMs: 3000,
-  autoApprovePermissions: true,
   autoInjectWorkbench: true
 };
 

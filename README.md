@@ -113,7 +113,6 @@ All settings are available under the `autoplan.*` namespace in VS Code Settings 
 | `autoplan.allowTierFallback` | `boolean` | `true` | Allow automated fallback to secondary tiers when primary tier encounters errors. |
 | `autoplan.bridgeTimeoutMs` | `number` | `5000` | Timeout in milliseconds for DOM Bridge command acknowledgment. |
 | `autoplan.staleClientMs` | `number` | `120000` | Timeout in milliseconds before an inactive DOM bridge client is marked stale. |
-| `autoplan.autoApprovePermissions` | `boolean` | `true` | Automatically approve execution permissions via DOM bridge. |
 | `autoplan.autoInjectWorkbench` | `boolean` | `true` | Automatically ensure workbench is injected with DOM bridge script on startup. |
 | `autoplan.suppressFallbackWarnings` | `boolean` | `true` | Suppress warning toast popups when falling back between prompt dispatch tiers. |
 

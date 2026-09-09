@@ -294,85 +294,15 @@ async function runPhase01Tests() {
   console.log('  -> Passed: Scoped DOM Query restricted querySelectorAll("*") scan to target container subtrees.');
 
   // ----------------------------------------------------------------------
-  // Test 2: Observer Debounce Test
+  // Test 2: Verification of startAutoApprovalObserver Removal
   // ----------------------------------------------------------------------
-  console.log('\n[Test 2] Verifying Throttled MutationObserver execution (300ms quiet window)...');
-
-  const testDoc = new MockDocument();
-  let approvalCallbackCount = 0;
-
-  const btnToApprove = testDoc.createElement('button');
-  btnToApprove.textContent = 'Allow';
-
-  const container = testDoc.createElement('div');
-  container.className = 'interactive-session';
-  container.appendChild(btnToApprove);
-  testDoc.body.appendChild(container);
-
-  MockMutationObserver.instances = [];
-
-  const handle = domBridge.startAutoApprovalObserver(['Allow'], {
-    document: testDoc,
-    MutationObserver: MockMutationObserver,
-    throttleMs: 300,
-    maxWaitMs: 500,
-    onApproved: () => {
-      approvalCallbackCount++;
-    }
-  });
-
-  const observerInstance = MockMutationObserver.instances[0];
-  assert.ok(observerInstance, 'MockMutationObserver instance should be instantiated');
-  assert.strictEqual(observerInstance.isObserving, true, 'MutationObserver should be active');
-
-  // Initial immediate scan executed upon startAutoApprovalObserver call
-  assert.strictEqual(approvalCallbackCount, 1, 'Initial immediate scan should fire synchronously on start');
-
-  // Reset button clicked state & count for dynamic mutation test
-  btnToApprove.clicked = false;
-  btnToApprove.clickCount = 0;
-  approvalCallbackCount = 0;
-
-  // Fire 50 consecutive DOM mutation events in quick succession (<100ms)
-  for (let i = 0; i < 50; i++) {
-    observerInstance.trigger();
-  }
-
-  // Immediately after triggers (<300ms quiet period), scan should NOT have executed yet
-  assert.strictEqual(approvalCallbackCount, 0, 'Scan should NOT fire immediately during burst of 50 mutations');
-
-  // Wait 350ms for debounce quiet window to elapse
-  await new Promise(resolve => setTimeout(resolve, 350));
-
-  // Assert scanAndApprove executed exactly once
-  assert.strictEqual(approvalCallbackCount, 1, 'Scan should execute exactly once after 300ms debounce quiet period');
-  assert.strictEqual(btnToApprove.clickCount, 1, 'Target button should be clicked exactly once');
-
-  console.log('  -> Passed: 50 rapid DOM mutations binned into 1 throttled scan execution.');
-
-  // ----------------------------------------------------------------------
-  // Test 3: Observer Teardown Test
-  // ----------------------------------------------------------------------
-  console.log('\n[Test 3] Verifying Clean Teardown on .stop()...');
-
-  approvalCallbackCount = 0;
-  btnToApprove.clicked = false;
-  btnToApprove.clickCount = 0;
-
-  // Trigger mutation events
-  observerInstance.trigger();
-
-  // Immediately call stop() before quiet window expires
-  handle.stop();
-
-  assert.strictEqual(observerInstance.isObserving, false, 'Observer disconnect() must be called on stop()');
-
-  // Wait 400ms to ensure no deferred timer callback fires after teardown
-  await new Promise(resolve => setTimeout(resolve, 400));
-
-  assert.strictEqual(approvalCallbackCount, 0, 'No deferred scanAndApprove callback should fire after stop()');
-
-  console.log('  -> Passed: Teardown cleared timers, disconnected observer, and cancelled pending scans.');
+  console.log('[Test 2] Verifying startAutoApprovalObserver is removed...');
+  assert.strictEqual(
+    (domBridge as any).startAutoApprovalObserver,
+    undefined,
+    'startAutoApprovalObserver must not be exported'
+  );
+  console.log('  -> Passed: startAutoApprovalObserver cleanly removed.');
 
   console.log('\n======================================================');
   console.log('✅ ALL PHASE 01 DOM BRIDGE SCOPED THROTTLE TESTS PASSED!');

@@ -2,7 +2,7 @@
  * Antigravity Auto-Plan DOM Bridge Client
  * Runs in the Electron Renderer DOM context (workbench.html).
  * Provides focus-free prompt injection, double-tap submission, new conversation triggering,
- * background permission auto-approval, DOM diagnostics snapshot engine, and HTTP bridge coordination.
+ * DOM diagnostics snapshot engine, and HTTP bridge coordination.
  */
 
 (function (global) {
@@ -12,16 +12,6 @@
   const DEFAULT_PORT_END = 48900;
   const DEFAULT_POLL_INTERVAL_MS = 500;
   const DEFAULT_HEARTBEAT_INTERVAL_MS = 10000;
-  const DEFAULT_APPROVAL_PATTERNS = [
-    'Allow',
-    'Always Allow',
-    'Allow in Workspace',
-    'Run',
-    'Submit',
-    'Keep Waiting',
-    'Accept all',
-    'Continue'
-  ];
 
   const CONTAINER_SELECTORS = [
     '#antigravity\\.agentSidePanelInputBox',
@@ -2080,216 +2070,6 @@
     return false;
   }
 
-  /**
-   * Background Permission Auto-Approver
-   * Continuously scans for modal/inline permission buttons and clicks them immediately.
-   */
-  function startAutoApprovalObserver(patterns, options = {}) {
-    const targetPatterns = patterns || DEFAULT_APPROVAL_PATTERNS;
-    const doc = options.document || (typeof document !== 'undefined' ? document : null);
-    const onApproved = options.onApproved || null;
-    const throttleMs = options.throttleMs || 300;
-    const maxWaitMs = options.maxWaitMs || 500;
-    const idleIntervalMs = options.idleIntervalMs || Math.max(800, options.intervalMs || 1000);
-    const activeIntervalMs = options.activeIntervalMs || 50;
-    let currentIntervalMs = options.initialIntervalMs || (options.intervalMs !== undefined ? options.intervalMs : idleIntervalMs);
-
-    if (!doc) {
-      return { stop: () => {}, scanNow: () => 0, getCurrentIntervalMs: () => currentIntervalMs };
-    }
-
-    let isStopped = false;
-
-    function scanAndApprove() {
-      if (isStopped) return 0;
-      let approvedCount = 0;
-
-      const candidates = queryDeep('button, [role="button"], .monaco-button, .dialog-button, a.monaco-button', doc);
-      let foundMatchingDialogButton = false;
-
-      for (let i = 0; i < candidates.length; i++) {
-        const btn = candidates[i];
-        if (!btn || !isElementVisible(btn)) continue;
-
-        const text = (btn.textContent || btn.innerText || btn.getAttribute?.('aria-label') || '').trim();
-        if (!text) continue;
-
-        for (let p = 0; p < targetPatterns.length; p++) {
-          const pat = targetPatterns[p];
-          if (text === pat || text.toLowerCase() === pat.toLowerCase() || (text.length < 50 && text.includes(pat))) {
-            foundMatchingDialogButton = true;
-            try {
-              if (typeof btn.click === 'function') {
-                btn.click();
-                approvedCount++;
-                logBridge('INFO', `Auto-approved permission dialog button: "${pat}"`, { pattern: pat });
-                if (typeof onApproved === 'function') {
-                  onApproved(pat, btn);
-                }
-              }
-            } catch (clickErr) {
-              logBridge('WARN', `Auto-approver button click failed: ${clickErr?.message || clickErr}`, { pattern: pat }, clickErr);
-            }
-            break;
-          }
-        }
-      }
-
-      // Adaptive throttle & backoff:
-      if (foundMatchingDialogButton || approvedCount > 0) {
-        currentIntervalMs = activeIntervalMs;
-      } else {
-        // When no dialog buttons are detected, increase idle polling interval from 50ms up to 800ms–1000ms
-        currentIntervalMs = Math.min(idleIntervalMs, Math.max(currentIntervalMs * 1.5, 800));
-      }
-
-      return approvedCount;
-    }
-
-    // 1. Initial immediate scan
-    scanAndApprove();
-
-    // Throttled scan helper
-    let throttleTimer = null;
-    let maxWaitTimer = null;
-    let firstCallTime = 0;
-
-    function executeScan() {
-      if (throttleTimer) {
-        clearTimeout(throttleTimer);
-        throttleTimer = null;
-      }
-      if (maxWaitTimer) {
-        clearTimeout(maxWaitTimer);
-        maxWaitTimer = null;
-      }
-      firstCallTime = 0;
-      scanAndApprove();
-    }
-
-    function throttledScan() {
-      if (isStopped) return;
-      const now = Date.now();
-      if (!firstCallTime) {
-        firstCallTime = now;
-      }
-
-      if (now - firstCallTime >= maxWaitMs) {
-        executeScan();
-        return;
-      }
-
-      if (throttleTimer) {
-        clearTimeout(throttleTimer);
-      }
-
-      const remainingWait = Math.min(throttleMs, maxWaitMs - (now - firstCallTime));
-      throttleTimer = setTimeout(() => {
-        executeScan();
-      }, remainingWait);
-
-      if (!maxWaitTimer) {
-        maxWaitTimer = setTimeout(() => {
-          executeScan();
-        }, maxWaitMs - (now - firstCallTime));
-      }
-    }
-
-    // 2. MutationObserver
-    let observer = null;
-    const scopedObservers = [];
-    const win = options.window || (typeof window !== 'undefined' ? window : null);
-    const MutationObserverClass = options.MutationObserver || (win && win.MutationObserver) || (typeof MutationObserver !== 'undefined' ? MutationObserver : null);
-
-    if (MutationObserverClass) {
-      try {
-        // Dynamically target dialog/toast containers when present
-        if (typeof doc.querySelectorAll === 'function') {
-          const dialogContainers = doc.querySelectorAll('.notifications-toasts, .monaco-dialog-box, .action-widget');
-          for (let i = 0; i < dialogContainers.length; i++) {
-            try {
-              const cObs = new MutationObserverClass(() => {
-                currentIntervalMs = activeIntervalMs;
-                executeScan();
-                schedulePoll(activeIntervalMs);
-              });
-              cObs.observe(dialogContainers[i], { childList: true, subtree: true });
-              scopedObservers.push(cObs);
-            } catch (_) {}
-          }
-        }
-
-        observer = new MutationObserverClass((mutations) => {
-          if (mutations && mutations.length > 0) {
-            if (isRelevantDialogMutation(mutations)) {
-              currentIntervalMs = activeIntervalMs;
-              // Instantly trigger immediate scan upon detecting relevant dialog mutations
-              executeScan();
-              schedulePoll(activeIntervalMs);
-            }
-            // Unrelated editor cursor blinks, typing, terminal mutations, minimap are ignored
-          } else {
-            // Synthetic / legacy trigger without mutation records
-            throttledScan();
-          }
-        });
-
-        const targetNode = doc.body || doc.documentElement || doc;
-        if (targetNode && typeof observer.observe === 'function') {
-          observer.observe(targetNode, {
-            childList: true,
-            subtree: true,
-            attributes: false
-          });
-        }
-      } catch (obsErr) {
-        logBridge('WARN', `MutationObserver initialization failed: ${obsErr?.message || obsErr}`, {}, obsErr);
-      }
-    }
-
-    // 3. Fallback adaptive polling interval
-    let pollTimer = null;
-    function schedulePoll(delay) {
-      if (isStopped) return;
-      if (pollTimer) clearTimeout(pollTimer);
-      const nextDelay = delay !== undefined ? delay : currentIntervalMs;
-      pollTimer = setTimeout(() => {
-        if (isStopped) return;
-        scanAndApprove();
-        schedulePoll();
-      }, nextDelay);
-    }
-    schedulePoll(currentIntervalMs);
-
-    return {
-      scanNow: () => scanAndApprove(),
-      getCurrentIntervalMs: () => currentIntervalMs,
-      stop: () => {
-        isStopped = true;
-        if (pollTimer) {
-          clearTimeout(pollTimer);
-          pollTimer = null;
-        }
-        if (throttleTimer) {
-          clearTimeout(throttleTimer);
-          throttleTimer = null;
-        }
-        if (maxWaitTimer) {
-          clearTimeout(maxWaitTimer);
-          maxWaitTimer = null;
-        }
-        if (observer && typeof observer.disconnect === 'function') {
-          observer.disconnect();
-        }
-        for (let i = 0; i < scopedObservers.length; i++) {
-          if (typeof scopedObservers[i].disconnect === 'function') {
-            scopedObservers[i].disconnect();
-          }
-        }
-        scopedObservers.length = 0;
-      }
-    };
-  }
 
   /**
    * Unthrottled Web Worker-based timer for background execution.
@@ -2524,7 +2304,6 @@
       this.pollIntervalMs = options.pollIntervalMs || DEFAULT_POLL_INTERVAL_MS;
       this.heartbeatIntervalMs = options.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS;
       this.fetchFn = options.fetch || options.fetchFn || (typeof fetch !== 'undefined' ? fetch.bind(global) : null);
-      this.approvalObserver = null;
       this.pollTimer = null;
       this.workerTimer = null;
       this.heartbeatTimer = null;
@@ -2534,7 +2313,6 @@
       this.isRunning = false;
       this.isSubmitting = false;
       this.lastSubmissionTime = 0;
-      this.autoApprovalEnabled = options.autoApproval !== false;
       this.customDocument = options.document;
       this.customWindow = options.window;
       this.clientVersion = '2.0.0';
@@ -3066,8 +2844,7 @@
             await this.sendAck(cmd.id, 'error', captureErr?.message || String(captureErr));
           }
         } else if (cmd.type === 'clickApproval') {
-          const count = this.approvalObserver ? this.approvalObserver.scanNow() : 0;
-          await this.sendAck(cmd.id, 'completed', null, { clickedCount: count });
+          await this.sendAck(cmd.id, 'completed', null, { clickedCount: 0 });
         } else if (cmd.type === 'ping') {
           await this.sendAck(cmd.id, 'completed', null, { pong: true });
         } else {
@@ -3123,19 +2900,11 @@
     }
 
     /**
-     * Starts the client polling loop and background auto-approver
+     * Starts the client polling loop
      */
     start() {
       if (this.isRunning) return;
       this.isRunning = true;
-
-      // Start auto-approver
-      if (this.autoApprovalEnabled) {
-        this.approvalObserver = startAutoApprovalObserver(DEFAULT_APPROVAL_PATTERNS, {
-          document: this.customDocument,
-          window: this.customWindow
-        });
-      }
 
       // Initial immediate discovery, tick, and heartbeat
       this.pollTick();
@@ -3189,10 +2958,6 @@
         clearTimeout(this.pollTimer);
         this.pollTimer = null;
       }
-      if (this.approvalObserver) {
-        this.approvalObserver.stop();
-        this.approvalObserver = null;
-      }
     }
   }
 
@@ -3202,7 +2967,6 @@
     DEFAULT_PORT_END,
     DEFAULT_POLL_INTERVAL_MS,
     DEFAULT_HEARTBEAT_INTERVAL_MS,
-    DEFAULT_APPROVAL_PATTERNS,
     CONTAINER_SELECTORS,
     queryDeep,
     isElementVisible,
@@ -3218,7 +2982,6 @@
     injectPromptAndSubmit,
     triggerNewConversation,
     handleOpenNewConversation,
-    startAutoApprovalObserver,
     isRelevantDialogMutation,
     DIALOG_CONTAINER_SELECTORS,
     createWorkerTimer,
@@ -3226,6 +2989,7 @@
     parseWorkspaceFromTitleString,
     getWorkspaceIdentifier,
     DomBridgeClient,
+    DOMAutomationBridgeClient: DomBridgeClient,
     BridgeClient: DomBridgeClient
   };
 

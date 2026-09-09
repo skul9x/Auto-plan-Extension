@@ -287,7 +287,6 @@ async function runPhase02FastReconnectDispatcherTests() {
         focusDelayMs: 100,
         bridgeTimeoutMs: 2000,
         staleClientMs: 120000,
-        autoApprovePermissions: true,
         autoInjectWorkbench: true,
         suppressFallbackWarnings: true,
         defaultPromptTemplate: '',

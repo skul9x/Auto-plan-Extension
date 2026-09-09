@@ -7,6 +7,8 @@ import { discoverWorkspacePlanFolders, discoverWorkspacePlanFoldersAsync, execut
 import { orchestrator } from './orchestrator';
 import { bridgeServer } from './bridgeServer';
 
+export const MAX_PENDING_LOGS = 150;
+
 export class SidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'autoplan.sidebarView';
 
@@ -268,6 +270,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       this._transcriptLogs.shift();
     }
     this._pendingLogQueue.push(log);
+    if (this._pendingLogQueue.length > MAX_PENDING_LOGS) {
+      this._pendingLogQueue.shift();
+    }
     if (!this._logFlushTimer) {
       this._logFlushTimer = setTimeout(() => {
         this.flushPendingLogs();
@@ -280,10 +285,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       clearTimeout(this._logFlushTimer);
       this._logFlushTimer = null;
     }
-    if (this._pendingLogQueue.length === 0) {
+    if (!this._isWebviewReady) {
       return;
     }
-    if (!this._isWebviewReady) {
+    if (this._pendingLogQueue.length === 0) {
       return;
     }
     const logs = [...this._pendingLogQueue];
@@ -304,12 +309,33 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  public clearLogs(): void {
+    if (this._logFlushTimer) {
+      clearTimeout(this._logFlushTimer);
+      this._logFlushTimer = null;
+    }
+    this._transcriptLogs = [];
+    this._pendingLogQueue = [];
+  }
+
+  public getPendingLogsCount(): number {
+    return this._pendingLogQueue.length;
+  }
+
   public dispose(): void {
     if (this._readyFallbackTimer) {
       clearTimeout(this._readyFallbackTimer);
       this._readyFallbackTimer = null;
     }
-    this.flushPendingLogs();
+    if (this._isWebviewReady) {
+      this.flushPendingLogs();
+    }
+    if (this._logFlushTimer) {
+      clearTimeout(this._logFlushTimer);
+      this._logFlushTimer = null;
+    }
+    this._pendingLogQueue = [];
+    this._transcriptLogs = [];
   }
 
   public sendProgress(progress: { percentage: number; elapsedTime: string; currentPhaseIndex?: number; totalPhases?: number }) {

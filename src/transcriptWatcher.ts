@@ -90,6 +90,38 @@ export const MAX_CHUNK_SIZE = 64 * 1024; // 64KB
 export const MAX_LINE_BUFFER_BYTES = 10 * 1024 * 1024; // 10MB
 export const MAX_CACHED_CONVERSATIONS = 100;
 
+export interface CachedOwnershipEntry {
+  mtimeMs: number;
+  size: number;
+  isOwner: boolean;
+  checkedAt: number;
+}
+
+export const MAX_OWNERSHIP_CACHE_SIZE = 500;
+const conversationOwnershipCache = new Map<string, CachedOwnershipEntry>();
+let ownershipCacheHits = 0;
+let ownershipCacheMisses = 0;
+
+/**
+ * Clears the in-memory conversation ownership cache and resets hit/miss counters.
+ */
+export function clearConversationOwnershipCache(): void {
+  conversationOwnershipCache.clear();
+  ownershipCacheHits = 0;
+  ownershipCacheMisses = 0;
+}
+
+/**
+ * Returns telemetry and statistics for the conversation ownership cache.
+ */
+export function getConversationOwnershipCacheStats(): { size: number; hits: number; misses: number } {
+  return {
+    size: conversationOwnershipCache.size,
+    hits: ownershipCacheHits,
+    misses: ownershipCacheMisses
+  };
+}
+
 // In-Memory Directory Stat Cache Map
 const brainDirCacheMap = new Map<string, BrainDirCacheEntry>();
 
@@ -109,6 +141,38 @@ export function clearBrainDirCache(brainDir?: string): void {
  */
 export function getBrainDirCache(brainDir: string): BrainDirCacheEntry | undefined {
   return brainDirCacheMap.get(brainDir);
+}
+
+/**
+ * Concurrently processes an array of items with a bounded concurrency pool.
+ */
+export async function asyncPool<T, R>(
+  concurrency: number,
+  items: T[],
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  const executing = new Set<Promise<void>>();
+
+  for (const item of items) {
+    const p: Promise<void> = Promise.resolve()
+      .then(() => fn(item))
+      .then((res) => {
+        results.push(res);
+        executing.delete(p);
+      })
+      .catch((err) => {
+        executing.delete(p);
+        throw err;
+      });
+    executing.add(p);
+    if (executing.size >= concurrency) {
+      await Promise.race(executing);
+    }
+  }
+
+  await Promise.all(executing);
+  return results;
 }
 
 /**
@@ -215,93 +279,144 @@ export async function countTranscriptLinesAsync(filePath: string, maxOffset?: nu
  */
 export async function verifyConversationOwnershipAsync(
   transcriptPath: string,
-  criteria: ConversationOwnershipCriteria
+  criteria: ConversationOwnershipCriteria,
+  statHint?: { mtimeMs: number; size: number }
 ): Promise<boolean> {
   if (!criteria || (!criteria.expectedPromptSnippet && !criteria.workspacePath && !criteria.workspaceName)) {
     return true;
   }
 
+  let mtimeMs: number;
+  let size: number;
+
+  if (statHint) {
+    mtimeMs = statHint.mtimeMs;
+    size = statHint.size;
+  } else {
+    try {
+      const stat = await fs.promises.stat(transcriptPath);
+      mtimeMs = stat.mtimeMs;
+      size = stat.size;
+    } catch {
+      return false;
+    }
+  }
+
+  if (size === 0) {
+    return false;
+  }
+
+  const criteriaKey = `${criteria.expectedPromptSnippet || ''}::${criteria.workspacePath || ''}::${criteria.workspaceName || ''}`;
+  const cacheKey = `${transcriptPath}::${criteriaKey}`;
+
+  const cached = conversationOwnershipCache.get(cacheKey);
+  if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
+    ownershipCacheHits++;
+    // Re-insert to maintain LRU recency
+    conversationOwnershipCache.delete(cacheKey);
+    conversationOwnershipCache.set(cacheKey, cached);
+    return cached.isOwner;
+  }
+
+  ownershipCacheMisses++;
+
+  let isOwner = false;
   let fileHandle: fs.promises.FileHandle | null = null;
   try {
     fileHandle = await fs.promises.open(transcriptPath, 'r');
-    const stat = await fileHandle.stat();
-    if (stat.size === 0) {
-      return false;
-    }
-
-    const maxBytes = Math.min(8192, stat.size);
+    const maxBytes = Math.min(8192, size);
     const buffer = Buffer.alloc(maxBytes);
     const { bytesRead } = await fileHandle.read(buffer, 0, maxBytes, 0);
     if (bytesRead === 0) {
-      return false;
-    }
+      isOwner = false;
+    } else {
+      const chunkStr = buffer.toString('utf8', 0, bytesRead);
 
-    const chunkStr = buffer.toString('utf8', 0, bytesRead);
+      // Extract step 0 content
+      let promptContent = '';
+      const firstNewlineIdx = chunkStr.indexOf('\n');
+      const firstLine = firstNewlineIdx !== -1 ? chunkStr.substring(0, firstNewlineIdx) : chunkStr;
 
-    // Extract step 0 content
-    let promptContent = '';
-    const firstNewlineIdx = chunkStr.indexOf('\n');
-    const firstLine = firstNewlineIdx !== -1 ? chunkStr.substring(0, firstNewlineIdx) : chunkStr;
-
-    try {
-      const parsed = JSON.parse(firstLine);
-      if (parsed && typeof parsed === 'object') {
-        promptContent = parsed.content || parsed.text || parsed.response || '';
-        if (typeof promptContent !== 'string') {
-          promptContent = JSON.stringify(promptContent);
+      try {
+        const parsed = JSON.parse(firstLine);
+        if (parsed && typeof parsed === 'object') {
+          promptContent = parsed.content || parsed.text || parsed.response || '';
+          if (typeof promptContent !== 'string') {
+            promptContent = JSON.stringify(promptContent);
+          }
+        }
+      } catch {
+        const contentMatch = /"content"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(chunkStr);
+        if (contentMatch && contentMatch[1]) {
+          try {
+            promptContent = JSON.parse(`"${contentMatch[1]}"`);
+          } catch {
+            promptContent = contentMatch[1];
+          }
+        } else {
+          promptContent = chunkStr;
         }
       }
-    } catch {
-      const contentMatch = /"content"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(chunkStr);
-      if (contentMatch && contentMatch[1]) {
-        try {
-          promptContent = JSON.parse(`"${contentMatch[1]}"`);
-        } catch {
-          promptContent = contentMatch[1];
-        }
-      } else {
-        promptContent = chunkStr;
-      }
-    }
 
-    const fullSearchText = promptContent + '\n' + chunkStr;
+      const fullSearchText = promptContent + '\n' + chunkStr;
+      let matches = true;
 
-    if (criteria.expectedPromptSnippet) {
-      if (
-        !promptContent.includes(criteria.expectedPromptSnippet) &&
-        !chunkStr.includes(criteria.expectedPromptSnippet)
-      ) {
-        return false;
-      }
-    }
-
-    if (criteria.workspacePath) {
-      const normWp = criteria.workspacePath.replace(/\\/g, '/');
-      const normSearch = fullSearchText.replace(/\\/g, '/');
-      if (!normSearch.includes(normWp)) {
-        const base = path.basename(criteria.workspacePath);
-        if (!normSearch.includes(base)) {
-          return false;
+      if (criteria.expectedPromptSnippet) {
+        if (
+          !promptContent.includes(criteria.expectedPromptSnippet) &&
+          !chunkStr.includes(criteria.expectedPromptSnippet)
+        ) {
+          matches = false;
         }
       }
-    }
 
-    if (criteria.workspaceName) {
-      if (!fullSearchText.includes(criteria.workspaceName)) {
-        return false;
+      if (matches && criteria.workspacePath) {
+        const normWp = criteria.workspacePath.replace(/\\/g, '/');
+        const normSearch = fullSearchText.replace(/\\/g, '/');
+        if (!normSearch.includes(normWp)) {
+          const base = path.basename(criteria.workspacePath);
+          if (!normSearch.includes(base)) {
+            matches = false;
+          }
+        }
       }
-    }
 
-    return true;
+      if (matches && criteria.workspaceName) {
+        if (!fullSearchText.includes(criteria.workspaceName)) {
+          matches = false;
+        }
+      }
+
+      isOwner = matches;
+    }
   } catch {
-    return false;
+    isOwner = false;
   } finally {
     if (fileHandle) {
       try {
         await fileHandle.close();
-      } catch {}
+      } catch { }
     }
   }
+
+  // Update LRU cache
+  if (conversationOwnershipCache.has(cacheKey)) {
+    conversationOwnershipCache.delete(cacheKey);
+  } else if (conversationOwnershipCache.size >= MAX_OWNERSHIP_CACHE_SIZE) {
+    const oldestKey = conversationOwnershipCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      conversationOwnershipCache.delete(oldestKey);
+    }
+  }
+
+  conversationOwnershipCache.set(cacheKey, {
+    mtimeMs,
+    size,
+    isOwner,
+    checkedAt: Date.now()
+  });
+
+  return isOwner;
 }
 
 /**
@@ -431,7 +546,7 @@ export async function getCandidateConversationsAsync(
           const tBirthtime = tStats ? Math.max(tStats.birthtimeMs || 0, tStats.ctimeMs || 0) : 0;
 
           if (criteria && (criteria.expectedPromptSnippet || criteria.workspacePath || criteria.workspaceName)) {
-            const isOwner = await verifyConversationOwnershipAsync(transcriptPath, criteria);
+            const isOwner = await verifyConversationOwnershipAsync(transcriptPath, criteria, { mtimeMs: tMtime, size: tSize });
             if (!isOwner) {
               if (tSize > 0 && onCandidateSkipped) {
                 onCandidateSkipped(dirEntry.name, criteria);
@@ -486,7 +601,7 @@ export async function getCandidateConversationsAsync(
         if (!transcriptPath) {
           continue;
         }
-        const isOwner = await verifyConversationOwnershipAsync(transcriptPath, criteria);
+        const isOwner = await verifyConversationOwnershipAsync(transcriptPath, criteria, { mtimeMs: transcriptMtime, size: transcriptSize });
         if (!isOwner) {
           if (transcriptSize > 0 && onCandidateSkipped) {
             onCandidateSkipped(dirEntry.name, criteria);
@@ -592,7 +707,7 @@ export function findLatestConversation(
           transcriptMtime = tStats.mtimeMs;
           transcriptSize = tStats.size;
           transcriptBirthtime = Math.max(tStats.birthtimeMs || 0, tStats.ctimeMs || 0);
-        } catch {}
+        } catch { }
       }
 
       const effectiveTime = Math.max(dirTime, transcriptMtime);
@@ -867,10 +982,19 @@ export class TranscriptWatcher extends EventEmitter {
     return this.lineCounter;
   }
 
+  public getCandidateBaselineSizes(): Map<string, number> {
+    return this.candidateBaselineSizes;
+  }
+
+  public getCandidatePreExisted(): Set<string> {
+    return this.candidatePreExisted;
+  }
+
   /**
-   * Initializes candidate baselines asynchronously to track pre-existing files and sizes before phase start.
+   * Initializes candidate baselines asynchronously using bounded concurrent pools (PERF-05)
+   * to track pre-existing files and sizes before phase start.
    */
-  public async initializeBaselineCandidatesAsync(): Promise<void> {
+  public async _initializeCandidateBaseline(): Promise<void> {
     this.candidateBaselineSizes.clear();
     this.candidatePreExisted.clear();
     let brainDir = this.options.brainDir;
@@ -899,10 +1023,11 @@ export class TranscriptWatcher extends EventEmitter {
             dirEntries = [];
             const dirMap = new Map<string, CachedDirInfo>();
 
-            for (const dirent of dirents) {
-              if (!dirent.isDirectory() || dirent.name === 'scratch') {
-                continue;
-              }
+            const validDirents = dirents.filter(
+              (dirent) => dirent.isDirectory() && dirent.name !== 'scratch'
+            );
+
+            const mappedEntries = await asyncPool(16, validDirents, async (dirent) => {
               const fullPath = path.join(brainDir, dirent.name);
               let dirTime = cached?.dirMap.get(dirent.name)?.time;
               if (dirTime === undefined) {
@@ -910,11 +1035,17 @@ export class TranscriptWatcher extends EventEmitter {
                   const s = await fs.promises.stat(fullPath);
                   dirTime = Math.max(s.birthtimeMs || 0, s.mtimeMs || 0, s.ctimeMs || 0);
                 } catch {
-                  continue;
+                  return null;
                 }
               }
-              dirEntries.push({ name: dirent.name, fullPath, time: dirTime });
-              dirMap.set(dirent.name, { time: dirTime });
+              return { name: dirent.name, fullPath, time: dirTime };
+            });
+
+            for (const entry of mappedEntries) {
+              if (entry) {
+                dirEntries.push(entry);
+                dirMap.set(entry.name, { time: entry.time });
+              }
             }
 
             brainDirCacheMap.set(brainDir, {
@@ -926,32 +1057,34 @@ export class TranscriptWatcher extends EventEmitter {
 
           const currentCache = brainDirCacheMap.get(brainDir);
 
-          for (const entry of dirEntries) {
-            const cachedInfo = currentCache?.dirMap.get(entry.name);
-            let tPath = cachedInfo?.transcriptPath;
-            if (!tPath) {
-              tPath = getTranscriptPath(entry.fullPath) || undefined;
-              if (tPath && cachedInfo) {
-                cachedInfo.transcriptPath = tPath;
-              }
-            }
-
-            if (tPath) {
-              try {
-                const stats = await fs.promises.stat(tPath);
-                const birthtime = stats.birthtimeMs || 0;
-                this.candidateBaselineSizes.set(tPath, stats.size);
-                const existedBefore =
-                  (birthtime > 0 && this.sinceTimestamp > 0 && birthtime < this.sinceTimestamp) ||
-                  (this.sinceTimestamp > 0 && stats.mtimeMs < this.sinceTimestamp);
-                if (existedBefore) {
-                  this.candidatePreExisted.add(tPath);
+          await asyncPool(16, dirEntries, async (entry) => {
+            try {
+              const cachedInfo = currentCache?.dirMap.get(entry.name);
+              let tPath = cachedInfo?.transcriptPath;
+              if (!tPath) {
+                tPath = getTranscriptPath(entry.fullPath) || undefined;
+                if (tPath && cachedInfo) {
+                  cachedInfo.transcriptPath = tPath;
                 }
-              } catch {}
-            }
-          }
+              }
+
+              if (tPath) {
+                try {
+                  const stats = await fs.promises.stat(tPath);
+                  const birthtime = stats.birthtimeMs || 0;
+                  this.candidateBaselineSizes.set(tPath, stats.size);
+                  const existedBefore =
+                    (birthtime > 0 && this.sinceTimestamp > 0 && birthtime < this.sinceTimestamp) ||
+                    (this.sinceTimestamp > 0 && stats.mtimeMs < this.sinceTimestamp);
+                  if (existedBefore) {
+                    this.candidatePreExisted.add(tPath);
+                  }
+                } catch { }
+              }
+            } catch { }
+          });
         }
-      } catch {}
+      } catch { }
     }
 
     if (
@@ -968,12 +1101,16 @@ export class TranscriptWatcher extends EventEmitter {
         if (existedBefore) {
           this.candidatePreExisted.add(this.currentFilePath);
         }
-      } catch {}
+      } catch { }
     }
   }
 
+  public async initializeBaselineCandidatesAsync(): Promise<void> {
+    return this._initializeCandidateBaseline();
+  }
+
   private initializeBaselineCandidates(): void {
-    void this.initializeBaselineCandidatesAsync();
+    void this._initializeCandidateBaseline();
   }
 
   /**
@@ -990,7 +1127,6 @@ export class TranscriptWatcher extends EventEmitter {
     this.removeAllListeners('fileTruncated');
     this.removeAllListeners('timeout');
     this.removeAllListeners('error');
-    this.removeAllListeners('logUpdate');
   }
 
   public getOptions(): EffectiveWatcherOptions {
@@ -1068,7 +1204,7 @@ export class TranscriptWatcher extends EventEmitter {
             if (this.brainFsWatcher) {
               try {
                 this.brainFsWatcher.close();
-              } catch {}
+              } catch { }
               this.brainFsWatcher = null;
             }
             this.convReject = null;
@@ -1085,8 +1221,8 @@ export class TranscriptWatcher extends EventEmitter {
             if (this.brainFsWatcher) {
               try {
                 this.brainFsWatcher.close();
-              } catch {}
-                this.brainFsWatcher = null;
+              } catch { }
+              this.brainFsWatcher = null;
             }
             this.convReject = null;
             reject(
@@ -1408,8 +1544,8 @@ export class TranscriptWatcher extends EventEmitter {
 
         const isCreatedAfterSince = this.sinceTimestamp > 0
           ? ((c.transcriptBirthtime !== undefined && c.transcriptBirthtime >= this.sinceTimestamp) ||
-             (c.time >= this.sinceTimestamp) ||
-             !this.candidatePreExisted.has(c.transcriptPath))
+            (c.time >= this.sinceTimestamp) ||
+            !this.candidatePreExisted.has(c.transcriptPath))
           : true;
 
         if (this.candidatePreExisted.has(c.transcriptPath)) {
@@ -1430,7 +1566,7 @@ export class TranscriptWatcher extends EventEmitter {
           if (this.fsWatcher) {
             try {
               this.fsWatcher.close();
-            } catch {}
+            } catch { }
             this.fsWatcher = null;
           }
 
@@ -1454,7 +1590,7 @@ export class TranscriptWatcher extends EventEmitter {
                 filePreExisted = true;
                 preExistingOffset = this.candidateBaselineSizes.get(newFilePath) ?? stats.size;
               }
-            } catch {}
+            } catch { }
           }
 
           this.readOffset = filePreExisted ? preExistingOffset : 0;
@@ -1489,7 +1625,7 @@ export class TranscriptWatcher extends EventEmitter {
                 this.activePollIntervalMs = this.options.pollIntervalMs;
               });
             }
-          } catch {}
+          } catch { }
 
           // Immediately process new file
           setImmediate(() => {
@@ -1551,7 +1687,7 @@ export class TranscriptWatcher extends EventEmitter {
         if ((birthtime > 0 && birthtime < effectiveSince) || stats.mtimeMs < effectiveSince) {
           initialOffset = stats.size;
         }
-      } catch {}
+      } catch { }
     }
 
     return this.watchFile(transcriptPath, convId, initialOffset, effectiveSince, initialTranscriptLength);
@@ -1690,20 +1826,20 @@ export class TranscriptWatcher extends EventEmitter {
     if (this.fsWatcher) {
       try {
         this.fsWatcher.close();
-      } catch {}
+      } catch { }
       this.fsWatcher = null;
     }
     if (this.brainFsWatcher) {
       try {
         this.brainFsWatcher.close();
-      } catch {}
+      } catch { }
       this.brainFsWatcher = null;
     }
 
     if (this.stringDecoder) {
       try {
         this.stringDecoder.end();
-      } catch {}
+      } catch { }
       this.stringDecoder = null;
     }
 

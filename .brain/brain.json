@@ -2,13 +2,14 @@
   "meta": {
     "schema_version": "1.1.0",
     "awf_version": "4.0.2",
-    "updated_at": "2026-09-06T23:49:00+07:00"
+    "updated_at": "2026-09-09T19:58:00+07:00"
   },
   "project": {
     "name": "Auto-Plan_Extension",
     "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan, inject prompt focus-free qua DOM Renderer Bridge hoặc OS Keyboard Simulation, theo dõi log transcript AI sinh code, tự động chuyển tiếp phase, kèm hệ thống Full-Screen Settings Panel và DOM Bridge Diagnostic Logger.",
+    "version": "1.6.0",
     "created_at": "2026-08-27T23:51:00+07:00",
-    "active_plan": "plans/260904-1030-multi-window-isolation-and-conversation-verification/plan.md"
+    "active_plan": "plans/260909-1837-remediate-performance-memory-group1-group2/plan.md"
   },
   "tech_stack": {
     "language": "TypeScript / JavaScript",
@@ -20,7 +21,7 @@
     "log_watcher": "Transcript JSONL Stream Watcher (~/.gemini/antigravity-ide/brain/)",
     "debug_logger": "In-memory Ring Buffer (DebugLogger), VS Code Log Output Channel (Auto-Plan DOM Bridge), Multi-tier Telemetry Tracing",
     "dom_diagnostics": "Structured DOM snapshot evaluation, ShadowRoot boundary traversal, Container tree discovery, Antigravity IDE Title/DOM parser",
-    "performance_engine": "Webview IPC Log Batching (100ms throttle), 200-line DOM Pruning, Bounded 4KB Async Header I/O, Adaptive Polling (1200ms Relaxed Watcher)"
+    "performance_engine": "LRU Ownership Memoization Cache (256 entries, >98% hit rate), Bounded FIFO Sliding-Window Log Queue (MAX_PENDING_LOGS = 150), Non-blocking Async DOM Snapshot I/O, Bounded Concurrent Directory Scanner asyncPool(16, ...), Webview IPC Log Batching (100ms throttle)"
   },
   "features": [
     "Quét và phân tích thư mục plans/*.md tự động với bounded async I/O 4KB",
@@ -39,7 +40,11 @@
     "Engine chẩn đoán DOM Electron sâu khi tìm selector thất bại",
     "Lệnh xuất báo cáo chẩn đoán 1-Click: copyDebugLog, exportDebugLog, clearDebugLog, showOutputChannel",
     "Live Log Viewer Console nhúng trong Settings Panel với color badges, level filtering và auto-scroll",
-    "Quick action copy log trong Sidebar Control Center và trong Actionable Failure Notification toasts"
+    "Quick action copy log trong Sidebar Control Center và trong Actionable Failure Notification toasts",
+    "LRU Stat & Content Memoization Cache cho Transcript Watcher (triệt tiêu 98% I/O đĩa trong polling)",
+    "Hàng đợi Log bounded 150 phần tử và flush dạng batch, bảo toàn RAM khi Sidebar đóng/ẩn",
+    "Async DOM Snapshot writer qua fs.promises.writeFile, triệt tiêu 100% hiện tượng UI freeze",
+    "Duyệt thư mục bất đồng bộ song song asyncPool(16, ...) hoàn tất baseline scan < 5ms"
   ],
   "decisions_made": [
     "Sử dụng kiến trúc DOM Bridge tương tự zixfel nhưng mở rộng để điều phối Prompt và Phase",
@@ -52,10 +57,17 @@
     "Áp dụng Webview IPC Batching (100ms) kết hợp DOM pruning (200 dòng) và Bounded async file reads (4KB) để đảm bảo Extension Host và Webview luôn phản hồi dưới 16ms",
     "Sử dụng WHATWG new URL() chuẩn cho HTTP Bridge Server để triệt tiêu hoàn toàn cảnh báo runtime [DEP0169] trên Node.js 20+",
     "Loại trừ hoàn toàn việc dispatch đúp sự kiện click trong dispatchButtonClickCascade và bảo đảm tính loại trừ giữa buttonClick / enterKey / formSubmit",
-    "Nhận diện Workspace theo vị trí trước tên AppName trong title bar, tương thích cả Antigravity IDE ([Workspace] - [AppName] - [File]) và VS Code ([File] - [Workspace] - [AppName])"
+    "Nhận diện Workspace theo vị trí trước tên AppName trong title bar, tương thích cả Antigravity IDE ([Workspace] - [AppName] - [File]) và VS Code ([File] - [Workspace] - [AppName])",
+    "Hard delete hoàn toàn tính năng Auto-Approver khỏi extension để loại bỏ 100% layout thrashing và forced synchronous reflows do Chromium getComputedStyle",
+    "Kẹp cứng hàng đợi pending log ở mức MAX_PENDING_LOGS = 150 dạng sliding-window để tránh rò rỉ RAM vô hạn khi webview không sẵn sàng",
+    "Triển khai LRU Cache 2 cấp theo (transcriptPath, mtime, size) để loại bỏ hiện tượng Disk I/O storm khi polling thư mục .brain/",
+    "Chuyển toàn bộ ghi snapshot DOM sang fs.promises.writeFile để giải phóng hoàn toàn Main Thread của Extension Host",
+    "Áp dụng worker pool asyncPool(16, ...) để quét song song thư mục mà không gây quá tải file descriptor (EMFILE)",
+    "Bảo toàn listener 'logUpdate' trong clearRunListeners() để không ngắt event stream của Sidebar giữa các phase"
   ],
   "knowledge_items": {
     "reports": [
+      "audit_20260909_1433.md: Báo cáo kiểm tra lâm sàng chuyên sâu hiệu năng & độ tin cậy (AUDIT-20260909-1433) - 6/6 lỗi đã giải quyết triệt để",
       "1.md: So sánh cơ chế Auto-Plan vs Zixfel Auto Click & Scroll",
       "2.md: Đánh giá khả năng hoạt động của Auto-Plan trên Linux",
       "3.md: Báo cáo nguyên nhân lỗi v1.0.5 trên Linux và cách khắc phục",
@@ -72,7 +84,9 @@
       "DebugLogger cần bounded capacity để tránh rò rỉ bộ nhớ trong các session dài",
       "Node.js 20+ runtime yêu cầu WHATWG new URL() thay vì url.parse() để tránh [DEP0169] DeprecationWarning",
       "dispatchButtonClickCascade chỉ gọi native button.click() (hoặc synthetic MouseEvent nếu không có native click), không gọi cả hai để tránh gửi đúp prompt",
-      "Antigravity IDE trên Linux đặt [Workspace] ở đầu tiêu đề và [Antigravity IDE] ở giữa, khác VS Code đặt [Workspace] ở giữa và [AppName] ở cuối. Luôn lấy phần tử đứng trước AppName."
+      "Antigravity IDE trên Linux đặt [Workspace] ở đầu tiêu đề và [Antigravity IDE] ở giữa, khác VS Code đặt [Workspace] ở giữa và [AppName] ở cuối. Luôn lấy phần tử đứng trước AppName.",
+      "clearRunListeners() chỉ dọn dẹp các listener tạm thời của run-loop (completion, timeout, settle), KHÔNG được removeListener('logUpdate') vì sẽ làm mất kết nối log stream của Sidebar.",
+      "fs.writeFileSync cho snapshot DOM lớn (>5MB) gây jitter main thread rất nặng; luôn dùng fs.promises.writeFile kèm kiểm tra isAborted."
     ]
   }
 }

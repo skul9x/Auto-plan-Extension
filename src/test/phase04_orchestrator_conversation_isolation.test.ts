@@ -511,7 +511,6 @@ describe('Phase 04: Orchestrator Conversation Isolation & Keyword Timestamp Guar
 
       const config: Partial<AutoPlanConfig> = {
         delayBetweenLoopsMs: 100,
-        autoApprovePermissions: true,
         completionKeyword: 'Done skul9x.'
       };
 

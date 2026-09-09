@@ -343,7 +343,6 @@ async function runPhase04BackgroundAutomationE2ETests() {
       promptText: 'Execute {xxx}',
       completionKeyword: DEFAULT_COMPLETION_KEYWORD,
       focusDelayMs: 50,
-      autoApprovePermissions: true,
       autoInjectWorkbench: true,
       suppressFallbackWarnings: true
     };

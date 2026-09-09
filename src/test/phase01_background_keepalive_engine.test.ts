@@ -253,8 +253,7 @@ async function runPhase01BackgroundKeepaliveTests() {
       fetch: globalThis.fetch,
       Worker: MockWorker,
       Blob: MockWorkerBlob,
-      URL: MockWorkerURL,
-      autoApproval: false
+      URL: MockWorkerURL
     });
 
     // Send direct heartbeat ping
@@ -310,8 +309,7 @@ async function runPhase01BackgroundKeepaliveTests() {
       windowKey: 'win_reconnect_client',
       pollIntervalMs: 50,
       heartbeatIntervalMs: 50,
-      fetch: globalThis.fetch,
-      autoApproval: false
+      fetch: globalThis.fetch
     });
 
     reconnectClient.start();

@@ -301,8 +301,9 @@ export class Orchestrator extends EventEmitter {
         ? cfg.domSnapshotFolder
         : path.join(homeDir, '.autoplan', 'snapshots', sanitizedWsName);
 
-      if (!fs.existsSync(targetDir)) {
-        fs.mkdirSync(targetDir, { recursive: true });
+      await fs.promises.mkdir(targetDir, { recursive: true });
+      if (this.isAborted) {
+        return undefined;
       }
 
       // 3. Generate ISO-like filesystem-safe timestamp: YYYY-MM-DD_HH-mm-ss
@@ -325,7 +326,10 @@ export class Orchestrator extends EventEmitter {
         return undefined;
       }
       if (res && res.success && typeof res.html === 'string') {
-        fs.writeFileSync(fullPath, res.html, 'utf8');
+        await fs.promises.writeFile(fullPath, res.html, 'utf8');
+        if (this.isAborted) {
+          return undefined;
+        }
         this.debugLogger.info(
           'ORCHESTRATOR',
           `[DOM-SNAPSHOT] Saved workbench snapshot to ${fullPath} (${(res.html.length / 1024).toFixed(1)} KB)`

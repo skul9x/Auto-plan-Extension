@@ -48,7 +48,6 @@
   // DOM Elements - Plan & Automation
   const txtDefaultPlanFolder = document.getElementById('txtDefaultPlanFolder');
   const btnBrowseFolder = document.getElementById('btnBrowseFolder');
-  const chkAutoApprovePermissions = document.getElementById('chkAutoApprovePermissions');
   const chkAutoInjectWorkbench = document.getElementById('chkAutoInjectWorkbench');
   const chkSuppressFallbackWarnings = document.getElementById('chkSuppressFallbackWarnings');
 
@@ -134,7 +133,6 @@
       promptTemplate: txtPromptTemplate ? txtPromptTemplate.value : '',
       promptText: txtPromptTemplate ? txtPromptTemplate.value : '',
       completionKeyword: txtCompletionKeyword ? txtCompletionKeyword.value.trim() : 'Done skul9x.',
-      autoApprovePermissions: chkAutoApprovePermissions ? chkAutoApprovePermissions.checked : true,
       autoInjectWorkbench: chkAutoInjectWorkbench ? chkAutoInjectWorkbench.checked : true,
       suppressFallbackWarnings: chkSuppressFallbackWarnings ? chkSuppressFallbackWarnings.checked : true
     };
@@ -179,9 +177,6 @@
     }
     if (txtCompletionKeyword) {
       txtCompletionKeyword.value = config.completionKeyword || 'Done skul9x.';
-    }
-    if (chkAutoApprovePermissions) {
-      chkAutoApprovePermissions.checked = config.autoApprovePermissions !== false;
     }
     if (chkAutoInjectWorkbench) {
       chkAutoInjectWorkbench.checked = config.autoInjectWorkbench !== false;
@@ -294,7 +289,7 @@
   const formInputs = [
     optTierAuto, optTier1, optTier2, optTier3, chkAllowFallback,
     txtDelayMs, txtTimeoutMinutes, txtRepeatCount, txtFocusDelayMs, txtBridgeTimeoutMs,
-    txtDefaultPlanFolder, chkAutoApprovePermissions, chkAutoInjectWorkbench, chkSuppressFallbackWarnings,
+    txtDefaultPlanFolder, chkAutoInjectWorkbench, chkSuppressFallbackWarnings,
     txtPromptTemplate, txtCompletionKeyword
   ];
 
@@ -750,8 +745,13 @@
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       getFormSettings,
+      collectCurrentSettings: getFormSettings,
       applySettingsToForm,
+      initSettings: applySettingsToForm,
       checkDirty,
+      markAsClean: function () { savedBaseline = JSON.stringify(getFormSettings()); checkDirty(); },
+      getSavedBaseline: () => savedBaseline,
+      setSavedBaseline: (b) => { savedBaseline = b; },
       insertTagAtCursor,
       updateActiveTierCards,
       showToast,

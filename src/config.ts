@@ -22,7 +22,6 @@ export interface AutoPlanConfig {
   bridgeTimeoutMs?: number;
   newConversationTimeoutMs?: number;
   staleClientMs?: number;
-  autoApprovePermissions?: boolean;
   autoInjectWorkbench?: boolean;
   suppressFallbackWarnings?: boolean;
   enableVerboseBridgeLogs?: boolean;
@@ -57,7 +56,6 @@ export const DEFAULT_CONFIG: AutoPlanConfig = {
   bridgeTimeoutMs: 5000,
   newConversationTimeoutMs: 8000,
   staleClientMs: 120000,
-  autoApprovePermissions: true,
   autoInjectWorkbench: true,
   suppressFallbackWarnings: true,
   enableVerboseBridgeLogs: false,
@@ -104,7 +102,6 @@ export function getConfig(): AutoPlanConfig {
     bridgeTimeoutMs: config.get<number>('bridgeTimeoutMs', DEFAULT_CONFIG.bridgeTimeoutMs ?? 5000),
     newConversationTimeoutMs: config.get<number>('newConversationTimeoutMs', DEFAULT_CONFIG.newConversationTimeoutMs ?? 8000),
     staleClientMs: config.get<number>('staleClientMs', DEFAULT_CONFIG.staleClientMs ?? 120000),
-    autoApprovePermissions: config.get<boolean>('autoApprovePermissions', DEFAULT_CONFIG.autoApprovePermissions ?? true),
     autoInjectWorkbench: config.get<boolean>('autoInjectWorkbench', DEFAULT_CONFIG.autoInjectWorkbench ?? true),
     suppressFallbackWarnings: config.get<boolean>('suppressFallbackWarnings', DEFAULT_CONFIG.suppressFallbackWarnings ?? true),
     enableVerboseBridgeLogs: config.get<boolean>('enableVerboseBridgeLogs', DEFAULT_CONFIG.enableVerboseBridgeLogs ?? false),

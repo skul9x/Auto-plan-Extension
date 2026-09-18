@@ -11,10 +11,14 @@ import { BridgeServer, bridgeServer as defaultBridgeServer, BRIDGE_PROTOCOL_VERS
 const activeWorkspaceFolder = vscode.workspace?.workspaceFolders?.[0];
 const workspaceName = activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined;
 const workspacePath = activeWorkspaceFolder ? activeWorkspaceFolder.uri.fsPath : undefined;
+const workspaceFolders = vscode.workspace?.workspaceFolders?.map(f => f.name) || [];
+const workspaceTitle = vscode.workspace?.name;
 
 export const bridgeServer = new BridgeServer({
   workspaceName,
-  workspacePath
+  workspacePath,
+  workspaceFolders,
+  workspaceTitle
 });
 import {
   isBridgeInstalled,
@@ -726,7 +730,9 @@ export async function executePhases(
   const activeWs = vscode.workspace.workspaceFolders?.[0];
   const wsName = activeWs ? activeWs.name : undefined;
   const wsPath = activeWs ? activeWs.uri.fsPath : folderPath;
-  orchestrator.setWorkspace(wsPath, wsName);
+  const wsFolders = vscode.workspace.workspaceFolders?.map(f => f.name) || [];
+  const wsTitle = vscode.workspace.name;
+  orchestrator.setWorkspace(wsPath, wsName, wsFolders, wsTitle);
 
   const folderName = path.basename(folderPath);
   vscode.window.showInformationMessage(`Auto-Plan: Starting execution of ${phases.length} phases in "${folderName}"...`);
@@ -1475,20 +1481,24 @@ export function activate(context: vscode.ExtensionContext) {
   const activeWsFolder = vscode.workspace.workspaceFolders?.[0];
   const activeWsName = activeWsFolder ? activeWsFolder.name : undefined;
   const activeWsPath = activeWsFolder ? activeWsFolder.uri.fsPath : undefined;
+  const activeWsFolders = vscode.workspace.workspaceFolders?.map(f => f.name) || [];
+  const activeWsTitle = vscode.workspace.name;
 
-  bridgeServer.setWorkspace(activeWsPath, activeWsName);
-  defaultBridgeServer.setWorkspace(activeWsPath, activeWsName);
+  bridgeServer.setWorkspace(activeWsPath, activeWsName, activeWsFolders, activeWsTitle);
+  defaultBridgeServer.setWorkspace(activeWsPath, activeWsName, activeWsFolders, activeWsTitle);
   promptDispatcher.setBridgeServer(bridgeServer);
-  orchestrator.setWorkspace(activeWsPath, activeWsName);
+  orchestrator.setWorkspace(activeWsPath, activeWsName, activeWsFolders, activeWsTitle);
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       const updatedFolder = vscode.workspace.workspaceFolders?.[0];
       const updatedName = updatedFolder ? updatedFolder.name : undefined;
       const updatedPath = updatedFolder ? updatedFolder.uri.fsPath : undefined;
-      bridgeServer.setWorkspace(updatedPath, updatedName);
-      defaultBridgeServer.setWorkspace(updatedPath, updatedName);
-      orchestrator.setWorkspace(updatedPath, updatedName);
+      const updatedFolders = vscode.workspace.workspaceFolders?.map(f => f.name) || [];
+      const updatedTitle = vscode.workspace.name;
+      bridgeServer.setWorkspace(updatedPath, updatedName, updatedFolders, updatedTitle);
+      defaultBridgeServer.setWorkspace(updatedPath, updatedName, updatedFolders, updatedTitle);
+      orchestrator.setWorkspace(updatedPath, updatedName, updatedFolders, updatedTitle);
     })
   );
 

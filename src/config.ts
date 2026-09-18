@@ -47,7 +47,7 @@ export const DEFAULT_CONFIG: AutoPlanConfig = {
   repeatCount: 5,
   completionKeyword: DEFAULT_COMPLETION_KEYWORD,
   delayBetweenLoopsMs: 2000,
-  timeoutPerLoopMinutes: 15,
+  timeoutPerLoopMinutes: 0,
   focusDelayMs: 800,
   defaultPlanFolder: '',
   executionMode: 'auto',

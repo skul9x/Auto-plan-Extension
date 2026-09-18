@@ -115,6 +115,8 @@ export interface BridgeServerOptions {
   windowKey?: string;
   workspacePath?: string;
   workspaceName?: string;
+  workspaceFolders?: string[];
+  workspaceTitle?: string;
   defaultTimeoutMs?: number;
   staleClientMs?: number;
   watchdogIntervalMs?: number;
@@ -145,6 +147,8 @@ export class BridgeServer {
   private activeWindowKey: string | null = null;
   private workspacePath?: string;
   private workspaceName?: string;
+  private workspaceFolders: string[] = [];
+  private workspaceTitle?: string;
   private defaultTimeoutMs: number;
   private staleClientMs: number;
   private serverStartedAt: number = 0;
@@ -198,6 +202,8 @@ export class BridgeServer {
     this.activeWindowKey = options.windowKey || null;
     this.workspacePath = options.workspacePath;
     this.workspaceName = options.workspaceName;
+    this.workspaceFolders = options.workspaceFolders || [];
+    this.workspaceTitle = options.workspaceTitle;
     this.defaultTimeoutMs = options.defaultTimeoutMs || DEFAULT_COMMAND_TIMEOUT_MS;
     this.staleClientMs = options.staleClientMs || DEFAULT_STALE_CLIENT_MS;
     this.watchdogIntervalMs = options.watchdogIntervalMs || 5000;
@@ -219,9 +225,28 @@ export class BridgeServer {
     return this.workspaceName;
   }
 
-  public setWorkspace(workspacePath?: string, workspaceName?: string): void {
+  public getWorkspaceFolders(): string[] {
+    return [...this.workspaceFolders];
+  }
+
+  public getWorkspaceTitle(): string | undefined {
+    return this.workspaceTitle;
+  }
+
+  public setWorkspace(
+    workspacePath?: string,
+    workspaceName?: string,
+    workspaceFolders?: string[],
+    workspaceTitle?: string
+  ): void {
     this.workspacePath = workspacePath;
     this.workspaceName = workspaceName;
+    if (workspaceFolders) {
+      this.workspaceFolders = workspaceFolders;
+    }
+    if (workspaceTitle !== undefined) {
+      this.workspaceTitle = workspaceTitle;
+    }
     if (this.port) {
       this.registerPortInRegistry();
     }
@@ -665,13 +690,36 @@ export class BridgeServer {
       });
 
       // 1. Workspace matching validation
-      // If query.workspaceName is supplied and does NOT match this server's workspaceName, return HTTP 409
+      // Validate query.workspaceName against primary workspaceName, workspaceFolders, or workspaceTitle
       const queryWsName = typeof query.workspaceName === 'string' ? query.workspaceName.trim() : undefined;
-      const isWsMatch = queryWsName && this.workspaceName
-        ? (queryWsName === this.workspaceName || queryWsName.toLowerCase() === this.workspaceName.toLowerCase())
-        : true;
-      if (queryWsName && this.workspaceName && !isWsMatch) {
-        this.logger.warn('SERVER', `Probe rejected: Workspace mismatch. Server workspace is "${this.workspaceName}", prober requested "${queryWsName}"`);
+
+      let isWsMatch = true;
+      if (queryWsName && (this.workspaceName || this.workspaceFolders.length > 0 || this.workspaceTitle)) {
+        const cleanQuery = queryWsName.replace(/\s*\((Workspace|Workspace File)\)$/i, '').trim().toLowerCase();
+        const cleanServerWs = this.workspaceName
+          ? this.workspaceName.replace(/\s*\((Workspace|Workspace File)\)$/i, '').trim().toLowerCase()
+          : undefined;
+        const cleanTitle = this.workspaceTitle
+          ? this.workspaceTitle.replace(/\s*\((Workspace|Workspace File)\)$/i, '').trim().toLowerCase()
+          : undefined;
+        const cleanFolders = this.workspaceFolders.map(f =>
+          f.replace(/\s*\((Workspace|Workspace File)\)$/i, '').trim().toLowerCase()
+        );
+
+        const matchesPrimary = Boolean(cleanServerWs && (cleanQuery === cleanServerWs));
+        const matchesFolders = cleanFolders.includes(cleanQuery);
+        const matchesTitle = Boolean(cleanTitle && (cleanQuery === cleanTitle));
+        const isUntitledPair = (cleanQuery === 'untitled') && Boolean(
+          (cleanServerWs && cleanServerWs.includes('untitled')) ||
+          (cleanTitle && cleanTitle.includes('untitled')) ||
+          (!this.workspaceName && this.workspaceFolders.length === 0)
+        );
+
+        isWsMatch = matchesPrimary || matchesFolders || matchesTitle || isUntitledPair;
+      }
+
+      if (queryWsName && (this.workspaceName || this.workspaceFolders.length > 0) && !isWsMatch) {
+        this.logger.warn('SERVER', `Probe rejected: Workspace mismatch. Server workspace is "${this.workspaceName || this.workspaceTitle}", prober requested "${queryWsName}"`);
         res.writeHead(409, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           service: BRIDGE_SERVICE_NAME,
@@ -679,6 +727,8 @@ export class BridgeServer {
           serverWindowKey: this.windowKey,
           activeWindowKey: this.activeWindowKey,
           workspaceName: this.workspaceName,
+          workspaceFolders: this.workspaceFolders,
+          workspaceTitle: this.workspaceTitle,
           workspacePath: this.workspacePath,
           isCompatible: false,
           bindRejected: true,
@@ -696,7 +746,7 @@ export class BridgeServer {
           : (this.lastHeartbeatAt > 0 ? this.lastHeartbeatAt : this.serverStartedAt);
         const isStale = (Date.now() - lastActiveTime > 5000);
         const isForceRebind = query.forceRebind === '1' || query.forceRebind === 'true';
-        const isWorkspaceOwner = Boolean(this.workspaceName && queryWsName && queryWsName === this.workspaceName);
+        const isWorkspaceOwner = Boolean(queryWsName && isWsMatch);
 
         if (isStale || isForceRebind || isWorkspaceOwner) {
           const staleKey = this.activeWindowKey;

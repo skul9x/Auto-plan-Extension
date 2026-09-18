@@ -214,8 +214,8 @@
 
             <div class="form-group">
               <label for="txtTimeoutMinutes" class="form-label">Timeout Per Loop (min)</label>
-              <input type="number" id="txtTimeoutMinutes" class="form-input" min="1" max="180" step="1" value="15">
-              <span class="input-hint">Maximum wait time for AI response completion.</span>
+              <input type="number" id="txtTimeoutMinutes" class="form-input" min="0" max="180" step="1" value="0">
+              <span class="input-hint">0 = Infinite (no timeout). Maximum wait time for AI response.</span>
             </div>
 
             <div class="form-group">

@@ -9,6 +9,8 @@ export interface ConversationOwnershipCriteria {
   expectedPromptSnippet?: string;
   workspacePath?: string;
   workspaceName?: string;
+  workspaceFolders?: string[];
+  workspaceTitle?: string;
 }
 
 export interface WatcherOptions {
@@ -282,7 +284,13 @@ export async function verifyConversationOwnershipAsync(
   criteria: ConversationOwnershipCriteria,
   statHint?: { mtimeMs: number; size: number }
 ): Promise<boolean> {
-  if (!criteria || (!criteria.expectedPromptSnippet && !criteria.workspacePath && !criteria.workspaceName)) {
+  if (
+    !criteria ||
+    (!criteria.expectedPromptSnippet &&
+      !criteria.workspacePath &&
+      !criteria.workspaceName &&
+      (!criteria.workspaceFolders || criteria.workspaceFolders.length === 0))
+  ) {
     return true;
   }
 
@@ -306,7 +314,7 @@ export async function verifyConversationOwnershipAsync(
     return false;
   }
 
-  const criteriaKey = `${criteria.expectedPromptSnippet || ''}::${criteria.workspacePath || ''}::${criteria.workspaceName || ''}`;
+  const criteriaKey = `${criteria.expectedPromptSnippet || ''}::${criteria.workspacePath || ''}::${criteria.workspaceName || ''}::${criteria.workspaceFolders?.join(',') || ''}`;
   const cacheKey = `${transcriptPath}::${criteriaKey}`;
 
   const cached = conversationOwnershipCache.get(cacheKey);
@@ -381,8 +389,20 @@ export async function verifyConversationOwnershipAsync(
         }
       }
 
-      if (matches && criteria.workspaceName) {
-        if (!fullSearchText.includes(criteria.workspaceName)) {
+      if (matches && (criteria.workspaceName || (criteria.workspaceFolders && criteria.workspaceFolders.length > 0))) {
+        let wsMatched = false;
+        if (criteria.workspaceName && fullSearchText.includes(criteria.workspaceName)) {
+          wsMatched = true;
+        }
+        if (!wsMatched && criteria.workspaceFolders) {
+          for (const folder of criteria.workspaceFolders) {
+            if (fullSearchText.includes(folder)) {
+              wsMatched = true;
+              break;
+            }
+          }
+        }
+        if (!wsMatched) {
           matches = false;
         }
       }
@@ -545,7 +565,13 @@ export async function getCandidateConversationsAsync(
           const tSize = tStats ? tStats.size : 0;
           const tBirthtime = tStats ? Math.max(tStats.birthtimeMs || 0, tStats.ctimeMs || 0) : 0;
 
-          if (criteria && (criteria.expectedPromptSnippet || criteria.workspacePath || criteria.workspaceName)) {
+          if (
+            criteria &&
+            (criteria.expectedPromptSnippet ||
+              criteria.workspacePath ||
+              criteria.workspaceName ||
+              (criteria.workspaceFolders && criteria.workspaceFolders.length > 0))
+          ) {
             const isOwner = await verifyConversationOwnershipAsync(transcriptPath, criteria, { mtimeMs: tMtime, size: tSize });
             if (!isOwner) {
               if (tSize > 0 && onCandidateSkipped) {
@@ -597,7 +623,13 @@ export async function getCandidateConversationsAsync(
         continue;
       }
 
-      if (criteria && (criteria.expectedPromptSnippet || criteria.workspacePath || criteria.workspaceName)) {
+      if (
+        criteria &&
+        (criteria.expectedPromptSnippet ||
+          criteria.workspacePath ||
+          criteria.workspaceName ||
+          (criteria.workspaceFolders && criteria.workspaceFolders.length > 0))
+      ) {
         if (!transcriptPath) {
           continue;
         }
@@ -934,10 +966,13 @@ export class TranscriptWatcher extends EventEmitter {
   constructor(options?: WatcherOptions) {
     super();
     this.setMaxListeners(50);
+    const defaultTimeoutMs = (DEFAULT_CONFIG.timeoutPerLoopMinutes !== undefined && DEFAULT_CONFIG.timeoutPerLoopMinutes > 0)
+      ? DEFAULT_CONFIG.timeoutPerLoopMinutes * 60 * 1000
+      : 0;
     this.options = {
       brainDir: options?.brainDir || getDefaultBrainDir(),
       keyword: options?.keyword || DEFAULT_CONFIG.completionKeyword,
-      timeoutMs: options?.timeoutMs || DEFAULT_CONFIG.timeoutPerLoopMinutes * 60 * 1000,
+      timeoutMs: options?.timeoutMs !== undefined ? options.timeoutMs : defaultTimeoutMs,
       pollIntervalMs: options?.pollIntervalMs || 300,
       relaxedPollIntervalMs: options?.relaxedPollIntervalMs || 1200,
       settleQuietPeriodMs: options?.settleQuietPeriodMs ?? 1500,

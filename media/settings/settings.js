@@ -125,7 +125,7 @@
       executionMode: executionMode,
       allowTierFallback: chkAllowFallback ? chkAllowFallback.checked : true,
       delayBetweenLoopsMs: txtDelayMs ? (parseInt(txtDelayMs.value, 10) || 2000) : 2000,
-      timeoutPerLoopMinutes: txtTimeoutMinutes ? (parseInt(txtTimeoutMinutes.value, 10) || 15) : 15,
+      timeoutPerLoopMinutes: txtTimeoutMinutes ? (parseInt(txtTimeoutMinutes.value, 10) >= 0 ? parseInt(txtTimeoutMinutes.value, 10) : 0) : 0,
       repeatCount: txtRepeatCount ? (parseInt(txtRepeatCount.value, 10) || 5) : 5,
       focusDelayMs: txtFocusDelayMs ? (parseInt(txtFocusDelayMs.value, 10) || 800) : 800,
       bridgeTimeoutMs: txtBridgeTimeoutMs ? (parseInt(txtBridgeTimeoutMs.value, 10) || 5000) : 5000,
@@ -158,7 +158,7 @@
       txtDelayMs.value = config.delayBetweenLoopsMs !== undefined ? config.delayBetweenLoopsMs : 2000;
     }
     if (txtTimeoutMinutes) {
-      txtTimeoutMinutes.value = config.timeoutPerLoopMinutes !== undefined ? config.timeoutPerLoopMinutes : 15;
+      txtTimeoutMinutes.value = config.timeoutPerLoopMinutes !== undefined ? config.timeoutPerLoopMinutes : 0;
     }
     if (txtRepeatCount) {
       txtRepeatCount.value = config.repeatCount !== undefined ? config.repeatCount : 5;

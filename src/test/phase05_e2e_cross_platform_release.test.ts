@@ -305,20 +305,30 @@ async function runPhase05E2ECrossPlatformReleaseTests() {
       }
     }
 
-    if (orchestrator.getState() === 'waiting') {
+    if (orchestrator.getState() === 'waiting' && convIndex < startedPhases.length) {
       convIndex++;
+      const currentPhaseName = startedPhases[convIndex - 1] || `phase-0${convIndex}`;
+      const phasePath = path.join(tempPlanDir, currentPhaseName);
       const convId = `conv_release_${convIndex}_${Date.now()}`;
       const logDir = path.join(tempBrainDir, convId, '.system_generated', 'logs');
       fs.mkdirSync(logDir, { recursive: true });
-
+      const now = Date.now();
+      const userLine = JSON.stringify({
+        step_index: 1,
+        type: 'USER_INPUT',
+        source: 'USER_EXPLICIT',
+        timestamp: now,
+        content: `Run phase: ${phasePath} (${currentPhaseName})`
+      });
       const modelLine = JSON.stringify({
         step_index: 2,
         type: 'PLANNER_RESPONSE',
         source: 'MODEL',
         status: 'DONE',
+        timestamp: now + 10,
         content: `Done skul9x.`
       });
-      fs.writeFileSync(path.join(logDir, 'transcript.jsonl'), `${modelLine}\n`, 'utf8');
+      fs.writeFileSync(path.join(logDir, 'transcript.jsonl'), `${userLine}\n${modelLine}\n`, 'utf8');
     }
   }, 60);
 
@@ -359,6 +369,9 @@ async function runPhase05E2ECrossPlatformReleaseTests() {
   sidebarProvider.resolveWebviewView(mockWebviewView, {} as any, {} as any);
 
   assert.ok(mockWebviewView._onDidReceiveMessage, 'Webview message listener must be registered');
+
+  // Send ready handshake
+  await mockWebviewView._onDidReceiveMessage({ command: 'ready' });
 
   // 3.1 Select Plan Folder IPC
   await mockWebviewView._onDidReceiveMessage({ command: 'selectPlanFolder', folderPath: tempPlanDir });

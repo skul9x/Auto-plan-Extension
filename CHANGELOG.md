@@ -2,6 +2,29 @@
 
 All notable changes to the **Antigravity Auto-Plan Runner** extension will be documented in this file.
 
+## [1.6.1] - 2026-09-18
+
+### ⚡ Added & Enhanced (Infinite Loop Timeout & Watcher Improvements)
+- **Infinite Loop Timeout (`0 = Infinite`)**: Chuyển đổi cấu hình `autoplan.timeoutPerLoopMinutes` sang hỗ trợ giá trị `0` biểu thị chế độ vô hạn (không ngắt timeout khi AI phản hồi lâu).
+- **Default Timeout Update**: Cập nhật giá trị mặc định của `timeoutPerLoopMinutes` thành `0` trong `package.json`, `src/config.ts`, `media/settings/settings.html` và `media/settings/settings.js`.
+- **Timer & Watchdog Suppression**: Khi `timeoutMs <= 0` hoặc `timeoutPerLoopMinutes <= 0`, `TranscriptWatcher` hoàn toàn bỏ timer `setTimeout` và `Orchestrator` tắt watchdog stall alert để tránh ngắt quãng tác vụ AI chạy dài.
+- **New Conversation Offset Reset**: Đảm bảo `offsetToUse = 0` và `initialTranscriptLength = 0` khi `Orchestrator` theo dõi file transcript của conversation mới, triệt tiêu lỗi bỏ sót dòng log hoàn thành.
+- **Full Test Suite & VSIX**: Vượt qua 100% các bộ kiểm thử E2E Cross-Platform, Multi-Root, và đóng gói lại `antigravity-auto-plan-1.6.1.vsix`.
+
+---
+
+## [1.6.1] - 2026-09-17
+
+### ⚡ Fixed & Enhanced (Workspace Title & Multi-Root Support)
+- **Workspace Suffix Normalization**: Loại bỏ hậu tố `\s*\((Workspace|Workspace File)\)$` trong `parseWorkspaceFromTitleString` và `BridgeServer`, chuẩn hóa các tiêu đề như `Untitled (Workspace)` hoặc `MyProject (Workspace)`.
+- **Untitled Workspace Filtering**: Bổ sung `untitled (workspace)` vào danh sách loại trừ tab/placeholder để không nhận nhầm tiêu đề tạm thời làm tên thư mục code.
+- **Explorer DOM Root Folder Extraction**: Bổ sung cơ chế trích xuất trực tiếp tên thư mục gốc từ DOM Explorer (`.monaco-list-row [class*="rootfolder-icon"] .label-name`) khi chạy trong Multi-Root hoặc Untitled Workspace, tự động nhận diện đúng thư mục (ví dụ `AI_Novel-main`).
+- **Multi-Root BridgeServer Handshake**: Nâng cấp `BridgeServer` hỗ trợ mảng `workspaceFolders` và `workspaceTitle`, cho phép bắt tay HTTP probe thành công với bất kỳ thư mục nào trong multi-root workspace (triệt tiêu lỗi HTTP 409 workspace-mismatch).
+- **Multi-Root Transcript Ownership**: Cập nhật `ConversationOwnershipCriteria` và `verifyConversationOwnershipAsync` trong `TranscriptWatcher`, cho phép đối chiếu log transcript theo toàn bộ danh sách thư mục trong multi-root workspace.
+- **Automated Verification**: Bổ sung bộ kiểm thử tự động `test:multiroot` (13/13 test cases pass) và đóng gói `antigravity-auto-plan-1.6.1.vsix`.
+
+---
+
 ## [1.6.0] - 2026-09-09
 
 ### ⚡ Performance & Reliability (Clinical Audit Remediation)

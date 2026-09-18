@@ -2172,6 +2172,17 @@
   }
 
   /**
+   * Cleans workspace string by removing bracketed wrappers and (Workspace) suffixes
+   */
+  function cleanWorkspaceString(str) {
+    if (!str || typeof str !== 'string') return '';
+    return str
+      .replace(/\[.*?\]/g, '')
+      .replace(/\s*\((Workspace|Workspace File)\)$/i, '')
+      .trim();
+  }
+
+  /**
    * Parses workspace folder name from title string (document.title or .window-title text)
    */
   function parseWorkspaceFromTitleString(str) {
@@ -2182,7 +2193,7 @@
     // Split on common dashes
     const parts = cleanStr.split(/\s+[-—–]\s+/).map(p => p.trim()).filter(Boolean);
     if (parts.length === 0) return '';
-    if (parts.length === 1) return parts[0].replace(/\[.*?\]/g, '').trim();
+    if (parts.length === 1) return cleanWorkspaceString(parts[0]);
 
     // Find the app name in parts (e.g. "Antigravity IDE", "Visual Studio Code")
     const appIdx = parts.findIndex(isAppName);
@@ -2192,30 +2203,64 @@
       // In VS Code: [File, Workspace, AppName] -> appIdx = 2, parts[appIdx - 1] = Workspace
       // In no-file window: [Workspace, AppName] -> appIdx = 1, parts[appIdx - 1] = Workspace
       if (appIdx > 0) {
-        const candidate = parts[appIdx - 1].replace(/\[.*?\]/g, '').trim();
+        const candidate = cleanWorkspaceString(parts[appIdx - 1]);
         if (candidate) return candidate;
       }
       // If AppName was the first part (e.g. [AppName, Workspace] or [AppName, File])
       if (parts.length > 1 && appIdx === 0) {
-        const candidate = parts[1].replace(/\[.*?\]/g, '').trim();
+        const candidate = cleanWorkspaceString(parts[1]);
         if (candidate) return candidate;
       }
     }
 
     // Fallback: filter out common app names or non-workspace tab names
-    const nonWorkspaceTabs = ['auto-plan settings', 'settings', 'welcome', 'untitled'];
+    const nonWorkspaceTabs = ['auto-plan settings', 'settings', 'welcome', 'untitled', 'untitled (workspace)'];
     for (let i = 0; i < parts.length; i++) {
-      const lower = parts[i].toLowerCase().trim();
+      const lower = cleanWorkspaceString(parts[i]).toLowerCase();
       if (!isAppName(parts[i]) && !nonWorkspaceTabs.includes(lower)) {
-        return parts[i].replace(/\[.*?\]/g, '').trim();
+        return cleanWorkspaceString(parts[i]);
       }
     }
 
-    return parts[0].replace(/\[.*?\]/g, '').trim();
+    return cleanWorkspaceString(parts[0]);
   }
 
   /**
-   * Detects workspace folder name from doc.title or DOM element .window-title
+   * Extracts the root folder name directly from Explorer DOM tree
+   * Essential for Multi-Root Workspaces or Untitled Workspaces where .window-title shows "Untitled (Workspace)"
+   */
+  function extractRootFolderFromDom(doc) {
+    if (!doc || typeof doc.querySelector !== 'function') return '';
+    try {
+      const rootFolderEl = doc.querySelector(
+        '.explorer-folders-view [class*="rootfolder-icon"] [class*="label-name"], ' +
+        '.monaco-list-row [class*="rootfolder-icon"] [class*="label-name"], ' +
+        '[class*="rootfolder-icon"] [class*="label-name"], ' +
+        '.explorer-folders-view [class*="rootfolder-icon"] .monaco-highlighted-label, ' +
+        '[class*="rootfolder-icon"] .monaco-highlighted-label'
+      );
+      if (rootFolderEl && rootFolderEl.textContent && rootFolderEl.textContent.trim()) {
+        return cleanWorkspaceString(rootFolderEl.textContent.trim());
+      }
+
+      const rootFolderItem = doc.querySelector(
+        '.explorer-folders-view [class*="rootfolder-icon"][aria-label], ' +
+        '.monaco-list-row [class*="rootfolder-icon"][aria-label], ' +
+        '[class*="rootfolder-icon"][aria-label]'
+      );
+      if (rootFolderItem) {
+        const aria = rootFolderItem.getAttribute('aria-label') || '';
+        const baseName = aria.split(/[/\\]/).pop();
+        if (baseName && baseName.trim()) {
+          return cleanWorkspaceString(baseName.trim());
+        }
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  /**
+   * Detects workspace folder name from doc.title, DOM element .window-title, or Explorer DOM tree
    */
   function detectWorkspaceName(doc) {
     if (!doc) {
@@ -2226,7 +2271,7 @@
       }
     }
 
-    const nonWorkspaceTabs = ['auto-plan settings', 'settings', 'welcome', 'untitled'];
+    const nonWorkspaceTabs = ['auto-plan settings', 'settings', 'welcome', 'untitled', 'untitled (workspace)'];
 
     // 1. Try DOM element .window-title or [class*="window-title"]
     try {
@@ -2255,7 +2300,15 @@
       }
     } catch (_) {}
 
-    // 3. Fallback: Try Explorer Section Header or Agent Side Panel Header in DOM
+    // 3. Fallback: Try Root Folder extraction directly from Explorer tree (Crucial for Untitled / Multi-Root Workspaces)
+    try {
+      const rootFolder = extractRootFolderFromDom(doc);
+      if (rootFolder && !nonWorkspaceTabs.includes(rootFolder.toLowerCase())) {
+        return rootFolder;
+      }
+    } catch (_) {}
+
+    // 4. Fallback: Try Explorer Section Header or Agent Side Panel Header in DOM
     try {
       if (typeof doc.querySelector === 'function') {
         // e.g. <h3 class="title" aria-label="Explorer Section: xxx">
@@ -2264,7 +2317,10 @@
           const label = sectionHeader.getAttribute('aria-label');
           const match = label.match(/Explorer Section:\s*(.+)$/i);
           if (match && match[1] && match[1].trim()) {
-            return match[1].trim();
+            const cleaned = cleanWorkspaceString(match[1].trim());
+            if (cleaned && !nonWorkspaceTabs.includes(cleaned.toLowerCase())) {
+              return cleaned;
+            }
           }
         }
         // e.g. <div class="icon codicon codicon-explorer-view-icon" aria-label="Auto-plan-Extension-main">
@@ -2272,13 +2328,19 @@
         if (explorerIcon) {
           const label = explorerIcon.getAttribute('aria-label');
           if (label && label.trim() && !label.toLowerCase().includes('explorer')) {
-            return label.trim();
+            const cleaned = cleanWorkspaceString(label.trim());
+            if (cleaned && !nonWorkspaceTabs.includes(cleaned.toLowerCase())) {
+              return cleaned;
+            }
           }
         }
         // e.g. <div class="text-lg font-medium">EV-Plus-main</div> in Agent Sidepanel
         const agentWsEl = doc.querySelector('#conversation .text-lg.font-medium');
         if (agentWsEl && agentWsEl.textContent && agentWsEl.textContent.trim()) {
-          return agentWsEl.textContent.trim();
+          const cleaned = cleanWorkspaceString(agentWsEl.textContent.trim());
+          if (cleaned && !nonWorkspaceTabs.includes(cleaned.toLowerCase())) {
+            return cleaned;
+          }
         }
       }
     } catch (_) {}

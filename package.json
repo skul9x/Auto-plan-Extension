@@ -2,7 +2,7 @@
   "name": "antigravity-auto-plan",
   "displayName": "Antigravity Auto-Plan Runner",
   "description": "Automate repeated prompts and monitor completion in Antigravity IDE",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "publisher": "skul9x",
   "engines": {
     "vscode": "^1.80.0"
@@ -187,8 +187,9 @@
         },
         "autoplan.timeoutPerLoopMinutes": {
           "type": "number",
-          "default": 15,
-          "description": "Giới hạn thời gian tối đa cho 1 lượt chạy (phút)"
+          "default": 0,
+          "minimum": 0,
+          "description": "Giới hạn thời gian tối đa cho 1 lượt chạy (phút). Đặt 0 là không giới hạn (vô hạn)."
         },
         "autoplan.focusDelayMs": {
           "type": "number",
@@ -293,6 +294,7 @@
     "test:modernize": "node out/test/phase02_test_suite_modernization.test.js",
     "test:dep0169": "node out/test/phase03_dep0169_async_scanner_regression.test.js",
     "test:workspace": "node out/test/phase04_antigravity_workspace_detection.test.js",
+    "test:multiroot": "node out/test/phase01_workspace_title_multiroot_fix.test.js",
     "test:all": "node out/test/phase05_e2e_cross_platform_release.test.js"
   },
   "devDependencies": {

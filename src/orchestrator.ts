@@ -112,6 +112,8 @@ export interface OrchestratorOptions {
   actionableErrorNotifier?: ActionableErrorNotifier;
   workspaceName?: string;
   workspacePath?: string;
+  workspaceFolders?: string[];
+  workspaceTitle?: string;
   onStateChange?: (info: OrchestratorProgressInfo) => void;
   onIterationComplete?: (iteration: number, total: number, result: CompletionResult) => void;
   onPhaseStart?: (phase: PhaseItem, index: number, total: number) => void;
@@ -140,6 +142,8 @@ export class Orchestrator extends EventEmitter {
   private lastPreflightResult: DispatchReadinessResult | null = null;
   private workspaceName?: string;
   private workspacePath?: string;
+  private workspaceFolders: string[] = [];
+  private workspaceTitle?: string;
 
   private configProvider: () => AutoPlanConfig;
   private keyboardManager: KeyboardManager;
@@ -161,6 +165,8 @@ export class Orchestrator extends EventEmitter {
       options?.stallTimeoutMs ?? options?.stallWatchdogThresholdMs ?? 120000;
     this.workspaceName = options?.workspaceName;
     this.workspacePath = options?.workspacePath;
+    this.workspaceFolders = options?.workspaceFolders || [];
+    this.workspaceTitle = options?.workspaceTitle;
 
     this.promptDispatcher =
       options?.promptDispatcher ??
@@ -247,9 +253,28 @@ export class Orchestrator extends EventEmitter {
     return this.lastPreflightResult;
   }
 
-  public setWorkspace(workspacePath?: string, workspaceName?: string): void {
+  public setWorkspace(
+    workspacePath?: string,
+    workspaceName?: string,
+    workspaceFolders?: string[],
+    workspaceTitle?: string
+  ): void {
     this.workspacePath = workspacePath;
     this.workspaceName = workspaceName;
+    if (workspaceFolders) {
+      this.workspaceFolders = workspaceFolders;
+    }
+    if (workspaceTitle !== undefined) {
+      this.workspaceTitle = workspaceTitle;
+    }
+  }
+
+  public getWorkspaceFolders(): string[] {
+    return [...this.workspaceFolders];
+  }
+
+  public getWorkspaceTitle(): string | undefined {
+    return this.workspaceTitle;
   }
 
   public getWorkspaceName(): string | undefined {
@@ -1282,21 +1307,34 @@ export class Orchestrator extends EventEmitter {
               }
             );
 
-            const watchdogThreshold = config.timeoutPerLoopMinutes
+            const watchdogThreshold = (config.timeoutPerLoopMinutes && config.timeoutPerLoopMinutes > 0)
               ? Math.min(this.stallWatchdogThresholdMs, config.timeoutPerLoopMinutes * 60 * 1000 * 0.5)
-              : this.stallWatchdogThresholdMs;
+              : 0;
             this.startStallWatchdog(phase, i, watchdogThreshold);
 
             try {
               const activeWorkspaceFolder = vscode?.workspace?.workspaceFolders?.[0];
               const activeWsName = this.workspaceName || (activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined);
               const activeWsPath = this.workspacePath || (activeWorkspaceFolder ? activeWorkspaceFolder.uri?.fsPath : undefined) || this.currentPlanFolder || undefined;
+              const activeWsFolders = this.workspaceFolders.length > 0
+                ? this.workspaceFolders
+                : (vscode?.workspace?.workspaceFolders?.map(f => f.name) || []);
+              const activeWsTitle = this.workspaceTitle || vscode?.workspace?.name;
               const ownershipCriteria: ConversationOwnershipCriteria = {
                 expectedPromptSnippet: phase.fileName,
                 workspacePath: activeWsPath,
-                workspaceName: activeWsName
+                workspaceName: activeWsName,
+                workspaceFolders: activeWsFolders,
+                workspaceTitle: activeWsTitle
               };
-              this.transcriptWatcher.setOptions({ ownershipCriteria });
+              const watcherTimeoutMs = (config.timeoutPerLoopMinutes !== undefined && config.timeoutPerLoopMinutes > 0)
+                ? config.timeoutPerLoopMinutes * 60 * 1000
+                : 0;
+              this.transcriptWatcher.setOptions({
+                ownershipCriteria,
+                timeoutMs: watcherTimeoutMs,
+                keyword: config.completionKeyword
+              });
 
               convId = await this.waitForNewConversation(
                 phaseStartTime,
@@ -1445,7 +1483,7 @@ export class Orchestrator extends EventEmitter {
                 }
               }
             } else {
-              offsetToUse = phase.startOffset !== undefined ? phase.startOffset : 0;
+              offsetToUse = 0;
             }
 
             if (transcriptPath) {
@@ -1454,7 +1492,7 @@ export class Orchestrator extends EventEmitter {
                 convId,
                 offsetToUse,
                 phaseStartTime,
-                phase.initialTranscriptLength
+                convId === this.lastConversationId ? phase.initialTranscriptLength : 0
               );
             } else {
               completionResult = await this.transcriptWatcher.watchLatest(phaseStartTime, this.lastConversationId, phase.initialTranscriptLength);
@@ -1741,11 +1779,24 @@ export class Orchestrator extends EventEmitter {
             const activeWorkspaceFolder = vscode?.workspace?.workspaceFolders?.[0];
             const activeWsName = this.workspaceName || (activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined);
             const activeWsPath = this.workspacePath || (activeWorkspaceFolder ? activeWorkspaceFolder.uri?.fsPath : undefined) || this.currentPlanFolder || undefined;
+            const activeWsFolders = this.workspaceFolders.length > 0
+              ? this.workspaceFolders
+              : (vscode?.workspace?.workspaceFolders?.map(f => f.name) || []);
+            const activeWsTitle = this.workspaceTitle || vscode?.workspace?.name;
             const ownershipCriteria: ConversationOwnershipCriteria = {
               workspacePath: activeWsPath,
-              workspaceName: activeWsName
+              workspaceName: activeWsName,
+              workspaceFolders: activeWsFolders,
+              workspaceTitle: activeWsTitle
             };
-            this.transcriptWatcher.setOptions({ ownershipCriteria });
+            const watcherTimeoutMs = (config.timeoutPerLoopMinutes !== undefined && config.timeoutPerLoopMinutes > 0)
+              ? config.timeoutPerLoopMinutes * 60 * 1000
+              : 0;
+            this.transcriptWatcher.setOptions({
+              ownershipCriteria,
+              timeoutMs: watcherTimeoutMs,
+              keyword: config.completionKeyword
+            });
 
             convId = await this.waitForNewConversation(
               timestampBeforeSend,

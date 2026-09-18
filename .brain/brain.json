@@ -2,25 +2,25 @@
   "meta": {
     "schema_version": "1.1.0",
     "awf_version": "4.0.2",
-    "updated_at": "2026-09-09T19:58:00+07:00"
+    "updated_at": "2026-09-18T10:13:00+07:00"
   },
   "project": {
     "name": "Auto-Plan_Extension",
-    "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan, inject prompt focus-free qua DOM Renderer Bridge hoặc OS Keyboard Simulation, theo dõi log transcript AI sinh code, tự động chuyển tiếp phase, kèm hệ thống Full-Screen Settings Panel và DOM Bridge Diagnostic Logger.",
-    "version": "1.6.0",
+    "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan, inject prompt focus-free qua DOM Renderer Bridge hoặc OS Keyboard Simulation, theo dõi log transcript AI sinh code, tự động chuyển tiếp phase, kèm hệ thống Full-Screen Settings Panel, DOM Bridge Diagnostic Logger, và hỗ trợ toàn diện Single-Folder, Multi-Root Workspace & Untitled Workspaces.",
+    "version": "1.6.1",
     "created_at": "2026-08-27T23:51:00+07:00",
-    "active_plan": "plans/260909-1837-remediate-performance-memory-group1-group2/plan.md"
+    "active_plan": "plans/260917-1415-fix-workspace-title-multi-root-detection/plan.md"
   },
   "tech_stack": {
     "language": "TypeScript / JavaScript",
     "framework": "VS Code Extension API / Electron Sandbox",
-    "dom_bridge": "HTTP Bridge Server (Node.js http), Renderer DOM Injection (workbench.html), Shadow DOM Traversal, Multi-Window Workspace Isolation & Discovery",
+    "dom_bridge": "HTTP Bridge Server (Node.js http), Renderer DOM Injection (workbench.html), Shadow DOM Traversal, Multi-Window Workspace Isolation & Discovery, Multi-Root & Untitled Workspace Dynamic Resolution",
     "elevation": "Linux pkexec (Polkit GUI), Windows PowerShell UAC (Start-Process -Verb runAs)",
     "keyboard_fallback": "Windows PowerShell SendKeys (WScript.Shell), Linux xdotool",
     "ui_components": "Activity Bar Sidebar Control Center (WebviewViewProvider), Full-Screen Settings Panel (WebviewPanel), Modern Dark Glassmorphic CSS",
     "log_watcher": "Transcript JSONL Stream Watcher (~/.gemini/antigravity-ide/brain/)",
     "debug_logger": "In-memory Ring Buffer (DebugLogger), VS Code Log Output Channel (Auto-Plan DOM Bridge), Multi-tier Telemetry Tracing",
-    "dom_diagnostics": "Structured DOM snapshot evaluation, ShadowRoot boundary traversal, Container tree discovery, Antigravity IDE Title/DOM parser",
+    "dom_diagnostics": "Structured DOM snapshot evaluation, ShadowRoot boundary traversal, Container tree discovery, Antigravity IDE Title/DOM parser, DOM Explorer Root Folder Extractor",
     "performance_engine": "LRU Ownership Memoization Cache (256 entries, >98% hit rate), Bounded FIFO Sliding-Window Log Queue (MAX_PENDING_LOGS = 150), Non-blocking Async DOM Snapshot I/O, Bounded Concurrent Directory Scanner asyncPool(16, ...), Webview IPC Log Batching (100ms throttle)"
   },
   "features": [
@@ -30,6 +30,10 @@
     "Tier 2: VS Code Native Command API fallback",
     "Tier 3: OS Keyboard Simulation fallback (PowerShell trên Windows, xdotool trên Linux)",
     "Tự động nhận diện Workspace trên Antigravity IDE (Native/Custom Titlebar) và VS Code chuẩn",
+    "Hỗ trợ chuẩn hóa Workspace Title, loại bỏ hậu tố (Workspace)/(Workspace File) và phát hiện Untitled Workspaces",
+    "Cơ chế trích xuất tên thư mục gốc trực tiếp từ DOM Explorer (.rootfolder-icon) khi window title là placeholder",
+    "BridgeServer handshake đa luồng chấp nhận mọi folder trong multi-root workspace hoặc untitled matches mà không gây 409",
+    "TranscriptWatcher đồng bộ tiêu chí quyền sở hữu hội thoại (ownership criteria) theo toàn bộ workspaceFolders",
     "Cơ chế nâng quyền tự động 1-Click (Polkit trên Linux, UAC trên Windows)",
     "Tự động cập nhật checksum product.json chống cảnh báo corrupt",
     "Pre-flight Fail-Fast Health Guard chống treo 15 phút (< 100ms)",
@@ -44,7 +48,8 @@
     "LRU Stat & Content Memoization Cache cho Transcript Watcher (triệt tiêu 98% I/O đĩa trong polling)",
     "Hàng đợi Log bounded 150 phần tử và flush dạng batch, bảo toàn RAM khi Sidebar đóng/ẩn",
     "Async DOM Snapshot writer qua fs.promises.writeFile, triệt tiêu 100% hiện tượng UI freeze",
-    "Duyệt thư mục bất đồng bộ song song asyncPool(16, ...) hoàn tất baseline scan < 5ms"
+    "Duyệt thư mục bất đồng bộ song song asyncPool(16, ...) hoàn tất baseline scan < 5ms",
+    "Hỗ trợ chế độ Infinite Loop Timeout (0 = Vô hạn) cho phép chạy các phase dài mà không bị timeout ép buộc"
   ],
   "decisions_made": [
     "Sử dụng kiến trúc DOM Bridge tương tự zixfel nhưng mở rộng để điều phối Prompt và Phase",
@@ -58,12 +63,16 @@
     "Sử dụng WHATWG new URL() chuẩn cho HTTP Bridge Server để triệt tiêu hoàn toàn cảnh báo runtime [DEP0169] trên Node.js 20+",
     "Loại trừ hoàn toàn việc dispatch đúp sự kiện click trong dispatchButtonClickCascade và bảo đảm tính loại trừ giữa buttonClick / enterKey / formSubmit",
     "Nhận diện Workspace theo vị trí trước tên AppName trong title bar, tương thích cả Antigravity IDE ([Workspace] - [AppName] - [File]) và VS Code ([File] - [Workspace] - [AppName])",
+    "Tự động chuẩn hóa chuỗi workspace title bằng cách gỡ bỏ hậu tố (Workspace) / (Workspace File) và bỏ qua placeholder 'untitled (workspace)'",
+    "Duyệt sâu cây DOM Explorer lấy tên thư mục gốc (.rootfolder-icon) khi title window là Untitled hoặc placeholder",
+    "BridgeServer và TranscriptWatcher đối chiếu đa thư mục (workspaceFolders) và workspaceTitle để đảm bảo bắt tay HTTP và log streaming không bị gián đoạn",
     "Hard delete hoàn toàn tính năng Auto-Approver khỏi extension để loại bỏ 100% layout thrashing và forced synchronous reflows do Chromium getComputedStyle",
     "Kẹp cứng hàng đợi pending log ở mức MAX_PENDING_LOGS = 150 dạng sliding-window để tránh rò rỉ RAM vô hạn khi webview không sẵn sàng",
     "Triển khai LRU Cache 2 cấp theo (transcriptPath, mtime, size) để loại bỏ hiện tượng Disk I/O storm khi polling thư mục .brain/",
     "Chuyển toàn bộ ghi snapshot DOM sang fs.promises.writeFile để giải phóng hoàn toàn Main Thread của Extension Host",
     "Áp dụng worker pool asyncPool(16, ...) để quét song song thư mục mà không gây quá tải file descriptor (EMFILE)",
-    "Bảo toàn listener 'logUpdate' trong clearRunListeners() để không ngắt event stream của Sidebar giữa các phase"
+    "Bảo toàn listener 'logUpdate' trong clearRunListeners() để không ngắt event stream của Sidebar giữa các phase",
+    "Áp dụng quy ước chuẩn VS Code: đặt autoplan.timeoutPerLoopMinutes = 0 để biểu thị chế độ vô hạn (infinite timeout), hoàn toàn bỏ timer timeout và watchdog stall khi timeout <= 0"
   ],
   "knowledge_items": {
     "reports": [
@@ -73,7 +82,8 @@
       "3.md: Báo cáo nguyên nhân lỗi v1.0.5 trên Linux và cách khắc phục",
       "6.md: Kế hoạch kỹ thuật chi tiết nâng cấp đa nền tảng (Windows & Linux) và tối ưu UI/UX",
       "all.txt: DOM Snapshot khi dùng Custom Titlebar trên Antigravity IDE",
-      "all2.txt: DOM Snapshot khi dùng Native Titlebar trên Antigravity IDE (Linux)"
+      "all2.txt: DOM Snapshot khi dùng Native Titlebar trên Antigravity IDE (Linux)",
+      "workspace.txt: DOM Snapshot khi mở Multi-Root / Untitled Workspace trên Antigravity IDE"
     ],
     "gotchas": [
       "Linux /usr/share/antigravity thuộc root, cần pkexec hoặc chown để sửa workbench.html",
@@ -85,8 +95,11 @@
       "Node.js 20+ runtime yêu cầu WHATWG new URL() thay vì url.parse() để tránh [DEP0169] DeprecationWarning",
       "dispatchButtonClickCascade chỉ gọi native button.click() (hoặc synthetic MouseEvent nếu không có native click), không gọi cả hai để tránh gửi đúp prompt",
       "Antigravity IDE trên Linux đặt [Workspace] ở đầu tiêu đề và [Antigravity IDE] ở giữa, khác VS Code đặt [Workspace] ở giữa và [AppName] ở cuối. Luôn lấy phần tử đứng trước AppName.",
+      "Khi mở Untitled Workspace, window title có dạng 'Untitled (Workspace) - Antigravity IDE - ...'. Bắt buộc phải bỏ qua 'untitled (workspace)' và quét node .rootfolder-icon trong DOM Explorer để lấy đúng tên thư mục gốc.",
+      "BridgeServer phải kiểm tra query.workspaceName theo cả primary workspaceName, mảng workspaceFolders và workspaceTitle để không bị false 409 mismatch.",
       "clearRunListeners() chỉ dọn dẹp các listener tạm thời của run-loop (completion, timeout, settle), KHÔNG được removeListener('logUpdate') vì sẽ làm mất kết nối log stream của Sidebar.",
-      "fs.writeFileSync cho snapshot DOM lớn (>5MB) gây jitter main thread rất nặng; luôn dùng fs.promises.writeFile kèm kiểm tra isAborted."
+      "fs.writeFileSync cho snapshot DOM lớn (>5MB) gây jitter main thread rất nặng; luôn dùng fs.promises.writeFile kèm kiểm tra isAborted.",
+      "Khi chuyển tiếp sang conversation mới trong Orchestrator, luôn gán offsetToUse = 0 và initialTranscriptLength = 0 để tránh bỏ qua các dòng transcript đầu của hội thoại mới."
     ]
   }
 }

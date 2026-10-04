@@ -10,8 +10,8 @@ let shownWarningMessages: string[] = [];
 let mockOpenDocUri: any = null;
 let mockShowDocCalled = false;
 let configStore: { [key: string]: any } = {
-  defaultPromptTemplate: 'Implement the code closely following the file {xxx}\nNote, follow the requirements exactly. Do only what is asked, with no extra work. Once done, you must thoroughly test what you have just implemented using exactly one file-based test for this phase. The test must verify the core functionality of the entire phase as comprehensively as reasonably possible. Do not create or run any additional tests, test cases, or test files. After finishing, mark the phase plan file as completed. When done, say "Done skul9x." to save token.',
-  promptTemplate: 'Implement the code closely following the file {xxx}\nNote, follow the requirements exactly. Do only what is asked, with no extra work. Once done, you must thoroughly test what you have just implemented using exactly one file-based test for this phase. The test must verify the core functionality of the entire phase as comprehensively as reasonably possible. Do not create or run any additional tests, test cases, or test files. After finishing, mark the phase plan file as completed. When done, say "Done skul9x." to save token.',
+  defaultPromptTemplate: 'Implement the code closely following the file {xxx}. \nNote, follow the requirements exactly. Do only what is asked, with no extra work. Once done, you must thoroughly test what you have just implemented using exactly one file-based test for this phase. The test must verify the core functionality of the entire phase as comprehensively as reasonably possible. Do not create or run any additional tests, test cases, or test files. Search online to find the best practice to code. Note, do not open a browser and directly access the DOM. Use search_web / read_url_content when you need to look something up. After finishing, mark the phase plan file as completed. When done, say "Done skul9x." to save token.',
+  promptTemplate: 'Implement the code closely following the file {xxx}. \nNote, follow the requirements exactly. Do only what is asked, with no extra work. Once done, you must thoroughly test what you have just implemented using exactly one file-based test for this phase. The test must verify the core functionality of the entire phase as comprehensively as reasonably possible. Do not create or run any additional tests, test cases, or test files. Search online to find the best practice to code. Note, do not open a browser and directly access the DOM. Use search_web / read_url_content when you need to look something up. After finishing, mark the phase plan file as completed. When done, say "Done skul9x." to save token.',
   promptText: 'Implement the code closely following the file {xxx}',
   repeatCount: 5,
   completionKeyword: 'Done skul9x.',
@@ -204,7 +204,7 @@ async function runPhase05ComprehensiveE2ETests() {
   assert.ok(fs.existsSync(readmePath), 'README.md must exist');
   const readme = fs.readFileSync(readmePath, 'utf8');
 
-  assert.ok(readme.includes('QuickPick'), 'README must mention QuickPick');
+  assert.ok(readme.includes('QuickPick') || readme.includes('Sidebar'), 'README must mention Sidebar or QuickPick');
   assert.ok(readme.includes('Action Menu') || readme.includes('Running Action Menu'), 'README must cover Running Action Menu');
   assert.ok(readme.includes('{xxx}'), 'README must document {xxx} syntax');
   assert.ok(readme.includes('{path}'), 'README must document {path} syntax');

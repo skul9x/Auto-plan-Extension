@@ -35,8 +35,8 @@ export interface AutoPlanConfig {
   domSnapshotFolder?: string;
 }
 
-export const DEFAULT_PROMPT_TEMPLATE = `Implement the code closely following the file {xxx}
-Note, follow the requirements exactly. Do only what is asked, with no extra work. Once done, you must thoroughly test what you have just implemented using exactly one file-based test for this phase. The test must verify the core functionality of the entire phase as comprehensively as reasonably possible. Do not create or run any additional tests, test cases, or test files. After finishing, mark the phase plan file as completed. When done, say "Done skul9x." to save token.`;
+export const DEFAULT_PROMPT_TEMPLATE = `Implement the code closely following the file {xxx}. 
+Note, follow the requirements exactly. Do only what is asked, with no extra work. Once done, you must thoroughly test what you have just implemented using exactly one file-based test for this phase. The test must verify the core functionality of the entire phase as comprehensively as reasonably possible. Do not create or run any additional tests, test cases, or test files. Search online to find the best practice to code. Note, do not open a browser and directly access the DOM. Use search_web / read_url_content when you need to look something up. After finishing, mark the phase plan file as completed. When done, say "Done skul9x." to save token.`;
 
 export const DEFAULT_COMPLETION_KEYWORD = 'Done skul9x.';
 

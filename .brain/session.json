@@ -1,44 +1,36 @@
 {
-  "updated_at": "2026-09-18T10:30:00+07:00",
+  "updated_at": "2026-10-04T08:39:00+07:00",
   "working_on": {
-    "feature": "Infinite Loop Timeout Setting (0 = No Limit)",
-    "task": "Converted default timeoutPerLoopMinutes from 15 to 0 (infinite timeout), disabled timer watchdog when timeout <= 0, verified test suite passes, and packaged VSIX 1.6.1.",
+    "feature": "Enhanced Phase Prompt Template & Infinite Timeout Verification",
+    "task": "Updated default prompt template to include web search guidance (search_web / read_url_content) and prevent direct DOM browser access. Verified infinite timeout (0 = infinite) flow and built VSIX.",
     "status": "completed",
     "files": [
       "package.json",
       "src/config.ts",
-      "src/transcriptWatcher.ts",
-      "src/orchestrator.ts",
-      "media/settings/settings.html",
-      "media/settings/settings.js",
-      "README.md",
+      "src/test/phase05_e2e_package.test.ts",
       "antigravity-auto-plan-1.6.1.vsix"
     ],
     "blockers": [],
-    "notes": "Setting autoplan.timeoutPerLoopMinutes to 0 disables the setTimeout loop timer entirely, allowing phases to wait indefinitely until keyword completion or manual user abortion."
+    "notes": "Prompt now strictly requires single file-based test, web search for best practices, prohibits direct browser DOM interaction, and signs off with 'Done skul9x.' to save tokens."
   },
   "pending_tasks": [],
   "recent_changes": [
     {
-      "timestamp": "2026-09-18T10:30:00+07:00",
+      "timestamp": "2026-10-04T08:39:00+07:00",
       "type": "feature",
-      "description": "Updated timeoutPerLoopMinutes default to 0 (infinite), updated schema, config, transcript watcher, and packaged VSIX.",
+      "description": "Updated defaultPromptTemplate and promptTemplate in config.ts and package.json with anti-DOM browser rule and web search guidelines; packaged VSIX.",
       "files": [
         "package.json",
         "src/config.ts",
-        "src/transcriptWatcher.ts",
-        "src/orchestrator.ts",
-        "media/settings/settings.html",
-        "media/settings/settings.js",
-        "README.md",
+        "src/test/phase05_e2e_package.test.ts",
         "antigravity-auto-plan-1.6.1.vsix"
       ]
     }
   ],
   "errors_encountered": [],
   "decisions_made": [
-    "Follow standard VS Code extension convention: 0 represents infinite / no timeout limit.",
-    "When timeoutPerLoopMinutes <= 0, TranscriptWatcher does not instantiate activeTimer setTimeout.",
-    "When timeoutPerLoopMinutes <= 0, Orchestrator watchdogThreshold is 0 to avoid false stall alerts."
+    "Prevent AI from opening browser directly or manipulating DOM to avoid IDE collisions with DOM Bridge.",
+    "Enforce exactly one file-based test per phase for verification.",
+    "End prompt with 'Done skul9x.' to preserve zero-overhead transcript detection."
   ]
 }

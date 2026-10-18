@@ -2,11 +2,13 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { getConfig, setPromptText, writeConfigJson } from './config';
+import { getConfig, setPromptText, writeConfigJson, secretStorageManager } from './config';
 import { orchestrator, OrchestratorProgressInfo } from './orchestrator';
 import { scanPlanFolder, scanPlanFolderAsync, sortPhaseFiles, getPhasesFrom, normalizePath, PhaseFile, auditPlanPhases, auditPlanPhasesAsync } from './planScanner';
 import { getDefaultBrainDir, getTranscriptPath, findLatestConversation, transcriptWatcher } from './transcriptWatcher';
 import { BridgeServer, bridgeServer as defaultBridgeServer, BRIDGE_PROTOCOL_VERSION } from './bridgeServer';
+import { TelegramBridge, telegramBridge } from './telegramBridge';
+import { TelegramChatMirror } from './telegramChatMirror';
 
 const activeWorkspaceFolder = vscode.workspace?.workspaceFolders?.[0];
 const workspaceName = activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined;
@@ -59,7 +61,7 @@ export function triggerDebouncedConfigUpdate(
   configDebounceTimer = setTimeout(() => {
     configDebounceTimer = null;
     try {
-      writeConfigJson(undefined, undefined, context);
+      writeConfigJson(undefined, undefined, context, bridgeServer?.getAuthToken());
     } catch {}
     if (!orchestrator.isRunning()) {
       updateStatusBar();
@@ -1375,6 +1377,9 @@ export async function showFailureNotificationWithDiagnostics(
 }
 
 export function activate(context: vscode.ExtensionContext) {
+  // Initialize SecretStorageManager with VS Code native secrets
+  secretStorageManager.init(context.secrets);
+
   // Create Bottom-Right Interactive Status Bar Item (Priority 100)
   try {
     mainStatusBarItem = (vscode.window.createStatusBarItem as any)(
@@ -1418,6 +1423,13 @@ export function activate(context: vscode.ExtensionContext) {
       currentPhaseIndex: index,
       totalPhases: total
     });
+    sidebarProvider?.refreshAndSendState();
+  });
+
+  orchestrator.on('phaseNudged', ({ phase, phaseIndex }: any) => {
+    const phaseNum = phase?.phaseNumber || (typeof phaseIndex === 'number' ? phaseIndex + 1 : 1);
+    const phaseName = phase?.fileName || `Phase ${phaseNum}`;
+    sidebarProvider?.appendTranscriptLog(`[Nudge] Phase ${phaseNum} (${phaseName}) mid-flight steering injected.`);
     sidebarProvider?.refreshAndSendState();
   });
 
@@ -1499,6 +1511,10 @@ export function activate(context: vscode.ExtensionContext) {
       bridgeServer.setWorkspace(updatedPath, updatedName, updatedFolders, updatedTitle);
       defaultBridgeServer.setWorkspace(updatedPath, updatedName, updatedFolders, updatedTitle);
       orchestrator.setWorkspace(updatedPath, updatedName, updatedFolders, updatedTitle);
+      telegramBridge.applyOptions({
+        workspaceName: updatedName,
+        isMultiWorkspace: () => (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders.length > 1 : false)
+      });
     })
   );
 
@@ -1639,12 +1655,63 @@ export function activate(context: vscode.ExtensionContext) {
     return showOutputChannel();
   });
 
+  const setTelegramTokenCmd = vscode.commands.registerCommand('autoplan.setTelegramToken', async () => {
+    const token = await vscode.window.showInputBox({
+      password: true,
+      prompt: 'Enter Telegram Bot Token from @BotFather'
+    });
+    if (token !== undefined) {
+      const trimmed = token.trim();
+      if (trimmed) {
+        await secretStorageManager.setTelegramToken(trimmed);
+        await telegramBridge.reloadConfig();
+        vscode.window.showInformationMessage('Telegram Bot Token securely saved to Keychain.');
+      } else {
+        vscode.window.showWarningMessage('Telegram Bot Token cannot be empty.');
+      }
+    }
+  });
+
+  const clearTelegramTokenCmd = vscode.commands.registerCommand('autoplan.clearTelegramToken', async () => {
+    await secretStorageManager.deleteTelegramToken();
+    await telegramBridge.reloadConfig();
+    vscode.window.showInformationMessage('Telegram Bot Token removed from Keychain.');
+  });
+
   // Watch for configuration changes with 300ms debounce (LOGIC-007)
   const configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration('autoplan')) {
       triggerDebouncedConfigUpdate(context);
     }
+    if (
+      e.affectsConfiguration('autoplan.telegramEnabled') ||
+      e.affectsConfiguration('autoplan.telegramBotToken') ||
+      e.affectsConfiguration('autoplan.telegramAllowedUsers') ||
+      e.affectsConfiguration('autoplan.telegramThrottleMs') ||
+      e.affectsConfiguration('autoplan.telegram.enableChatMirror') ||
+      e.affectsConfiguration('autoplan.telegram.mirrorIncludePcPrompts') ||
+      e.affectsConfiguration('autoplan.telegram.chatMirrorPrefix')
+    ) {
+      try {
+        const reloadPromise = telegramBridge.reloadConfig();
+        if (reloadPromise && typeof reloadPromise.catch === 'function') {
+          reloadPromise.catch(() => {});
+        }
+      } catch {}
+    }
   });
+
+  const telegramSubscription = {
+    dispose: () => {
+      telegramBridge.stop().catch(() => {});
+    }
+  };
+
+  const bridgeServerSubscription = {
+    dispose: () => {
+      bridgeServer.stop().catch(() => {});
+    }
+  };
 
   context.subscriptions.push(
     mainStatusBarItem,
@@ -1669,15 +1736,37 @@ export function activate(context: vscode.ExtensionContext) {
     exportDebugLogCmd,
     clearDebugLogCmd,
     showOutputChannelCmd,
-    configWatcher
+    setTelegramTokenCmd,
+    clearTelegramTokenCmd,
+    configWatcher,
+    telegramSubscription,
+    bridgeServerSubscription
   );
 
   // Initialize status bar and sidecar config states safely
   try {
-    writeConfigJson(undefined, undefined, context);
+    writeConfigJson(undefined, undefined, context, bridgeServer?.getAuthToken());
   } catch {}
   updateStatusBar();
   updateBridgeStatusBar();
+
+  // Start Telegram remote control bridge
+  telegramBridge.applyOptions({
+    registryPath: bridgeServer.getPortRegistryPath(),
+    windowKey: bridgeServer.getWindowKey(),
+    port: bridgeServer.getPort() ?? undefined,
+    orchestrator,
+    transcriptWatcher,
+    workspaceName: activeWsName,
+    isMultiWorkspace: () => (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders.length > 1 : false)
+  });
+  telegramBridge.start().catch((err: any) => {
+    debugLogger.error('TELEGRAM', `Failed to start Telegram bridge during activation: ${err?.message || err}`, err);
+  });
+}
+
+export function getTelegramChatMirror(): TelegramChatMirror | null {
+  return telegramBridge.getChatMirror();
 }
 
 export async function deactivate() {
@@ -1698,6 +1787,9 @@ export async function deactivate() {
   orchestrator.dispose();
   transcriptWatcher.dispose();
   debugLogger.dispose();
+  try {
+    await telegramBridge.stop();
+  } catch {}
   try {
     await bridgeServer.stop();
   } catch {}

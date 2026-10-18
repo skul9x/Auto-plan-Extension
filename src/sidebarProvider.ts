@@ -28,10 +28,42 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   private _pendingLogQueue: string[] = [];
   private _logFlushTimer: NodeJS.Timeout | null = null;
 
+  private _boundOrch?: any;
+  private _phaseNudgedListener?: (...args: any[]) => void;
+
   constructor(
     private readonly _extensionUri: vscode.Uri,
-    private readonly _context?: vscode.ExtensionContext
-  ) {}
+    private readonly _context?: vscode.ExtensionContext,
+    customOrchestrator?: any
+  ) {
+    const targetOrch = customOrchestrator || orchestrator;
+    if (targetOrch && typeof targetOrch.on === 'function') {
+      this.attachOrchestrator(targetOrch);
+    }
+  }
+
+  public attachOrchestrator(orch: any): void {
+    if (this._boundOrch && this._phaseNudgedListener) {
+      const remove = typeof this._boundOrch.off === 'function' ? 'off' : 'removeListener';
+      if (typeof this._boundOrch[remove] === 'function') {
+        this._boundOrch[remove]('phaseNudged', this._phaseNudgedListener);
+      }
+      this._phaseNudgedListener = undefined;
+    }
+
+    this._boundOrch = orch;
+    if (!orch || typeof orch.on !== 'function') {
+      return;
+    }
+
+    this._phaseNudgedListener = ({ phase, phaseIndex, message }: any) => {
+      const phaseNum = phase?.phaseNumber || (typeof phaseIndex === 'number' ? phaseIndex + 1 : 1);
+      const phaseName = phase?.fileName || `Phase ${phaseNum}`;
+      this.appendTranscriptLog(`[Nudge] Phase ${phaseNum} (${phaseName}) mid-flight steering injected.`);
+      this.refreshAndSendState();
+    };
+    orch.on('phaseNudged', this._phaseNudgedListener);
+  }
 
   public get view(): vscode.WebviewView | undefined {
     return this._view;
@@ -138,10 +170,47 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             } else {
               this._phases = rawPhases;
             }
+
+            const targetOrch = this._boundOrch || orchestrator;
+            const orchPhases = targetOrch && typeof targetOrch.getPhases === 'function'
+              ? targetOrch.getPhases()
+              : (targetOrch as any)?.phases;
+            if (Array.isArray(orchPhases)) {
+              this._phases.forEach((p, idx) => {
+                const match = orchPhases.find((op: any) => op && (op.fileName === p.fileName || op.index === idx));
+                if (match?.hasNudged) {
+                  (p as any).hasNudged = true;
+                }
+              });
+            }
           }
         } catch {
           this._phases = [];
         }
+      }
+
+      const targetOrch = this._boundOrch || orchestrator;
+      if (this._phases.length === 0 && targetOrch && typeof targetOrch.isRunning === 'function' && targetOrch.isRunning()) {
+        try {
+          if (typeof targetOrch.getPhaseAuditReport === 'function') {
+            auditReport = targetOrch.getPhaseAuditReport();
+            if (auditReport && auditReport.phases && auditReport.phases.length > 0) {
+              this._phases = auditReport.phases;
+            }
+          }
+        } catch {}
+      }
+
+      const orchPhases = targetOrch && typeof targetOrch.getPhases === 'function'
+        ? targetOrch.getPhases()
+        : (targetOrch as any)?.phases;
+      if (Array.isArray(orchPhases)) {
+        this._phases.forEach((p, idx) => {
+          const match = orchPhases.find((op: any) => op && (op.fileName === p.fileName || op.index === idx));
+          if (match?.hasNudged) {
+            (p as any).hasNudged = true;
+          }
+        });
       }
 
       let plans: { folderPath: string; relName: string; phaseCount: number }[] = [];
@@ -149,9 +218,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         plans = await discoverWorkspacePlanFoldersAsync();
       } catch {}
 
-      const isRunning = orchestrator.isRunning();
-      const isPaused = (orchestrator as any).isPaused ? (orchestrator as any).isPaused() : false;
-      const currentPhase = orchestrator.getCurrentPhase();
+      const isRunning = targetOrch && typeof targetOrch.isRunning === 'function' ? targetOrch.isRunning() : orchestrator.isRunning();
+      const isPaused = (targetOrch as any)?.isPaused ? (targetOrch as any).isPaused() : (orchestrator as any)?.isPaused ? (orchestrator as any).isPaused() : false;
+      const currentPhase = targetOrch && typeof targetOrch.getCurrentPhase === 'function' ? targetOrch.getCurrentPhase() : orchestrator.getCurrentPhase();
       const currentIdx = currentPhase ? this._phases.findIndex(p => p.fileName === currentPhase.fileName) : 0;
 
       const state = {
@@ -322,6 +391,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     return this._pendingLogQueue.length;
   }
 
+  public getTranscriptLogs(): string[] {
+    return [...this._transcriptLogs];
+  }
+
+  public getPhases(): (PhaseFile | PhaseDiagnosticInfo)[] {
+    return [...this._phases];
+  }
+
   public dispose(): void {
     if (this._readyFallbackTimer) {
       clearTimeout(this._readyFallbackTimer);
@@ -333,6 +410,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     if (this._logFlushTimer) {
       clearTimeout(this._logFlushTimer);
       this._logFlushTimer = null;
+    }
+    if (this._boundOrch && this._phaseNudgedListener) {
+      const remove = typeof this._boundOrch.off === 'function' ? 'off' : 'removeListener';
+      if (typeof this._boundOrch[remove] === 'function') {
+        this._boundOrch[remove]('phaseNudged', this._phaseNudgedListener);
+      }
+      this._phaseNudgedListener = undefined;
     }
     this._pendingLogQueue = [];
     this._transcriptLogs = [];

@@ -10,7 +10,10 @@
 
   const DEFAULT_PORT_START = 48860;
   const DEFAULT_PORT_END = 48900;
-  const DEFAULT_POLL_INTERVAL_MS = 500;
+  const ACTIVE_POLL_INTERVAL_MS = 400;
+  const IDLE_POLL_INTERVAL_MS = 2000;
+  const IDLE_THRESHOLD_MS = 30000;
+  const DEFAULT_POLL_INTERVAL_MS = ACTIVE_POLL_INTERVAL_MS;
   const DEFAULT_HEARTBEAT_INTERVAL_MS = 10000;
 
   const CONTAINER_SELECTORS = [
@@ -794,6 +797,11 @@
    * Dispatches the full native pointer and mouse event cascade on a target button element
    */
   function dispatchButtonClickCascade(button, win) {
+    if (activeClientInstance && typeof activeClientInstance.recordActivity === 'function') {
+      try {
+        activeClientInstance.recordActivity();
+      } catch (_) {}
+    }
     if (!button) return false;
     const targetWin = win || (typeof window !== 'undefined' ? window : null);
     let anyDispatched = false;
@@ -1142,6 +1150,16 @@
    * Injects prompt text into active chat input and triggers submit with step-by-step diagnostics
    */
   async function injectPromptAndSubmit(promptText, options = {}) {
+    if (activeClientInstance && typeof activeClientInstance.recordActivity === 'function') {
+      try {
+        activeClientInstance.recordActivity();
+      } catch (_) {}
+    }
+    if (options.client && typeof options.client.recordActivity === 'function') {
+      try {
+        options.client.recordActivity();
+      } catch (_) {}
+    }
     const doc = options.document || (typeof document !== 'undefined' ? document : null);
     const win = options.window || (typeof window !== 'undefined' ? window : null);
     if (!doc) {
@@ -2004,6 +2022,47 @@
     return triggerNewConversation(options);
   }
 
+  /**
+   * Helper function to cancel active AI generation if a Cancel button is present.
+   * Leverages findCancelButton(doc) and dispatchButtonClickCascade.
+   */
+  async function stopActiveGeneration(options = {}) {
+    const doc = options.document || (typeof document !== 'undefined' ? document : null);
+    const win = options.window || (typeof window !== 'undefined' ? window : null);
+    const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 500;
+    const intervalMs = typeof options.intervalMs === 'number' ? options.intervalMs : 50;
+
+    const cancelBtn = options.button || findCancelButton(doc);
+    if (!cancelBtn) {
+      logBridge('INFO', 'stopActiveGeneration: No active Cancel button detected; agent is idle');
+      return { success: true, status: 'idle', stopped: false };
+    }
+
+    try {
+      dispatchButtonClickCascade(cancelBtn, win);
+      if (typeof cancelBtn.click === 'function') {
+        cancelBtn.click();
+      }
+      logBridge('INFO', 'stopActiveGeneration: Dispatched click cascade to Cancel button');
+    } catch (err) {
+      logBridge('ERROR', `stopActiveGeneration: Error clicking Cancel button: ${err?.message || err}`, {}, err);
+      return { success: false, status: 'error', error: err?.message || String(err), stopped: false };
+    }
+
+    // Wait up to 500ms for input clearance / send button readiness
+    const startWait = Date.now();
+    while (Date.now() - startWait < timeoutMs) {
+      await new Promise(r => setTimeout(r, intervalMs));
+      const remainingCancel = findCancelButton(doc);
+      const sendBtn = findSendButton(doc);
+      if (!remainingCancel && sendBtn && !sendBtn.disabled) {
+        break;
+      }
+    }
+
+    return { success: true, status: 'stopped', stopped: true };
+  }
+
   const DIALOG_CONTAINER_SELECTORS = [
     '.notifications-toasts',
     '.monaco-dialog-box',
@@ -2363,12 +2422,19 @@
       this.serverPort = options.serverPort || null;
       this.windowKey = options.windowKey || (typeof window !== 'undefined' && window.__AUTOPLAN_WINDOW_KEY__) || `dom_win_${Date.now()}_${Math.random().toString(36).slice(2)}`;
       this.workspaceName = options.workspaceName || null;
-      this.pollIntervalMs = options.pollIntervalMs || DEFAULT_POLL_INTERVAL_MS;
+      this.activePollIntervalMs = options.activePollIntervalMs || options.pollIntervalMs || ACTIVE_POLL_INTERVAL_MS;
+      this.idlePollIntervalMs = options.idlePollIntervalMs || IDLE_POLL_INTERVAL_MS;
+      this.idleThresholdMs = options.idleThresholdMs || options.idleTimeoutMs || IDLE_THRESHOLD_MS;
+      this.lastActivityTime = Date.now();
+      this.currentPollInterval = this.activePollIntervalMs;
+      this.pollIntervalMs = this.currentPollInterval;
       this.heartbeatIntervalMs = options.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS;
       this.fetchFn = options.fetch || options.fetchFn || (typeof fetch !== 'undefined' ? fetch.bind(global) : null);
       this.pollTimer = null;
       this.workerTimer = null;
       this.heartbeatTimer = null;
+      this._isPolling = false;
+      this._activityHandler = null;
       this.customWorker = options.Worker;
       this.customBlob = options.Blob;
       this.customURL = options.URL;
@@ -2383,6 +2449,10 @@
       this.activeCommandId = null;
       this.activeCommandDeadline = 0;
       this.cancelledCommands = new Set();
+      this.authToken = options.authToken || options.bridgeAuthToken ||
+        (typeof window !== 'undefined' && (window.__AUTOPLAN_AUTH_TOKEN__ || window.__AUTOPLAN_BRIDGE_AUTH_TOKEN__ || (window.__AUTOPLAN_CONFIG__ && (window.__AUTOPLAN_CONFIG__.authToken || window.__AUTOPLAN_CONFIG__.bridgeAuthToken)))) ||
+        null;
+      this.sidecarPath = options.sidecarPath || options.sidecarConfigPath || null;
 
       activeClientInstance = this;
 
@@ -2394,12 +2464,163 @@
       }
     }
 
+    recordActivity() {
+      this.lastActivityTime = Date.now();
+      if (this.currentPollInterval !== this.activePollIntervalMs) {
+        this.currentPollInterval = this.activePollIntervalMs;
+        this.pollIntervalMs = this.currentPollInterval;
+        this.reschedulePolling(this.currentPollInterval);
+        if (this.isRunning && !this._isPolling) {
+          this.pollTick().catch(() => {});
+        }
+      }
+    }
+
+    computeNextPollInterval(hasCommand, serverIsActive) {
+      if (hasCommand || serverIsActive) {
+        this.recordActivity();
+        return this.activePollIntervalMs;
+      }
+      const idleElapsed = Date.now() - this.lastActivityTime;
+      return (idleElapsed >= this.idleThresholdMs) ? this.idlePollIntervalMs : this.activePollIntervalMs;
+    }
+
+    reschedulePolling(intervalMs) {
+      if (!this.isRunning) return;
+      this.currentPollInterval = intervalMs;
+      this.pollIntervalMs = intervalMs;
+      if (this.workerTimer) {
+        this.workerTimer.stop();
+        this.workerTimer = null;
+      }
+      this.workerTimer = createWorkerTimer(
+        () => {
+          if (this.isRunning) {
+            this.pollTick();
+          }
+        },
+        this.currentPollInterval,
+        {
+          Worker: this.customWorker || (typeof Worker !== 'undefined' ? Worker : null),
+          Blob: this.customBlob || (typeof Blob !== 'undefined' ? Blob : null),
+          URL: this.customURL || (typeof URL !== 'undefined' ? URL : null)
+        }
+      );
+    }
+
     detectWorkspaceName(doc) {
       if (this.workspaceName) {
         return this.workspaceName;
       }
       const targetDoc = doc || this.customDocument || (typeof document !== 'undefined' ? document : null);
       return detectWorkspaceName(targetDoc);
+    }
+
+    getAuthToken() {
+      return this.authToken;
+    }
+
+    setAuthToken(token) {
+      this.authToken = token;
+    }
+
+    getBridgeHeaders(customHeaders = {}) {
+      const headers = {
+        'X-Window-Key': this.windowKey,
+        ...customHeaders
+      };
+      if (this.authToken) {
+        headers['X-Bridge-Auth'] = this.authToken;
+        headers['Authorization'] = `Bearer ${this.authToken}`;
+      }
+      return headers;
+    }
+
+    async loadSidecarConfig() {
+      if (this.authToken) {
+        return this.authToken;
+      }
+
+      // 1. Try reading from filesystem if Node.js fs is available
+      try {
+        const fs = (typeof require === 'function') ? require('fs') : null;
+        const path = (typeof require === 'function') ? require('path') : null;
+        if (fs) {
+          const candidates = [];
+          if (this.sidecarPath) {
+            candidates.push(this.sidecarPath);
+          }
+          if (path && typeof __dirname !== 'undefined') {
+            candidates.push(path.join(__dirname, 'ag-autoplan-config.json'));
+            candidates.push(path.join(__dirname, 'autoplan-config.json'));
+          }
+          if (path && typeof process !== 'undefined' && process.cwd) {
+            candidates.push(path.join(process.cwd(), 'ag-autoplan-config.json'));
+            candidates.push(path.join(process.cwd(), 'autoplan-config.json'));
+          }
+          if (path && typeof process !== 'undefined' && process.env) {
+            const home = process.env.HOME || process.env.USERPROFILE;
+            if (home) {
+              candidates.push(path.join(home, '.gemini', 'antigravity-ide', 'ag-autoplan-config.json'));
+              candidates.push(path.join(home, '.gemini', 'antigravity-ide', 'autoplan-config.json'));
+            }
+          }
+
+          for (const p of candidates) {
+            try {
+              if (fs.existsSync(p)) {
+                const raw = fs.readFileSync(p, 'utf8');
+                const parsed = JSON.parse(raw);
+                const found = parsed.authToken || parsed.bridgeAuthToken;
+                if (found) {
+                  this.authToken = found;
+                  return found;
+                }
+              }
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+
+      // 2. Try fetching relative sidecar config file in DOM / browser environment
+      if (this.fetchFn) {
+        const fetchCandidates = ['./ag-autoplan-config.json', './autoplan-config.json', 'ag-autoplan-config.json', 'autoplan-config.json'];
+        for (const url of fetchCandidates) {
+          try {
+            const res = await this.fetchFn(url);
+            if (res && (res.ok || res.status === 200 || res.status === 0)) {
+              const cfg = await res.json();
+              const found = cfg?.authToken || cfg?.bridgeAuthToken;
+              if (found) {
+                this.authToken = found;
+                return found;
+              }
+            }
+          } catch (_) {}
+        }
+      }
+
+      // 3. Try reading via XMLHttpRequest in DOM environment
+      if (typeof XMLHttpRequest !== 'undefined') {
+        const xhrCandidates = ['./ag-autoplan-config.json', './autoplan-config.json', 'ag-autoplan-config.json', 'autoplan-config.json'];
+        for (let i = 0; i < xhrCandidates.length; i++) {
+          try {
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', xhrCandidates[i], false);
+            xhr.send(null);
+            if ((xhr.status === 200 || xhr.status === 0) && xhr.responseText) {
+              const cfg = JSON.parse(xhr.responseText);
+              const found = cfg?.authToken || cfg?.bridgeAuthToken;
+              if (found) {
+                this.authToken = found;
+                return found;
+              }
+            }
+          } catch (_) {}
+        }
+      }
+
+      return this.authToken;
     }
 
     getWorkspaceIdentifier(doc) {
@@ -2451,10 +2672,7 @@
 
           await this.fetchFn(`http://127.0.0.1:${this.serverPort}/autoplan-log`, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Window-Key': this.windowKey
-            },
+            headers: this.getBridgeHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({
               windowKey: this.windowKey,
               logs: logsToSend
@@ -2488,10 +2706,7 @@
         const queuedLogs = this.logQueue.splice(0, this.logQueue.length);
         await this.fetchFn(`http://127.0.0.1:${this.serverPort}/autoplan-log`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Window-Key': this.windowKey
-          },
+          headers: this.getBridgeHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             windowKey: this.windowKey,
             logs: queuedLogs
@@ -2521,12 +2736,13 @@
         const url = `http://127.0.0.1:${this.serverPort}/autoplan-heartbeat?windowKey=${encodeURIComponent(this.windowKey)}`;
         const res = await this.fetchFn(url, {
           method: 'GET',
-          headers: { 'X-Window-Key': this.windowKey }
+          headers: this.getBridgeHeaders()
         });
         if (res && res.status === 200) {
           return true;
-        } else if (res && (res.status === 404 || res.status === 409 || res.status === 423)) {
+        } else if (res && (res.status === 401 || res.status === 404 || res.status === 409 || res.status === 423)) {
           this.serverPort = null;
+          this.authToken = null;
         }
       } catch (err) {
         logBridge('DEBUG', `Heartbeat ping error: ${err?.message || err}`, { port: this.serverPort });
@@ -2539,6 +2755,7 @@
      * Auto-discovers the running bridge server port and records startup telemetry
      */
     async discoverPort() {
+      await this.loadSidecarConfig();
       const win = this.customWindow || (typeof window !== 'undefined' ? window : null);
       const doc = this.customDocument || (typeof document !== 'undefined' ? document : null);
       const windowUrl = (win && win.location && win.location.href) ? win.location.href : (typeof location !== 'undefined' ? location.href : 'electron://workbench.html');
@@ -2590,7 +2807,7 @@
 
           const res = await this.fetchFn(url, {
             method: 'GET',
-            headers: { 'X-Window-Key': this.windowKey },
+            headers: this.getBridgeHeaders(),
             signal: controller ? controller.signal : undefined
           });
 
@@ -2648,6 +2865,9 @@
 
               if (res.status === 200 && confirmsOwnership) {
                 this.serverPort = port;
+                if (!this.authToken && (data.authToken || data.bridgeAuthToken)) {
+                  this.authToken = data.authToken || data.bridgeAuthToken;
+                }
                 await this.sendClientLog('INFO', `Connected to BridgeServer on port ${this.serverPort}`, {
                   port: this.serverPort,
                   windowKey: this.windowKey,
@@ -2691,7 +2911,7 @@
 
         const res = await this.fetchFn(`http://127.0.0.1:${this.serverPort}/autoplan-ack`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Window-Key': this.windowKey },
+          headers: this.getBridgeHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(payload)
         });
 
@@ -2706,7 +2926,8 @@
      * Single polling tick to query pending commands and process them
      */
     async pollTick() {
-      if (!this.isRunning) return;
+      if (!this.isRunning || this._isPolling) return;
+      this._isPolling = true;
 
       try {
         if (!this.serverPort) {
@@ -2717,13 +2938,14 @@
         const url = `http://127.0.0.1:${this.serverPort}/autoplan-status?windowKey=${encodeURIComponent(this.windowKey)}&clientVersion=${this.clientVersion}`;
         const res = await this.fetchFn(url, {
           method: 'GET',
-          headers: { 'X-Window-Key': this.windowKey }
+          headers: this.getBridgeHeaders()
         });
 
         if (!res || res.status !== 200) {
-          if (res && (res.status === 404 || res.status === 409 || res.status === 423)) {
-            logBridge('WARN', `BridgeServer on port ${this.serverPort} returned ${res.status}, resetting serverPort`, { port: this.serverPort });
+          if (res && (res.status === 401 || res.status === 404 || res.status === 409 || res.status === 423)) {
+            logBridge('WARN', `BridgeServer on port ${this.serverPort} returned ${res.status}, resetting serverPort & authToken`, { port: this.serverPort, status: res.status });
             this.serverPort = null;
+            this.authToken = null;
             // Immediate re-discovery probe
             await this.discoverPort();
           }
@@ -2738,6 +2960,15 @@
           await this.discoverPort();
           return;
         }
+
+        const hasCommands = Boolean(data && Array.isArray(data.pendingCommands) && data.pendingCommands.length > 0);
+        const serverIsActive = Boolean(data && (data.isExecuting || data.activeTask || (typeof data.pendingCommandsCount === 'number' && data.pendingCommandsCount > 0)));
+
+        const nextInterval = this.computeNextPollInterval(hasCommands, serverIsActive);
+        if (nextInterval !== this.currentPollInterval) {
+          this.reschedulePolling(nextInterval);
+        }
+
         if (data) {
           const cancelledList = data.cancelledCommandIds || data.cancelledCommands;
           if (Array.isArray(cancelledList)) {
@@ -2758,6 +2989,8 @@
         try {
           await this.discoverPort();
         } catch (_) {}
+      } finally {
+        this._isPolling = false;
       }
     }
 
@@ -2765,6 +2998,7 @@
      * Injects prompt text and triggers submission guarded by in-memory concurrency mutex and 500ms debounce
      */
     async injectPrompt(promptText, options = {}) {
+      this.recordActivity();
       const bypassLock = Boolean(options.force === true || options.bypassLock === true);
       const minInterval = options.debounceMs !== undefined ? options.debounceMs : 500;
       const now = Date.now();
@@ -2817,6 +3051,7 @@
 
     async handleCommand(cmd) {
       if (!cmd || !cmd.id) return;
+      this.recordActivity();
 
       if (this.cancelledCommands.has(cmd.id)) {
         logBridge('WARN', `Command ${cmd.id} is already marked as cancelled by coordinator. Aborting.`);
@@ -2907,6 +3142,21 @@
           }
         } else if (cmd.type === 'clickApproval') {
           await this.sendAck(cmd.id, 'completed', null, { clickedCount: 0 });
+        } else if (cmd.type === 'stopGeneration') {
+          const doc = this.customDocument || (typeof document !== 'undefined' ? document : null);
+          const win = this.customWindow || (typeof window !== 'undefined' ? window : null);
+          const result = await stopActiveGeneration({
+            document: doc,
+            window: win,
+            ...(cmd.options || {})
+          });
+
+          await this.sendAck(
+            cmd.id,
+            result.status || (result.stopped ? 'stopped' : 'idle'),
+            result.error || null,
+            result
+          );
         } else if (cmd.type === 'ping') {
           await this.sendAck(cmd.id, 'completed', null, { pong: true });
         } else {
@@ -2967,6 +3217,23 @@
     start() {
       if (this.isRunning) return;
       this.isRunning = true;
+      this.lastActivityTime = Date.now();
+      this.currentPollInterval = this.activePollIntervalMs;
+      this.pollIntervalMs = this.currentPollInterval;
+
+      const win = this.customWindow || (typeof window !== 'undefined' ? window : null);
+      if (win && typeof win.addEventListener === 'function') {
+        this._activityHandler = () => {
+          this.recordActivity();
+        };
+        try {
+          win.addEventListener('focus', this._activityHandler);
+          win.addEventListener('pointerdown', this._activityHandler);
+          win.addEventListener('keydown', this._activityHandler);
+        } catch (_) {}
+      }
+
+      this.loadSidecarConfig().catch(() => {});
 
       // Initial immediate discovery, tick, and heartbeat
       this.pollTick();
@@ -2979,7 +3246,7 @@
             this.pollTick();
           }
         },
-        this.pollIntervalMs,
+        this.currentPollInterval,
         {
           Worker: this.customWorker || (typeof Worker !== 'undefined' ? Worker : null),
           Blob: this.customBlob || (typeof Blob !== 'undefined' ? Blob : null),
@@ -3020,6 +3287,17 @@
         clearTimeout(this.pollTimer);
         this.pollTimer = null;
       }
+      if (this._activityHandler) {
+        const win = this.customWindow || (typeof window !== 'undefined' ? window : null);
+        if (win && typeof win.removeEventListener === 'function') {
+          try {
+            win.removeEventListener('focus', this._activityHandler);
+            win.removeEventListener('pointerdown', this._activityHandler);
+            win.removeEventListener('keydown', this._activityHandler);
+          } catch (_) {}
+        }
+        this._activityHandler = null;
+      }
     }
   }
 
@@ -3028,6 +3306,10 @@
     DEFAULT_PORT_START,
     DEFAULT_PORT_END,
     DEFAULT_POLL_INTERVAL_MS,
+    ACTIVE_POLL_INTERVAL_MS,
+    IDLE_POLL_INTERVAL_MS,
+    IDLE_THRESHOLD_MS,
+    IDLE_TIMEOUT_MS: IDLE_THRESHOLD_MS,
     DEFAULT_HEARTBEAT_INTERVAL_MS,
     CONTAINER_SELECTORS,
     queryDeep,
@@ -3044,6 +3326,7 @@
     injectPromptAndSubmit,
     triggerNewConversation,
     handleOpenNewConversation,
+    stopActiveGeneration,
     isRelevantDialogMutation,
     DIALOG_CONTAINER_SELECTORS,
     createWorkerTimer,

@@ -177,21 +177,53 @@ export function getWorkbenchPath(customAppRoot?: string): string | null {
 }
 
 /**
- * Builds the Linux Polkit elevation command string using pkexec
+ * Safely quotes a single argument for POSIX shell (/bin/sh, bash) execution.
+ * Encloses the argument in single quotes and escapes embedded single quotes via '\''.
  */
-export function buildLinuxElevationCommand(tmpPath: string, targetPath: string): string {
-  const safeTmp = tmpPath.replace(/'/g, "'\\''");
-  const safeTarget = targetPath.replace(/'/g, "'\\''");
-  return `pkexec bash -c "cp '${safeTmp}' '${safeTarget}' && chmod 644 '${safeTarget}'"`;
+export function quotePosixShell(arg: string): string {
+  if (arg.includes('\0')) {
+    throw new Error('Path cannot contain null bytes');
+  }
+  return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
 /**
- * Builds the Windows UAC elevation command string using PowerShell Start-Process -Verb runAs
+ * Builds the Linux Polkit elevation command string using pkexec.
+ * Uses a single-quoted bash script and positional parameters ($1, $2) to eliminate
+ * shell variable expansion ($(), ``, $VAR) and arbitrary command injection.
+ */
+export function buildLinuxElevationCommand(tmpPath: string, targetPath: string): string {
+  const safeTmp = quotePosixShell(tmpPath);
+  const safeTarget = quotePosixShell(targetPath);
+  return `pkexec bash -c 'cp "$1" "$2" && chmod 644 "$2"' _ ${safeTmp} ${safeTarget}`;
+}
+
+/**
+ * Decodes the UTF-16LE Base64 script payload from a Windows elevation command.
+ * Useful for inspection, diagnostics, and testing.
+ */
+export function decodeWindowsElevationScript(command: string): string | null {
+  const match = command.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+  if (!match) {
+    return null;
+  }
+  return Buffer.from(match[1], 'base64').toString('utf16le');
+}
+
+/**
+ * Builds the Windows UAC elevation command string using PowerShell Start-Process -Verb runAs.
+ * Hardened against command injection and PowerShell variable expansion by using
+ * strict -LiteralPath binding and UTF-16LE Base64-encoded command execution.
  */
 export function buildWindowsElevationCommand(tmpPath: string, targetPath: string): string {
-  const safeTmp = tmpPath.replace(/"/g, '`"');
-  const safeTarget = targetPath.replace(/"/g, '`"');
-  return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Start-Process powershell -Verb runAs -ArgumentList '-NoProfile -NonInteractive -Command Copy-Item -LiteralPath \\\"${safeTmp}\\\" -Destination \\\"${safeTarget}\\\" -Force' -Wait"`;
+  if (tmpPath.includes('\0') || targetPath.includes('\0')) {
+    throw new Error('Path cannot contain null bytes');
+  }
+  const safeTmp = tmpPath.replace(/'/g, "''");
+  const safeTarget = targetPath.replace(/'/g, "''");
+  const script = `Copy-Item -LiteralPath '${safeTmp}' -Destination '${safeTarget}' -Force`;
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Start-Process powershell -Verb runAs -ArgumentList '-NoProfile -NonInteractive -EncodedCommand ${encoded}' -Wait"`;
 }
 
 /**
@@ -246,6 +278,13 @@ export function canWriteWorkbenchPath(customPath?: string): boolean {
  * via native OS authentication dialogs on Linux (pkexec), Windows (runAs), and macOS (osascript).
  */
 export function writeFileElevated(filePath: string, content: string): void {
+  if (!filePath || typeof filePath !== 'string') {
+    throw new Error('Invalid file path');
+  }
+  if (filePath.includes('\0')) {
+    throw new Error('File path cannot contain null bytes');
+  }
+
   try {
     fs.writeFileSync(filePath, content, 'utf8');
   } catch (err: any) {
@@ -261,16 +300,16 @@ export function writeFileElevated(filePath: string, content: string): void {
     const tmpPath = path.join(os.tmpdir(), `autoplan-elevated-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
 
     try {
-      fs.writeFileSync(tmpPath, content, 'utf8');
+      fs.writeFileSync(tmpPath, content, { encoding: 'utf8', mode: 0o600 });
 
       if (process.platform === 'linux') {
         const cmd = buildLinuxElevationCommand(tmpPath, filePath);
         execSync(cmd, { timeout: 30000 });
       } else if (process.platform === 'darwin') {
-        const safeTmp = tmpPath.replace(/'/g, "'\\''");
-        const safeTarget = filePath.replace(/'/g, "'\\''");
-        const cmd = `cp '${safeTmp}' '${safeTarget}' && chmod 644 '${safeTarget}'`;
-        execSync(`osascript -e 'do shell script "${cmd.replace(/"/g, '\\"')}" with administrator privileges'`, { timeout: 30000 });
+        const safeTmp = quotePosixShell(tmpPath);
+        const safeTarget = quotePosixShell(filePath);
+        const cmd = `cp ${safeTmp} ${safeTarget} && chmod 644 ${safeTarget}`;
+        execSync(`osascript -e 'do shell script "${cmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" with administrator privileges'`, { timeout: 30000 });
       } else if (process.platform === 'win32') {
         const cmd = buildWindowsElevationCommand(tmpPath, filePath);
         execSync(cmd, { timeout: 30000 });
@@ -301,6 +340,13 @@ export function writeFileElevated(filePath: string, content: string): void {
  * Implements an elevation mutex (single-flight lock) to prevent modal dialog flooding.
  */
 export async function writeFileElevatedAsync(filePath: string, content: string): Promise<void> {
+  if (!filePath || typeof filePath !== 'string') {
+    throw new Error('Invalid file path');
+  }
+  if (filePath.includes('\0')) {
+    throw new Error('File path cannot contain null bytes');
+  }
+
   try {
     await fs.promises.writeFile(filePath, content, 'utf8');
     return;
@@ -317,16 +363,16 @@ export async function writeFileElevatedAsync(filePath: string, content: string):
     const tmpPath = path.join(os.tmpdir(), `autoplan-elevated-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
 
     try {
-      await fs.promises.writeFile(tmpPath, content, 'utf8');
+      await fs.promises.writeFile(tmpPath, content, { encoding: 'utf8', mode: 0o600 });
 
       let cmd: string;
       if (process.platform === 'linux') {
         cmd = buildLinuxElevationCommand(tmpPath, filePath);
       } else if (process.platform === 'darwin') {
-        const safeTmp = tmpPath.replace(/'/g, "'\\''");
-        const safeTarget = filePath.replace(/'/g, "'\\''");
-        const inner = `cp '${safeTmp}' '${safeTarget}' && chmod 644 '${safeTarget}'`;
-        cmd = `osascript -e 'do shell script "${inner.replace(/"/g, '\\"')}" with administrator privileges'`;
+        const safeTmp = quotePosixShell(tmpPath);
+        const safeTarget = quotePosixShell(filePath);
+        const inner = `cp ${safeTmp} ${safeTarget} && chmod 644 ${safeTarget}`;
+        cmd = `osascript -e 'do shell script "${inner.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" with administrator privileges'`;
       } else if (process.platform === 'win32') {
         cmd = buildWindowsElevationCommand(tmpPath, filePath);
       } else {

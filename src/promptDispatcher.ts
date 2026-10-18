@@ -537,7 +537,10 @@ export class PromptDispatcher {
       timeoutMs,
       type: options?.commandType || 'sendPrompt',
       windowKey: options?.windowKey,
-      extra: options?.extra
+      extra: {
+        ...(options?.extra || {}),
+        openNewConversation: options?.openNewConversation !== false
+      }
     };
 
     const maxRetries = 2;
@@ -1079,6 +1082,58 @@ export class PromptDispatcher {
       latencyMs: Date.now() - startTime,
       error: `Unknown tier: ${tier}`
     };
+  }
+
+  /**
+   * Stops active AI generation across Tier 1 (DOM Bridge) or Tier 2 (VS Code native commands).
+   * Tier 1: Dispatches stopGeneration command to BridgeServer.
+   * Tier 2 fallback: Executes VS Code native commands (workbench.action.chat.stop or antigravity.prioritized.chat.stop).
+   */
+  public async stopActiveGeneration(options?: DispatchOptions): Promise<boolean> {
+    const config = this.configProvider();
+    const mode = options?.mode ?? config.executionMode ?? 'auto';
+    const allowFallback = options?.allowFallback ?? config.allowTierFallback ?? true;
+
+    // Tier 1: DOM Bridge
+    if (mode !== 'nativeCommand' && mode !== 'keyboard') {
+      try {
+        if (this.bridgeServer.isListening() && this.bridgeServer.getConnectedClients().length > 0) {
+          const ackResult = await this.bridgeServer.dispatchStopGenerationCommand({
+            timeoutMs: options?.timeoutMs ?? config.bridgeTimeoutMs ?? 5000,
+            windowKey: options?.windowKey,
+            extra: options?.extra
+          });
+          if (ackResult && ackResult.success) {
+            this.logger.info('DISPATCHER', `stopActiveGeneration succeeded via Tier 1 DOM Bridge (status: ${ackResult.status})`);
+            return true;
+          }
+        } else if (!allowFallback && mode === 'domBridge') {
+          this.logger.warn('DISPATCHER', 'stopActiveGeneration failed: BridgeServer not listening or no connected clients in strict domBridge mode');
+          return false;
+        }
+      } catch (err: any) {
+        this.logger.warn('DISPATCHER', `stopActiveGeneration Tier 1 dispatch failed: ${err?.message || err}`);
+        if (!allowFallback && mode === 'domBridge') {
+          return false;
+        }
+      }
+    }
+
+    // Tier 2 Fallback: VS Code native commands
+    try {
+      try {
+        await this.commandExecutor('antigravity.prioritized.chat.stop');
+        this.logger.info('DISPATCHER', 'stopActiveGeneration succeeded via antigravity.prioritized.chat.stop');
+        return true;
+      } catch {
+        await this.commandExecutor('workbench.action.chat.stop');
+        this.logger.info('DISPATCHER', 'stopActiveGeneration succeeded via workbench.action.chat.stop');
+        return true;
+      }
+    } catch (tier2Err: any) {
+      this.logger.warn('DISPATCHER', `stopActiveGeneration Tier 2 fallback failed: ${tier2Err?.message || tier2Err}`);
+      return false;
+    }
   }
 }
 

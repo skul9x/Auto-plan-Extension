@@ -129,6 +129,52 @@ body {
   100% { transform: scale(0.95); opacity: 0.8; }
 }
 
+.header-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  max-width: 440px;
+  margin: 0 16px;
+}
+
+.search-input {
+  width: 100%;
+  background: var(--input-bg);
+  color: var(--input-fg);
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  padding: 6px 30px 6px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.search-input:focus {
+  border-color: var(--focus-border);
+  box-shadow: 0 0 8px rgba(0, 122, 204, 0.3);
+}
+
+.search-clear-btn {
+  position: absolute;
+  right: 8px;
+  background: transparent;
+  border: none;
+  color: var(--fg-color);
+  opacity: 0.6;
+  cursor: pointer;
+  padding: 2px 6px;
+  font-size: 11px;
+  border-radius: 50%;
+  line-height: 1;
+}
+
+.search-clear-btn:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.1);
+}
+
 .header-actions {
   display: flex;
   align-items: center;
@@ -148,6 +194,18 @@ body {
   opacity: 1;
 }
 
+.save-status.saving {
+  color: var(--info-color);
+  font-weight: 600;
+  opacity: 1;
+}
+
+.save-status.saved {
+  color: var(--success-color);
+  font-weight: 600;
+  opacity: 1;
+}
+
 /* ==========================================================================
    Buttons
    ========================================================================== */
@@ -163,8 +221,15 @@ body {
   font-weight: 500;
   cursor: pointer;
   outline: none;
-  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.05s ease, box-shadow 0.15s ease;
   font-family: inherit;
+}
+
+.btn:focus,
+.btn:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007acc);
+  outline-offset: 1px;
+  box-shadow: 0 0 6px var(--vscode-focusBorder, rgba(0, 122, 204, 0.5));
 }
 
 .btn:active {
@@ -218,6 +283,213 @@ body {
 .btn-action-addon {
   white-space: nowrap;
   padding: 6px 12px;
+}
+
+/* ==========================================================================
+   Tab Navigation Bar
+   ========================================================================== */
+.settings-nav-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 24px;
+  background: rgba(0, 0, 0, 0.15);
+  border-bottom: 1px solid var(--card-border);
+  overflow-x: auto;
+  position: sticky;
+  top: 57px;
+  z-index: 99;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.nav-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  background: transparent;
+  color: var(--fg-color);
+  opacity: 0.7;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.nav-tab:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.nav-tab.active {
+  opacity: 1;
+  color: #ffffff;
+  font-weight: 600;
+  border-bottom-color: var(--focus-border);
+  background: rgba(0, 122, 204, 0.08);
+}
+
+.tab-icon {
+  font-size: 15px;
+}
+
+/* ==========================================================================
+   Tab Panes & Layouts
+   ========================================================================== */
+.tab-pane {
+  display: none;
+  animation: fadeIn 0.2s ease-in-out;
+}
+
+.tab-pane.active {
+  display: block;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.tab-content-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.tab-content-grid.single-column {
+  grid-template-columns: 1fr;
+}
+
+/* ==========================================================================
+   Search Highlighting & Dimming
+   ========================================================================== */
+.search-highlight {
+  background-color: var(--vscode-editor-findMatchHighlightBackground, rgba(255, 215, 0, 0.35));
+  color: var(--vscode-editor-foreground, #ffffff);
+  border-radius: 2px;
+  padding: 0 2px;
+  font-weight: 600;
+  box-shadow: 0 0 4px rgba(255, 215, 0, 0.4);
+}
+
+.search-dimmed {
+  opacity: 0.25;
+  filter: grayscale(80%);
+  pointer-events: none;
+  transition: opacity 0.2s ease, filter 0.2s ease;
+}
+
+.search-match {
+  opacity: 1 !important;
+  filter: none !important;
+  pointer-events: auto !important;
+  border-color: var(--focus-border) !important;
+}
+
+/* ==========================================================================
+   Telegram Card & Range Slider
+   ========================================================================== */
+.token-mgmt-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  margin-top: 6px;
+}
+
+.token-status-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.token-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.slider-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.slider-val-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--focus-border);
+}
+
+.form-range {
+  width: 100%;
+  accent-color: var(--focus-border);
+  cursor: pointer;
+}
+
+.form-range:focus,
+.form-range:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007acc);
+  outline-offset: 2px;
+}
+
+/* Status Badges with Pulse Animations */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.status-badge.badge-success {
+  background: var(--success-bg, rgba(78, 201, 176, 0.15));
+  color: var(--success-color, #4ec9b0);
+  border-color: rgba(78, 201, 176, 0.35);
+  box-shadow: 0 0 8px rgba(78, 201, 176, 0.2);
+  animation: badgePulseGreen 3s infinite ease-in-out;
+}
+
+.status-badge.badge-warning {
+  background: var(--warning-bg, rgba(206, 145, 120, 0.15));
+  color: var(--warning-color, #ce9178);
+  border-color: rgba(206, 145, 120, 0.35);
+  box-shadow: 0 0 8px rgba(206, 145, 120, 0.2);
+  animation: badgePulseYellow 3s infinite ease-in-out;
+}
+
+.status-badge.badge-danger {
+  background: var(--danger-bg, rgba(241, 76, 76, 0.15));
+  color: var(--danger-color, #f14c4c);
+  border-color: rgba(241, 76, 76, 0.35);
+  box-shadow: 0 0 8px rgba(241, 76, 76, 0.2);
+}
+
+@keyframes badgePulseGreen {
+  0% { box-shadow: 0 0 4px rgba(78, 201, 176, 0.15); }
+  50% { box-shadow: 0 0 10px rgba(78, 201, 176, 0.4); }
+  100% { box-shadow: 0 0 4px rgba(78, 201, 176, 0.15); }
+}
+
+@keyframes badgePulseYellow {
+  0% { box-shadow: 0 0 4px rgba(206, 145, 120, 0.15); }
+  50% { box-shadow: 0 0 10px rgba(206, 145, 120, 0.4); }
+  100% { box-shadow: 0 0 4px rgba(206, 145, 120, 0.15); }
 }
 
 /* ==========================================================================
@@ -461,6 +733,13 @@ body {
 input:checked + .toggle-slider {
   background-color: var(--primary-btn);
   border-color: var(--focus-border);
+}
+
+.toggle-switch input:focus + .toggle-slider,
+.toggle-switch input:focus-visible + .toggle-slider {
+  outline: 2px solid var(--vscode-focusBorder, #007acc);
+  outline-offset: 2px;
+  box-shadow: 0 0 8px var(--vscode-focusBorder, rgba(0, 122, 204, 0.6));
 }
 
 input:checked + .toggle-slider:before {

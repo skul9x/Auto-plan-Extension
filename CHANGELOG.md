@@ -2,6 +2,187 @@
 
 All notable changes to the **Antigravity Auto-Plan Runner** extension will be documented in this file.
 
+## [1.6.7] - 2026-10-14
+
+### 🤖 Telegram Remote Control & Settings UI Modernization
+- **Free-Text Chat Silent Drop Gating (`autoplan.telegram.allowFreeChat`)**:
+  - Independent configuration toggle allowing arbitrary text messages sent to the Telegram bot to be silently dropped without triggering prompts in Antigravity IDE.
+  - Zero event-loop overhead, zero spurious error messages, and zero bot replies for unprompted messages when disabled.
+  - Preserves 100% functionality for all management commands (`/plans`, `/plan_status`, `/screen`, `/new_chat`) and AWF workflow commands (`/init`, `/plan`, `/design`, `/code`, `/recap`, etc.).
+  - Dynamic live options update via `applyOptions` and configuration reloading without requiring bot restart.
+- **Modern Tab-Based Settings Dashboard & Instant Search Filter**:
+  - Restructured the monolithic settings panel into 4 structured, responsive categories:
+    - 🔀 **Dispatch & Tiers**: Prompt dispatch strategy (Smart Cascade / Tier 1/2/3), fallback policies, bridge injection, and transport diagnostic tools.
+    - 🤖 **Telegram & Remote**: Master bot switch, free-text chat gating toggle, live Q&A mirroring toggle, SecretStorage token management, whitelist configuration, and throttle interval.
+    - ⏱️ **Timing & Automation**: Delay intervals, timeout thresholds, repetition counts, phase nudge watchdog settings, default plan directory, and completion keywords.
+    - 🩺 **Diagnostics & Logs**: Real-time phase audit summary, DOM bridge live log viewer, clipboard export, and buffer clearing.
+  - Instant client-side search filter indexing all settings, descriptions, and labels across tabs with real-time highlighting and visual dimming.
+  - Persistent tab selection state restored seamlessly across Webview sessions via `vscode.setState()` / `vscode.getState()`.
+- **Optimistic Auto-Saving & Secure SecretStorage Token Management**:
+  - Master Telegram bot toggle with optimistic rollback: prompts for token entry via VS Code modal when turned on without a token; if cancelled, immediately reverts switch to OFF.
+  - Secure credential storage using VS Code `SecretStorage` (`context.secrets`) inside OS Keychains; Webview receives strictly boolean presence (`hasToken`) with zero plaintext leaks.
+  - Seamless 300ms debounced auto-save with optimistic UI updates, visual status pill indicators (`Saving...`, `All changes saved`), and instant configuration synchronization.
+
+---
+
+## [1.6.6] - 2026-10-12
+
+### ⚡ Performance, Resource & Event Loop Remediation
+- **Event-Driven Transcript Tailing & Throttled Conversation Discovery (PERF-01)**:
+  - Decoupled high-frequency periodic byte-offset polling (300ms) from heavy directory traversal (`findLatestConversation`).
+  - Native filesystem event monitoring (`fs.watch`) on `.brain/` directory to trigger discovery immediately only upon conversation creation or folder rename.
+  - Enforced a minimum 5000ms discovery throttle interval during steady-state polling, reducing disk I/O operations from 160–330 ops/sec down to near-zero (>90% I/O reduction).
+  - Implemented top-N candidate folder pruning (`maxDiscoveryCandidates = 20`) to eliminate exhaustive recursive stats across hundreds of historical sessions.
+- **Asynchronous Non-Blocking Telegram Legacy Fallback (PERF-02)**:
+  - Completely eradicated synchronous filesystem calls (`fs.statSync`, `fs.readdirSync`, `fs.existsSync`) from `awaitAndReplyModelResponse` and path resolution.
+  - Converted directory search routines to asynchronous `findLatestConversationAsync` and `fs.promises.stat()`.
+  - Implemented 1500ms directory scan throttling during unresolved path waiting, eliminating event loop blocking on the Extension Host main thread.
+- **Adaptive Dual-Tier DOM Bridge Polling with Instant Wakeup (PERF-03)**:
+  - Replaced legacy fixed 500ms continuous HTTP polling in `media/autoplan-dom-bridge.js` with an adaptive dynamic state machine:
+    - **Active Tier (400ms)**: Automatically engaged during plan execution, prompt injection, and for 30s following any user interaction or command dispatch.
+    - **Idle Tier (2000ms)**: Engaged after 30s of inactivity, reducing loopback HTTP request volume by 75–80% (well exceeding 70% reduction target).
+  - Instant wakeup listener hooks (`keydown`, `pointerdown`, `click`, `wheel`) immediately reset polling interval back to 400ms on first user interaction.
+- **Zero-Allocation Fast-Path User Prompt Extraction (PERF-04)**:
+  - Optimized `extractUserPrompt` with a delimiter-free fast path for plain text inputs lacking XML tags, completely bypassing expensive regular expression passes.
+  - Replaced full-buffer multi-pass regex replacements with substring slicing and targeted tag stripping, eliminating large string heap allocations and GC pressure.
+
+---
+
+## [1.6.5] - 2026-10-11
+
+### ⏱️ Long-Running Phase Nudge Watchdog & Mid-Flight Steering
+- **Proactive Phase Nudge Watchdog (`Orchestrator`)**:
+  - Automatically monitors active phase execution duration and triggers mid-flight steering if running longer than threshold (default 180s / 3 minutes).
+  - Strict one-shot per-phase intervention guarantee with optional recurring scheduling support (`autoplan.longPhaseNudgeRecurring`).
+  - Safe lifecycle management: watchdog timers immediately disposed on phase completion, phase skip, automation stop, or when disabled.
+  - Non-fatal resilient error handling ensuring watchdog failures do not terminate or stall the main orchestrator loop.
+- **Cooperative DOM Bridge Stop Generation (`stopGeneration` / `findCancelButton`)**:
+  - Automatically detects active AI response generation via DOM Cancel button (`findCancelButton`) and dispatches focus-free synthetic click cascade to cleanly stop generation.
+  - Multi-tier cancellation support: Tier 1 focus-free DOM Bridge command routing with fallback to Tier 2 VS Code native chat cancel command.
+  - Waits for chat input stabilization and send button re-enablement before mid-flight prompt injection.
+- **Mid-Flight Steering Prompt Injection & Origin Tracking (`PromptDispatcher` & `PromptOriginTracker`)**:
+  - Seamlessly injects best-practice steering prompt into existing conversation without spinning up redundant new chats (`openNewConversation: false`).
+  - Default nudge message: `" Search online to find the best practices. Note, do not open a browser and directly access the DOM. Use search_web / read_url_content when you need to look something up. "`.
+  - Introduces `PromptOrigin.SYSTEM_NUDGE` in `PromptOriginTracker` to prevent duplicate mirroring while clearly distinguishing automated steering from user questions.
+- **Telegram Nudge Alert Hooks & Live Dashboard Sync (`TelegramBridge` & `TelegramNotifier`)**:
+  - Proactively delivers real-time Telegram alerts to authorized users upon watchdog trigger: `⏱️ [Auto-Plan Nudge] Phase X running > 3m: Dispatched best-practice steering prompt into IDE chat.`.
+  - Dynamically displays visual nudge status indicators (`⏱️ Nudged`) in the interactive Live Control Dashboard and `/plan_status` overview.
+  - Synchronizes nudge viewmodel state and telemetry events to the Sidebar Webview dashboard.
+- **Configurable Settings Schema (`contributes.configuration`)**:
+  - `autoplan.longPhaseNudgeEnabled` (boolean, default `true`): Enable/disable automated phase nudge watchdog.
+  - `autoplan.longPhaseThresholdSeconds` (number, default `180`): Threshold in seconds before triggering mid-flight nudge.
+  - `autoplan.longPhaseNudgeMessage` (string): Customizable prompt message dispatched to the IDE.
+  - `autoplan.longPhaseNudgeRecurring` (boolean, default `false`): One-shot vs periodic recurring nudge.
+  - `autoplan.longPhaseNotifyTelegram` (boolean, default `true`): Send real-time Telegram notification on nudge trigger.
+
+---
+
+## [1.6.4] - 2026-10-11
+
+### 💬 Telegram Clean Q&A Sync (Two-Way Live Question & Answer Mirror)
+- **Continuous Byte-Offset Transcript Tail Engine (`TranscriptTailEngine`)**:
+  - Low-overhead persistent file tailing via `readOffset` byte tracking on active Antigravity conversation transcripts (`transcript.jsonl`).
+  - High-performance streaming parser emitting typed events: `USER_INPUT`, `PLANNER_RESPONSE`, and `agent_activity` (tool execution, thinking steps).
+  - O(1) constant RAM footprint regardless of transcript file size, with zero reliance on DOM attachment or browser inspection.
+- **Prompt Deduplication & Origin Tracking (`PromptOriginTracker`)**:
+  - In-memory normalized ring buffer with 60-second TTL tracking prompt origins (`Origin.TELEGRAM` vs `Origin.PC`).
+  - Completely suppresses redundant mirroring of questions initiated from Telegram.
+  - Forwards questions typed directly on the PC keyboard with a distinct identifier: `💻 You (on PC): <Question>`.
+- **Live Typing Action Indicators (`TypingActionManager`)**:
+  - Emits Telegram `sendChatAction: typing` every 4 seconds while the AI agent is actively executing tools or reasoning.
+  - Automatically cancels typing status as soon as response chunk delivery begins.
+- **Smart Markdown Code Block Aware Chunker (`SmartMarkdownChunker`)**:
+  - Partitions oversized assistant responses into safe chunks (<= 4000 characters) strictly respecting Telegram's 4096-character limit.
+  - Line- and paragraph-aware splitting preserving markdown syntax integrity.
+  - Tracks open code fences (```) across boundaries, automatically closing fences at chunk ends and re-opening them at the start of succeeding chunks to prevent formatting corruption.
+- **Two-Way Live Chat Mirror & Throttled Delivery (`TelegramChatMirror`)**:
+  - Unified orchestrator synchronizing PC prompt mirroring, typing indicator lifecycles, and AI response chunk delivery.
+  - Enforces minimum 1000ms delay between consecutive chunk transmissions to adhere to Telegram rate limit policies.
+  - Resilient handling of Telegram HTTP `429 Too Many Requests` with automatic exponential backoff (`retry_after`).
+  - Configurable settings: `autoplan.telegram.enableChatMirror`, `autoplan.telegram.mirrorIncludePcPrompts`, and `autoplan.telegram.chatMirrorPrefix`.
+
+### 🚀 Interactive Telegram Remote Control & Live Control Dashboard UX Optimization
+- **4-Screen End-to-End Interactive Remote Flow (`/plans`)**:
+  - **Screen 1 (Main Folder List & Quick Resume)**:
+    - Automatically discovers pending plan folders and surfaces a prominent `[⚡ Tiếp tục: <Tên>]` one-click resume button at the top of the list for instant continuation.
+    - Displays interactive folder cards with visual progress bar indicators (`▰▰▰▰▱▱▱`) and status metrics.
+    - Integrates active text editor detection to immediately prompt execution for open phase plan markdown files.
+  - **Screen 2 (Execution Mode Selector)**:
+    - Provides a dedicated mode selection screen with overall progress details and 3 tailored execution modes: Run Only Pending, Run All, and Manual Selection.
+  - **Screen 3 (Smart Phase Picker with Batch Controls & Compact 2-Column Grid)**:
+    - Mobile-optimized 2-column inline keyboard grid eliminating label ellipsis (`...`) and button wrapping on mobile devices.
+    - Batch selection controls (`[✅ Tất cả]`, `[⚡ Chưa chạy]`, `[⬜ Bỏ chọn]`) with instant toast notifications.
+    - Dynamic execution counter button (`[▶️ Bắt đầu (X/Y phase)]`) reflecting live selection state.
+    - Zero-selection safeguard preventing empty executions with alert modal feedback.
+  - **Screen 4 (Interactive Live Control Dashboard)**:
+    - In-place message transformation (`editMessageText`) into a real-time execution dashboard with Unicode block progress bars (`▰▰▰▱▱`) and percentage counters.
+    - Live operational controls: `[⏭️ Bỏ qua Phase]`, `[🛑 Dừng lại]`, `[📸 Chụp màn hình]`, `[🔄 Cập nhật]`, and `[📂 Danh sách Plans]`.
+    - Event-driven integration with Orchestrator lifecycle (`phaseStart`, `phaseComplete`, `allComplete`, `stopped`).
+- **Telegram Safety & Reliability Hardening**:
+  - **Strict 64-Byte Callback Constraint**: 100% of generated InlineKeyboard buttons adhere to Telegram's 64-byte payload limit with compact namespaced keys (`p:res:`, `p:fld:`, `p:mod:`, `p:bt:`, `p:tog:`, `p:run:`, `p:db:`).
+  - **Parse Mode Safety**: Bulletproof text and markdown sanitization preventing Telegram syntax parsing errors when plan directory or file names contain underscores (`_`).
+  - **Dashboard Anti-Rate-Limit Throttler (`DashboardThrottler`)**: 1200ms throttling interval preventing Telegram API HTTP `429 Too Many Requests` during rapid phase transitions.
+  - **Soft Error Resilience**: Graceful handling of Telegram `400 Bad Request: message is not modified` on manual dashboard refresh.
+- **Packaging & Quality Assurance**:
+  - Clean TypeScript compilation with zero errors.
+  - Comprehensive standalone E2E validation suite (`phase05_plans_ux_optimization_e2e.test.ts`).
+  - Production-ready packaged release artifact `antigravity-auto-plan-1.6.4.vsix`.
+
+---
+
+## [1.6.3] - 2026-10-11
+
+### 💬 Clean Plain Text Engine & Telegram Workflow Slash Autocomplete
+- **Markdown-to-Plain-Text AST/Regex Stripping Engine (`stripMarkdownToPlainText`)**:
+  - Eliminates 100% of Markdown formatting from AI conversation transcript responses before forwarding to Telegram.
+  - Strips complex Markdown syntax: headers (`#` to `######`), bold/italic (`**`, `*`, `__`, `_`), strikethrough (`~~`), code fences (```lang ... ```), inline code (`` ` ``), and blockquotes (`>`).
+  - Unrolls and aligns GitHub Flavored Markdown (GFM) tables into clean, readable tabular text rows.
+  - Formats bulleted lists (`*`, `-`, `+`), numbered lists, and task list checkboxes (`[ ]`, `[x]`).
+  - Converts Markdown links (`[label](url)` -> `label (url)` or clean labels).
+  - Completely eliminates Telegram API `400 Bad Request: can't parse entities` errors by disabling HTML/Markdown parse modes (`parse_mode: undefined`).
+- **Workflow Slash Autocomplete Integration (`setMyCommands`)**:
+  - Dynamically registers all Antigravity Workflow Framework (AWF) commands (`/init`, `/plan`, `/design`, `/code`, `/run`, `/debug`, `/test`, `/audit`, `/deploy`, `/next`, `/recap`, `/help`, `/customize`, `/refactor`, `/review`, `/save-brain`, `/rollback`, `/awf-update`, `/cloudflare-tunnel`, `/brainstorm`, `/visualize`) via Telegram Bot API `setMyCommands`.
+  - Enriches commands with localized descriptions and recognizable emoji icons for seamless mobile typing suggestions.
+  - Provides bidirectional command normalization between Telegram Bot constraints and Antigravity workflow names (mapping snake_case `/save_brain` to hyphenated `/save-brain`).
+- **Trailing Argument Forwarding & Free-Form Prompt Dispatch**:
+  - Automatically parses and preserves trailing user parameters (e.g. `/brainstorm create a finance dashboard`, `/code implement auth guard`, `/save_brain sprint notes`).
+  - Intelligently separates bot internal administration commands (`/plans`, `/screen`, `/status`, etc.) from workflow invocations.
+  - Forwards normalized workflow prompts directly into Antigravity IDE via `PromptDispatcher.dispatchPrompt` while preserving active conversation continuity (`openNewConversation: false`).
+  - Streams resulting model responses back to the user on Telegram formatted as pristine plain text.
+- **Packaging & Quality Assurance**:
+  - Clean TypeScript compilation with zero errors or warnings.
+  - Packaged production release artifact `antigravity-auto-plan-1.6.3.vsix`.
+  - Comprehensive end-to-end regression validation suite (`phase05_plain_text_and_workflow_e2e_release.test.ts`).
+
+---
+
+## [1.6.2] - 2026-10-11
+
+### 🔒 Security & Reliability Hardening (Audit Remediation)
+- **SecretStorage Credential Integration**:
+  - Removed all hardcoded Telegram bot tokens and user IDs from source code and package manifests.
+  - Implemented `SecretStorageManager` leveraging VS Code's native `SecretStorage` API (`context.secrets`) to securely persist bot tokens in OS keychains.
+  - Added dedicated commands `autoplan.setTelegramToken` and `autoplan.clearTelegramToken`.
+  - Established a strict credential precedence hierarchy: OS keychain (`SecretStorage`) > workspace settings (`autoplan.telegramBotToken`).
+- **Sidecar File Permissions & Credential Stripping**:
+  - Enforced POSIX `0600` (`-rw-------`) mode on sidecar configuration files (`~/.autoplan/telegram-bot.json` and `~/.autoplan/ports.json`).
+  - Explicitly stripped sensitive credentials (`telegramBotToken`) from serialized disk payloads written by `writeSidecarConfig`.
+- **Loopback HTTP Bridge Security & Session Token Auth**:
+  - Secured localhost HTTP bridge with a high-entropy cryptographic session token (`crypto.randomBytes(32)`).
+  - Enforced mandatory token authentication (`X-Bridge-Auth` or `Authorization: Bearer`) across all privileged IPC routes (`/autoplan-command`, `/autoplan-ack`, `/autoplan-log`, `/autoplan-status`).
+  - Implemented strict CORS origin verification rejecting untrusted external web origins while strictly whitelisting internal VS Code origins (`vscode-file://`, `vscode-webview://`) and direct loopback IPC.
+- **Elevated Shell Command Injection Hardening**:
+  - Refactored Linux Polkit (`pkexec`) elevation command generator to use safe positional parameters (`bash -c '...' -- "$1" "$2"`) with single-quoted wrapping, eliminating arbitrary shell metacharacter and variable expansion.
+  - Hardened Windows PowerShell UAC elevation using Base64 UTF-16LE encoded scripts with `-LiteralPath` parameter binding.
+- **Dynamic Configuration Hot-Reload & Disposal Lifecycle**:
+  - Fixed configuration watcher (`onDidChangeConfiguration`) to dynamically trigger `telegramBridge.reloadConfig()` whenever `autoplan.telegramEnabled`, `autoplan.telegramBotToken`, `autoplan.telegramAllowedUsers`, or `autoplan.telegramThrottleMs` changes.
+  - Bound server lifecycle disposables to `context.subscriptions` ensuring graceful shutdown and zero dangling listeners upon extension deactivation.
+- **DevDependencies Modernization & Pristine Release Packaging**:
+  - Updated `@vscode/vsce` and development dependencies for engine security and compatibility.
+  - Packaged pristine release artifact `antigravity-auto-plan-1.6.2.vsix` verified to contain zero leaked secrets.
+
+---
+
 ## [1.6.1] - 2026-09-18
 
 ### ⚡ Added & Enhanced (Infinite Loop Timeout & Watcher Improvements)

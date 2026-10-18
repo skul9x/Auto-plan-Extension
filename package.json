@@ -2,7 +2,7 @@
   "name": "antigravity-auto-plan",
   "displayName": "Antigravity Auto-Plan Runner",
   "description": "Automate repeated prompts and monitor completion in Antigravity IDE",
-  "version": "1.6.1",
+  "version": "1.6.7",
   "publisher": "skul9x",
   "engines": {
     "vscode": "^1.80.0"
@@ -34,7 +34,9 @@
     "onCommand:autoplan.copyDebugLog",
     "onCommand:autoplan.exportDebugLog",
     "onCommand:autoplan.clearDebugLog",
-    "onCommand:autoplan.showOutputChannel"
+    "onCommand:autoplan.showOutputChannel",
+    "onCommand:autoplan.setTelegramToken",
+    "onCommand:autoplan.clearTelegramToken"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -145,6 +147,16 @@
         "title": "Show DOM Bridge Output Channel",
         "category": "Auto-Plan",
         "icon": "$(output)"
+      },
+      {
+        "command": "autoplan.setTelegramToken",
+        "title": "Set Telegram Bot Token",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.clearTelegramToken",
+        "title": "Clear Telegram Bot Token",
+        "category": "Auto-Plan"
       }
     ],
     "configuration": {
@@ -274,6 +286,80 @@
           "minimum": 1,
           "maximum": 20,
           "description": "Maximum number of automatic retries per phase on NewConversationTimeoutError"
+        },
+        "autoplan.telegramEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Telegram remote control bot bridge"
+        },
+        "autoplan.telegramBotToken": {
+          "type": "string",
+          "default": "",
+          "description": "Telegram Bot API token for remote control"
+        },
+        "autoplan.telegramAllowedUsers": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "default": [],
+          "description": "Whitelist of authorized Telegram user IDs permitted to interact with the bot"
+        },
+        "autoplan.telegramThrottleMs": {
+          "type": "number",
+          "default": 2500,
+          "minimum": 500,
+          "maximum": 60000,
+          "description": "Throttle interval in milliseconds for Telegram updates and rate limiting"
+        },
+        "autoplan.telegram.allowFreeChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow arbitrary free-text messages from Telegram to be dispatched as prompts into Antigravity IDE. When disabled, non-command messages are silently dropped."
+        },
+        "autoplan.telegram.enableChatMirror": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable live Q&A chat mirroring to Telegram"
+        },
+        "autoplan.telegram.mirrorIncludePcPrompts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to forward prompts entered on the PC keyboard"
+        },
+        "autoplan.telegram.chatMirrorPrefix": {
+          "type": "string",
+          "default": "🤖 Antigravity:",
+          "description": "Customizable header prefix for assistant responses mirrored to Telegram"
+        },
+        "autoplan.longPhaseNudgeEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enables or disables automatic nudging for phases running longer than threshold"
+        },
+        "autoplan.longPhaseThresholdSeconds": {
+          "type": "number",
+          "default": 180,
+          "minimum": 10,
+          "description": "Threshold in seconds (3 minutes) before triggering mid-flight nudge"
+        },
+        "autoplan.longPhaseNudgeMessage": {
+          "type": "string",
+          "default": " Search online to find the best practices. Note, do not open a browser and directly access the DOM. Use search_web / read_url_content when you need to look something up. ",
+          "description": "Exact prompt message dispatched to the IDE during long phase nudge"
+        },
+        "autoplan.longPhaseNudgeRecurring": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether to trigger nudge only once per phase (false) or periodically (true)"
+        },
+        "autoplan.longPhaseNotifyTelegram": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to alert the user on Telegram when a nudge is triggered"
         }
       }
     }
@@ -284,7 +370,21 @@
     "watch": "tsc -watch -p ./",
     "package": "vsce package --allow-missing-repository --no-git-tag-version",
     "test": "node out/test/phase05_e2e_cross_platform_release.test.js",
+    "test:phase04-perf-release": "node out/test/phase04_performance_remediation_release.test.js",
+    "test:phase01-nudge": "node out/test/phase01_nudge_config_and_bridge_stop.test.js",
+    "test:phase02-nudge": "node out/test/phase02_orchestrator_nudge_watchdog.test.js",
+    "test:phase03-nudge": "node out/test/phase03_prompt_injection_and_origin_tracking.test.js",
+    "test:phase04-nudge": "node out/test/phase04_telegram_nudge_notification_e2e.test.js",
+    "test:phase05-nudge": "node out/test/phase05_nudge_watchdog_release_packaging.test.js",
     "test:phase01": "node out/test/phase01_cross_platform_elevation_keyboard.test.js",
+    "test:phase01-telegram-gating": "node out/test/phase01_telegram_free_chat_gating.test.js",
+    "test:phase02-telegram-token": "node out/test/phase02_settings_telegram_token_ipc.test.js",
+    "test:phase04-telegram-settings": "node out/test/phase04_telegram_settings_card_e2e.test.js",
+    "test:phase01-telegram": "node out/test/phase01_telegram_bridge_lifecycle.test.js",
+    "test:phase02-telegram": "node out/test/phase02_plan_discovery_selector.test.js",
+    "test:phase03-telegram": "node out/test/phase03_free_chat_and_session.test.js",
+    "test:phase04-telegram": "node out/test/phase04_stream_notifications_throttle.test.js",
+    "test:phase05-telegram": "node out/test/phase05_telegram_integration_e2e.test.js",
     "test:phase02": "node out/test/phase02_failfast_preflight_guard.test.js",
     "test:phase03": "node out/test/phase03_sidebar_webview_provider.test.js",
     "test:phase04": "node out/test/phase04_actionable_notifications_integration.test.js",
@@ -295,6 +395,10 @@
     "test:dep0169": "node out/test/phase03_dep0169_async_scanner_regression.test.js",
     "test:workspace": "node out/test/phase04_antigravity_workspace_detection.test.js",
     "test:multiroot": "node out/test/phase01_workspace_title_multiroot_fix.test.js",
+    "test:audit": "node out/test/phase05_audit_remediation_e2e_release.test.js",
+    "test:phase05-release": "node out/test/phase05_telegram_chat_toggle_release.test.js",
+    "test:phase05-plain-text": "node out/test/phase05_plain_text_and_workflow_e2e_release.test.js",
+    "test:phase05-clean-qa": "node out/test/phase05_clean_qa_release_packaging.test.js",
     "test:all": "node out/test/phase05_e2e_cross_platform_release.test.js"
   },
   "devDependencies": {
@@ -302,10 +406,13 @@
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.80.0",
-    "@vscode/vsce": "^2.24.0",
+    "@vscode/vsce": "^2.32.0",
     "jsdom": "^27.0.1",
     "mocha": "^11.8.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "grammy": "^1.21.0"
   }
 }

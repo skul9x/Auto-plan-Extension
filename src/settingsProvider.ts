@@ -2,7 +2,15 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import { getConfig, DEFAULT_CONFIG, writeConfigJson, AutoPlanConfig } from './config';
+import {
+  getConfig,
+  DEFAULT_CONFIG,
+  writeConfigJson,
+  AutoPlanConfig,
+  getTelegramConfig,
+  SecretStorageManager,
+  secretStorageManager as defaultSecretStorageManager
+} from './config';
 import { PromptDispatcher, promptDispatcher as defaultPromptDispatcher, DispatchTier } from './promptDispatcher';
 import { bridgeServer } from './bridgeServer';
 import { isBridgeInstalled } from './workbenchInjector';
@@ -11,6 +19,7 @@ import { debugLogger, DebugLogger, LogEntry } from './debugLogger';
 import { orchestrator } from './orchestrator';
 import { auditPlanPhases, PlanPhasesAuditReport } from './planScanner';
 import { getCurrentPlanFolder } from './extension';
+import { telegramBridge } from './telegramBridge';
 
 /**
  * Generates a cryptographically secure random nonce for Content Security Policy.
@@ -39,6 +48,7 @@ export class SettingsProvider {
   private readonly _extensionUri: vscode.Uri;
   private readonly _promptDispatcher: PromptDispatcher;
   private readonly _logger: DebugLogger;
+  private _secretManager: SecretStorageManager;
   private _disposables: vscode.Disposable[] = [];
   private _isDisposing: boolean = false;
 
@@ -46,12 +56,14 @@ export class SettingsProvider {
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
     promptDispatcher?: PromptDispatcher,
-    logger?: DebugLogger
+    logger?: DebugLogger,
+    secretManager?: SecretStorageManager
   ) {
     this._panel = panel;
     this._extensionUri = extensionUri;
     this._promptDispatcher = promptDispatcher || defaultPromptDispatcher;
     this._logger = logger || debugLogger;
+    this._secretManager = secretManager || defaultSecretStorageManager;
 
     // Subscribe to live log entries from debugLogger
     const logSub = this._logger.onLog((entry: LogEntry) => {
@@ -84,6 +96,7 @@ export class SettingsProvider {
       const configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration('autoplan')) {
           this.sendInitSettings();
+          this.sendTelegramStatus();
         }
       });
       this._disposables.push(configWatcher);
@@ -96,13 +109,17 @@ export class SettingsProvider {
   public static render(
     extensionUri: vscode.Uri,
     promptDispatcher?: PromptDispatcher,
-    logger?: DebugLogger
+    logger?: DebugLogger,
+    secretManager?: SecretStorageManager
   ): SettingsProvider {
     const column = vscode.window.activeTextEditor
       ? vscode.window.activeTextEditor.viewColumn
       : vscode.ViewColumn.Active;
 
     if (SettingsProvider.currentPanel) {
+      if (secretManager) {
+        SettingsProvider.currentPanel.setSecretManager(secretManager);
+      }
       SettingsProvider.currentPanel._panel.reveal(column);
       return SettingsProvider.currentPanel;
     }
@@ -118,7 +135,7 @@ export class SettingsProvider {
       }
     );
 
-    SettingsProvider.currentPanel = new SettingsProvider(panel, extensionUri, promptDispatcher, logger);
+    SettingsProvider.currentPanel = new SettingsProvider(panel, extensionUri, promptDispatcher, logger, secretManager);
     return SettingsProvider.currentPanel;
   }
 
@@ -132,6 +149,14 @@ export class SettingsProvider {
 
   public get logger(): DebugLogger {
     return this._logger;
+  }
+
+  public get secretManager(): SecretStorageManager {
+    return this._secretManager;
+  }
+
+  public setSecretManager(manager: SecretStorageManager): void {
+    this._secretManager = manager;
   }
 
   public getExtensionUri(): vscode.Uri {
@@ -316,6 +341,49 @@ export class SettingsProvider {
   }
 
   /**
+   * Introspects Telegram integration status securely without exposing raw secrets.
+   */
+  public async getTelegramStatus(): Promise<{
+    enabled: boolean;
+    allowFreeChat: boolean;
+    enableChatMirror: boolean;
+    hasToken: boolean;
+    allowedUsers: (number | string)[];
+    throttleMs: number;
+  }> {
+    const cfg = getTelegramConfig();
+    let hasToken = false;
+    try {
+      const sec = await this._secretManager.getTelegramToken();
+      hasToken = !!(sec && sec.trim().length > 0) || !!(cfg.botToken && cfg.botToken.trim().length > 0);
+    } catch {
+      hasToken = !!(cfg.botToken && cfg.botToken.trim().length > 0);
+    }
+    return {
+      enabled: cfg.enabled,
+      allowFreeChat: cfg.allowFreeChat ?? true,
+      enableChatMirror: cfg.enableChatMirror ?? true,
+      hasToken,
+      allowedUsers: cfg.allowedUsers || [],
+      throttleMs: cfg.throttleMs ?? 2500
+    };
+  }
+
+  /**
+   * Broadcasts Telegram integration status to the webview.
+   */
+  public async sendTelegramStatus(): Promise<void> {
+    try {
+      const status = await this.getTelegramStatus();
+      this._panel.webview.postMessage({
+        command: 'telegramStatusUpdate',
+        type: 'telegramStatusUpdate',
+        status
+      });
+    } catch {}
+  }
+
+  /**
    * Central IPC message router handling actions initiated by the webview.
    */
   public async handleMessage(message: any): Promise<void> {
@@ -328,6 +396,7 @@ export class SettingsProvider {
         this.sendHealthUpdate();
         this.sendPhaseDiagnostics();
         this.sendLogBuffer();
+        await this.sendTelegramStatus();
         break;
       }
 
@@ -504,6 +573,74 @@ export class SettingsProvider {
 
       case 'requestLogBuffer': {
         this.sendLogBuffer();
+        break;
+      }
+
+      case 'requestTelegramStatus': {
+        await this.sendTelegramStatus();
+        break;
+      }
+
+      case 'requestSetTelegramToken': {
+        const token = await vscode.window.showInputBox({
+          password: true,
+          prompt: 'Enter Telegram Bot API Token from @BotFather',
+          placeHolder: '1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ',
+          ignoreFocusOut: true
+        });
+        if (token && token.trim()) {
+          await this._secretManager.setTelegramToken(token.trim());
+          await vscode.workspace.getConfiguration('autoplan').update('telegramEnabled', true, vscode.ConfigurationTarget.Global);
+          try {
+            await telegramBridge.reloadConfig();
+          } catch {}
+          const status = await this.getTelegramStatus();
+          this._panel.webview.postMessage({
+            command: 'telegramTokenUpdated',
+            type: 'telegramTokenUpdated',
+            hasToken: true,
+            enabled: true,
+            status
+          });
+          this._panel.webview.postMessage({
+            command: 'telegramStatusUpdate',
+            type: 'telegramStatusUpdate',
+            status
+          });
+        } else {
+          // User pressed Esc or Cancel -> Signal optimistic rollback to webview
+          this._panel.webview.postMessage({
+            command: 'tokenPromptCancelled',
+            type: 'tokenPromptCancelled',
+            rollback: true,
+            enabled: false
+          });
+        }
+        break;
+      }
+
+      case 'requestClearTelegramToken': {
+        try {
+          await this._secretManager.deleteTelegramToken();
+        } catch {}
+        try {
+          await vscode.workspace.getConfiguration('autoplan').update('telegramBotToken', '', vscode.ConfigurationTarget.Global);
+        } catch {}
+        try {
+          await telegramBridge.reloadConfig();
+        } catch {}
+        const status = await this.getTelegramStatus();
+        this._panel.webview.postMessage({
+          command: 'telegramTokenCleared',
+          type: 'telegramTokenCleared',
+          hasToken: false,
+          status
+        });
+        this._panel.webview.postMessage({
+          command: 'telegramStatusUpdate',
+          type: 'telegramStatusUpdate',
+          status
+        });
         break;
       }
     }

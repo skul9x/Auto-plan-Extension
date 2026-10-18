@@ -653,15 +653,43 @@ export class KeyboardManager {
       }
     } else {
       console.warn(`KeyboardManager: sendKeys('${keys}') called on non-Windows platform: ${process.platform}`);
+      throw new Error(`KeyboardManager: sendKeys is not supported on platform: ${process.platform}`);
     }
   }
 
   /**
    * Sends Ctrl + Shift + L to open a new conversation in Antigravity IDE.
+   * Supports Windows (SendKeys), Linux (xdotool), and macOS (AppleScript).
    */
   public async openNewConversation(delayMs?: number): Promise<void> {
-    await this.sendKeys('^+l');
+    if (this.options.customKeySender) {
+      await this.options.customKeySender('^+l');
+    } else if (process.platform === 'win32') {
+      await this.sendKeys('^+l');
+    } else if (process.platform === 'linux') {
+      const prereqs = this.checkLinuxKeyboardPrerequisites();
+      if (!prereqs.available) {
+        throw new Error(prereqs.error || 'xdotool is not available on this Linux system');
+      }
+      await execAsync('xdotool key --clearmodifiers ctrl+shift+l');
+    } else if (process.platform === 'darwin') {
+      const prereqs = this.checkDarwinKeyboardPrerequisites();
+      if (!prereqs.available) {
+        throw new Error(prereqs.error || 'osascript is not available on this macOS system');
+      }
+      const appleScript = `osascript -e 'tell application "System Events" to keystroke "l" using {command down, shift down}'`;
+      await execAsync(appleScript);
+    } else {
+      await this.sendKeys('^+l');
+    }
     await this.delay(delayMs ?? this.options.focusDelayMs);
+  }
+
+  /**
+   * Alias for openNewConversation: Triggers Ctrl + Shift + L shortcut to spawn a new conversation.
+   */
+  public async sendNewConversationShortcut(delayMs?: number): Promise<void> {
+    return this.openNewConversation(delayMs);
   }
 
   /**

@@ -15,7 +15,7 @@
         <span class="brand-icon">⚡</span>
         <div class="brand-info">
           <h1 class="brand-title">Auto-Plan Settings</h1>
-          <span class="version-tag">v1.3.0 • Diagnostics & Tier Automation</span>
+          <span class="version-tag">v1.6.7 • Diagnostics & Tier Automation</span>
         </div>
       </div>
       <div id="overallHealthBadge" class="health-badge status-healthy" title="Overall System Health">
@@ -23,8 +23,15 @@
         <span id="overallHealthText">Engine Ready</span>
       </div>
     </div>
+
+    <!-- Instant Search Input Bar -->
+    <div class="header-search">
+      <input type="text" id="searchSettingsInput" class="search-input" placeholder="🔍 Search settings (e.g. telegram, tier, timeout, token)..." autocomplete="off" spellcheck="false">
+      <button type="button" id="btnClearSearch" class="search-clear-btn hidden" title="Clear search">✕</button>
+    </div>
+
     <div class="header-actions">
-      <span id="saveStatusText" class="save-status">All changes saved</span>
+      <span id="saveStatusText" class="save-status">All changes saved ✓</span>
       <button id="btnReset" class="btn btn-secondary" title="Reset configuration to defaults">
         <span>🔄</span> Reset Defaults
       </button>
@@ -34,12 +41,28 @@
     </div>
   </header>
 
+  <!-- Modern Category Tab Navigation Bar -->
+  <nav class="settings-nav-bar" role="tablist" aria-label="Settings Categories">
+    <button class="nav-tab active" data-tab="tab-dispatch" role="tab" aria-selected="true" aria-controls="tab-dispatch" id="nav-btn-dispatch">
+      <span class="tab-icon">🔀</span> Dispatch & Tiers
+    </button>
+    <button class="nav-tab" data-tab="tab-telegram" role="tab" aria-selected="false" aria-controls="tab-telegram" id="nav-btn-telegram">
+      <span class="tab-icon">🤖</span> Telegram & Remote
+    </button>
+    <button class="nav-tab" data-tab="tab-automation" role="tab" aria-selected="false" aria-controls="tab-automation" id="nav-btn-automation">
+      <span class="tab-icon">⏱️</span> Timing & Automation
+    </button>
+    <button class="nav-tab" data-tab="tab-diagnostics" role="tab" aria-selected="false" aria-controls="tab-diagnostics" id="nav-btn-diagnostics">
+      <span class="tab-icon">🩺</span> Diagnostics & Logs
+    </button>
+  </nav>
+
   <main class="main-container">
-    <div class="settings-grid">
-      <!-- Left Column: Tier Selection, Fallback Policy & Live Diagnostics -->
-      <div class="grid-column">
+    <!-- Category 1: Dispatch & Tiers -->
+    <div class="tab-pane active" id="tab-dispatch" role="tabpanel" aria-labelledby="nav-btn-dispatch">
+      <div class="tab-content-grid">
         <!-- Section: Execution Mode & Dispatch Tiers -->
-        <section class="glass-card">
+        <section class="glass-card" id="sectionDispatchTiers">
           <div class="card-header">
             <div class="header-icon-title">
               <span class="section-icon">🔀</span>
@@ -139,7 +162,7 @@
         </section>
 
         <!-- Section: Live Transport Diagnostics -->
-        <section class="glass-card">
+        <section class="glass-card" id="sectionTransportDiagnostics">
           <div class="card-header">
             <div class="header-icon-title">
               <span class="section-icon">🩺</span>
@@ -190,11 +213,97 @@
           </div>
         </section>
       </div>
+    </div>
 
-      <!-- Right Column: Timing, Plan Automation & Prompt Template -->
-      <div class="grid-column">
-        <!-- Section: Timing & Loop Execution -->
-        <section class="glass-card">
+    <!-- Category 2: Telegram & Remote -->
+    <div class="tab-pane" id="tab-telegram" role="tabpanel" aria-labelledby="nav-btn-telegram">
+      <div class="tab-content-grid single-column">
+        <section class="glass-card" id="sectionTelegramSettings">
+          <div class="card-header">
+            <div class="header-icon-title">
+              <span class="section-icon">🤖</span>
+              <div>
+                <h2 class="card-title">Telegram Remote Control & Bot Bridge</h2>
+                <p class="card-subtitle">Control IDE plans, receive notifications, and gate incoming AI chat from Telegram.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="toggles-list">
+            <!-- Master Bot Switch -->
+            <div class="switch-container">
+              <label class="toggle-switch">
+                <input type="checkbox" id="chkTelegramEnabled">
+                <span class="toggle-slider"></span>
+              </label>
+              <div class="toggle-details">
+                <span class="toggle-title">Enable Telegram Bot Bridge</span>
+                <span class="toggle-description">Run background Telegram polling bridge for remote monitoring and command dispatch.</span>
+              </div>
+            </div>
+
+            <!-- Free-Text Chat Gating -->
+            <div class="switch-container">
+              <label class="toggle-switch">
+                <input type="checkbox" id="chkTelegramAllowFreeChat" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <div class="toggle-details">
+                <span class="toggle-title">Allow Free-Text Chat to IDE</span>
+                <span class="toggle-description">When disabled, free-form text messages are silently dropped. Management and workflow slash commands (/plans, /plan_status, /code, /recap...) remain active.</span>
+              </div>
+            </div>
+
+            <!-- Live Q&A Mirroring -->
+            <div class="switch-container">
+              <label class="toggle-switch">
+                <input type="checkbox" id="chkTelegramEnableChatMirror" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <div class="toggle-details">
+                <span class="toggle-title">Live Q&A Chat Mirroring</span>
+                <span class="toggle-description">Mirror assistant responses and PC prompts back to authorized Telegram chats.</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Allowed Users / Whitelist -->
+          <div class="form-group">
+            <label for="txtTelegramAllowedUsers" class="form-label">Allowed User IDs (Whitelist)</label>
+            <input type="text" id="txtTelegramAllowedUsers" class="form-input" placeholder="e.g. 12345678, 98765432 (comma-separated)">
+            <span class="input-hint">Authorized Telegram numeric user IDs permitted to issue commands. Leave empty to allow any user.</span>
+          </div>
+
+          <!-- Message Throttle Interval -->
+          <div class="form-group">
+            <div class="slider-header-row">
+              <label for="rngTelegramThrottleMs" class="form-label">Message Throttle Interval (ms)</label>
+              <span id="lblTelegramThrottleVal" class="slider-val-badge">2500ms</span>
+            </div>
+            <input type="range" id="rngTelegramThrottleMs" class="form-range" min="500" max="10000" step="250" value="2500">
+            <span class="input-hint">Minimum interval between outbound Telegram messages to respect API rate limits.</span>
+          </div>
+
+          <!-- Token Management Row -->
+          <div class="token-mgmt-box">
+            <div class="token-status-info">
+              <span class="stat-label">Bot API Token:</span>
+              <span id="telegramTokenBadge" class="status-badge badge-warning" role="status" aria-live="polite">🔴 Token Missing</span>
+            </div>
+            <div class="token-actions">
+              <button type="button" id="btnSetTelegramToken" class="btn btn-secondary btn-sm" title="Configure Telegram bot token in SecretStorage">🔑 Set Token...</button>
+              <button type="button" id="btnClearTelegramToken" class="btn btn-outline btn-danger-outline btn-sm" title="Clear Telegram bot token from SecretStorage">🗑️ Clear Token</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- Category 3: Timing & Automation -->
+    <div class="tab-pane" id="tab-automation" role="tabpanel" aria-labelledby="nav-btn-automation">
+      <div class="tab-content-grid">
+        <!-- Section: Timing & Loop Controls -->
+        <section class="glass-card" id="sectionTimingControls">
           <div class="card-header">
             <div class="header-icon-title">
               <span class="section-icon">⏱️</span>
@@ -238,46 +347,8 @@
           </div>
         </section>
 
-        <!-- Section: Plan & Phase Diagnostics -->
-        <section class="glass-card" id="sectionPhaseDiagnostics">
-          <div class="card-header">
-            <div class="header-icon-title">
-              <span class="section-icon">📊</span>
-              <div>
-                <h2 class="card-title">Plan & Phase Diagnostics</h2>
-                <p class="card-subtitle">Real-time introspection into active plan folder, completed vs. pending phases, and stall blockers.</p>
-              </div>
-            </div>
-            <button type="button" id="btnRefreshPhaseDiagnostics" class="btn btn-secondary btn-sm" title="Refresh Phase Diagnostics">
-              <span>🔄</span> Refresh
-            </button>
-          </div>
-
-          <div class="phase-telemetry-content">
-            <div class="telemetry-stat-row">
-              <div class="stat-box">
-                <span class="stat-label">Active Plan Folder</span>
-                <span id="diagPlanFolder" class="stat-value">None</span>
-              </div>
-              <div class="stat-box">
-                <span class="stat-label">Phase Ratio</span>
-                <span id="diagPhaseRatio" class="stat-value">0 / 0 Completed</span>
-              </div>
-              <div class="stat-box">
-                <span class="stat-label">Stall & Blocker Status</span>
-                <span id="diagBlockerStatus" class="stat-value status-ok">✅ No Blockers</span>
-              </div>
-            </div>
-
-            <div id="diagStallWarningBox" class="stall-warning-box hidden">
-              <span class="stall-warning-icon">⚠️</span>
-              <span id="diagStallWarningText" class="stall-warning-text"></span>
-            </div>
-          </div>
-        </section>
-
-        <!-- Section: Plan & File Automation -->
-        <section class="glass-card">
+        <!-- Section: Plan & System Automation -->
+        <section class="glass-card" id="sectionPlanAutomation">
           <div class="card-header">
             <div class="header-icon-title">
               <span class="section-icon">📁</span>
@@ -325,7 +396,7 @@
         </section>
 
         <!-- Section: Prompt Template & Keyword -->
-        <section class="glass-card">
+        <section class="glass-card full-width" id="sectionPromptTemplate">
           <div class="card-header">
             <div class="header-icon-title">
               <span class="section-icon">📝</span>
@@ -362,9 +433,50 @@
           </div>
         </section>
       </div>
+    </div>
 
-      <!-- Full-Width Bottom Section: DOM Bridge Diagnostics & Live Log Viewer -->
-      <div class="grid-column-full">
+    <!-- Category 4: Diagnostics & Logs -->
+    <div class="tab-pane" id="tab-diagnostics" role="tabpanel" aria-labelledby="nav-btn-diagnostics">
+      <div class="tab-content-grid single-column">
+        <!-- Section: Plan & Phase Diagnostics -->
+        <section class="glass-card" id="sectionPhaseDiagnostics">
+          <div class="card-header">
+            <div class="header-icon-title">
+              <span class="section-icon">📊</span>
+              <div>
+                <h2 class="card-title">Plan & Phase Diagnostics</h2>
+                <p class="card-subtitle">Real-time introspection into active plan folder, completed vs. pending phases, and stall blockers.</p>
+              </div>
+            </div>
+            <button type="button" id="btnRefreshPhaseDiagnostics" class="btn btn-secondary btn-sm" title="Refresh Phase Diagnostics">
+              <span>🔄</span> Refresh
+            </button>
+          </div>
+
+          <div class="phase-telemetry-content">
+            <div class="telemetry-stat-row">
+              <div class="stat-box">
+                <span class="stat-label">Active Plan Folder</span>
+                <span id="diagPlanFolder" class="stat-value">None</span>
+              </div>
+              <div class="stat-box">
+                <span class="stat-label">Phase Ratio</span>
+                <span id="diagPhaseRatio" class="stat-value">0 / 0 Completed</span>
+              </div>
+              <div class="stat-box">
+                <span class="stat-label">Stall & Blocker Status</span>
+                <span id="diagBlockerStatus" class="stat-value status-ok">✅ No Blockers</span>
+              </div>
+            </div>
+
+            <div id="diagStallWarningBox" class="stall-warning-box hidden">
+              <span class="stall-warning-icon">⚠️</span>
+              <span id="diagStallWarningText" class="stall-warning-text"></span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section: DOM Bridge Diagnostics & Live Log Viewer -->
         <section class="glass-card" id="sectionLogViewer">
           <div class="card-header">
             <div class="header-icon-title">

@@ -2,26 +2,33 @@
   "meta": {
     "schema_version": "1.1.0",
     "awf_version": "4.0.2",
-    "updated_at": "2026-09-18T10:13:00+07:00"
+    "updated_at": "2026-10-18T19:09:00+07:00"
   },
   "project": {
     "name": "Auto-Plan_Extension",
-    "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan, inject prompt focus-free qua DOM Renderer Bridge hoặc OS Keyboard Simulation, theo dõi log transcript AI sinh code, tự động chuyển tiếp phase, kèm hệ thống Full-Screen Settings Panel, DOM Bridge Diagnostic Logger, và hỗ trợ toàn diện Single-Folder, Multi-Root Workspace & Untitled Workspaces.",
-    "version": "1.6.1",
+    "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan, inject prompt focus-free qua DOM Renderer Bridge hoặc OS Keyboard Simulation, theo dõi log transcript AI sinh code, tự động chuyển tiếp phase, kèm hệ thống Full-Screen Settings Panel hiện đại 4-Tab với Instant Search Filter, Debounced Auto-Save và Optimistic Rollback, DOM Bridge Diagnostic Logger, hỗ trợ toàn diện Single-Folder, Multi-Root Workspace & Untitled Workspaces, cầu nối điều khiển từ xa qua Telegram Remote Control Bot (4-Screen Interactive Flow, Live Control Dashboard, Free-Text Silent Drop Gating), hệ thống Telegram Clean Q&A Sync (Two-Way Live Question & Answer Mirror), Long-Running Phase Nudge Watchdog & Mid-Flight Steering tự động nhắc nhở AI khi phase chạy > 3 phút, và hệ thống tối ưu hóa hiệu năng & tài nguyên toàn diện.",
+    "version": "1.6.7",
     "created_at": "2026-08-27T23:51:00+07:00",
-    "active_plan": "plans/260917-1415-fix-workspace-title-multi-root-detection/plan.md"
+    "active_plan": "plans/261014-0555-telegram-chat-toggle-and-settings-ui/plan.md"
   },
   "tech_stack": {
-    "language": "TypeScript / JavaScript",
+    "language": "TypeScript 5.3 / JavaScript (Node.js 20+)",
     "framework": "VS Code Extension API / Electron Sandbox",
-    "dom_bridge": "HTTP Bridge Server (Node.js http), Renderer DOM Injection (workbench.html), Shadow DOM Traversal, Multi-Window Workspace Isolation & Discovery, Multi-Root & Untitled Workspace Dynamic Resolution",
-    "elevation": "Linux pkexec (Polkit GUI), Windows PowerShell UAC (Start-Process -Verb runAs)",
+    "credential_security": "VS Code SecretStorage API (context.secrets) lưu trữ token Telegram trong OS Keychains, fallback cấu hình an toàn, loại bỏ 100% hardcoded secrets",
+    "dom_bridge": "HTTP Bridge Server (Node.js http), Renderer DOM Injection (workbench.html), Shadow DOM Traversal, Multi-Window Workspace Isolation & Discovery, Multi-Root & Untitled Workspace Dynamic Resolution, Adaptive Dynamic Polling (Active 400ms / Idle 2000ms, Instant Wakeup)",
+    "bridge_security": "Cryptographic Session Token 32-byte (crypto.randomBytes), X-Bridge-Auth / Authorization: Bearer middleware, strict loopback CORS origin validation (vscode-file://, vscode-webview://)",
+    "telegram_remote": "grammY Framework (v1.21.0+), Multi-window leader election, IPC Port Registry, Remote Plan Controls (/plans, /plan_start, /plan_status, /plan_skip, /plan_stop), Session Management (/new_chat), Screen Capture (/screen), Throttled Notifier, Non-blocking Async Model Fallback",
+    "clean_qa_sync": "Continuous Byte-Offset Tail Engine (fs.createReadStream + readline, O(1) RAM), Prompt Origin Tracker (60s TTL Ring Buffer), Live Typing Indicators (sendChatAction: typing 4s cycle), Smart Markdown Code-Block Aware Chunker (<=4000 chars), Throttled Response Deliverer (1000ms delay, 429 exponential backoff)",
+    "nudge_watchdog": "Long-Running Phase Nudge Watchdog (180s threshold timer, DOM Bridge cancel button click cascade, PromptOriginTracker SYSTEM_NUDGE, Telegram Bot alert hook, in-session steering openNewConversation: false)",
+    "elevation": "Linux pkexec Polkit với positional bash parameters ($1, $2) bọc single-quotes an toàn, Windows PowerShell UAC Base64 UTF-16LE (-LiteralPath parameter binding chống injection)",
     "keyboard_fallback": "Windows PowerShell SendKeys (WScript.Shell), Linux xdotool",
     "ui_components": "Activity Bar Sidebar Control Center (WebviewViewProvider), Full-Screen Settings Panel (WebviewPanel), Modern Dark Glassmorphic CSS",
-    "log_watcher": "Transcript JSONL Stream Watcher (~/.gemini/antigravity-ide/brain/)",
+    "log_watcher": "Transcript JSONL Stream Watcher (~/.gemini/antigravity-ide/brain/), Native fs.watch Event-Driven Discovery, Throttled Directory Scanning (5000ms)",
     "debug_logger": "In-memory Ring Buffer (DebugLogger), VS Code Log Output Channel (Auto-Plan DOM Bridge), Multi-tier Telemetry Tracing",
     "dom_diagnostics": "Structured DOM snapshot evaluation, ShadowRoot boundary traversal, Container tree discovery, Antigravity IDE Title/DOM parser, DOM Explorer Root Folder Extractor",
-    "performance_engine": "LRU Ownership Memoization Cache (256 entries, >98% hit rate), Bounded FIFO Sliding-Window Log Queue (MAX_PENDING_LOGS = 150), Non-blocking Async DOM Snapshot I/O, Bounded Concurrent Directory Scanner asyncPool(16, ...), Webview IPC Log Batching (100ms throttle)"
+    "chat_gating": "Fine-Grained Telegram Free-Text Silent Drop Gating (autoplan.telegram.allowFreeChat, zero event loop blocking, zero bot error replies, preserves all workflow & management commands)",
+    "settings_dashboard": "Modern 4-Category Tabbed Settings Dashboard (Dispatch & Tiers, Telegram & Remote, Timing & Automation, Diagnostics & Logs), Real-Time Search Filter with DOM Highlighting, Debounced Auto-Save (300ms) with Optimistic Rollback",
+    "performance_engine": "LRU Ownership Memoization Cache (256 entries, >98% hit rate), Event-Driven Transcript Tail Engine (>90% I/O reduction), Zero Sync I/O Extension Host Telegram Fallback, Adaptive Dual-Tier DOM Bridge Polling (>75% HTTP reduction), Fast-Path Zero-Allocation Prompt Extraction, Bounded FIFO Sliding-Window Log Queue (MAX_PENDING_LOGS = 150), Non-blocking Async DOM Snapshot I/O, Bounded Concurrent Directory Scanner asyncPool(16, ...), Webview IPC Log Batching (100ms throttle)"
   },
   "features": [
     "Quét và phân tích thư mục plans/*.md tự động với bounded async I/O 4KB",
@@ -49,7 +56,29 @@
     "Hàng đợi Log bounded 150 phần tử và flush dạng batch, bảo toàn RAM khi Sidebar đóng/ẩn",
     "Async DOM Snapshot writer qua fs.promises.writeFile, triệt tiêu 100% hiện tượng UI freeze",
     "Duyệt thư mục bất đồng bộ song song asyncPool(16, ...) hoàn tất baseline scan < 5ms",
-    "Hỗ trợ chế độ Infinite Loop Timeout (0 = Vô hạn) cho phép chạy các phase dài mà không bị timeout ép buộc"
+    "Hỗ trợ chế độ Infinite Loop Timeout (0 = Vô hạn) cho phép chạy các phase dài mà không bị timeout ép buộc",
+    "Telegram Remote Control Bot: Điều khiển IDE từ xa qua Telegram với grammY framework",
+    "Lệnh Telegram Bot chuyên dụng: /plans, /plan_start, /plan_status, /plan_skip, /plan_stop, /screen, /new_chat",
+    "Quản lý SecretStorage an toàn: autoplan.setTelegramToken và autoplan.clearTelegramToken lưu vào OS Keychain",
+    "Tự động loại bỏ credential nhạy cảm và gán quyền 0o600 cho sidecar file ag-autoplan-config.json",
+    "Xác thực session token X-Bridge-Auth / Bearer và CORS origin whitelist cho loopback BridgeServer",
+    "Bảo vệ nâng quyền Polkit Linux và PowerShell Windows chống shell command injection",
+    "Hot-reload cấu hình Telegram động qua onDidChangeConfiguration không cần restart IDE",
+    "Dọn dẹp tài nguyên và dừng bot/bridgeServer an toàn khi extension deactivation",
+    "Cơ chế bắt tay Discovery Handshake an toàn: BridgeServer tự động cấp authToken cho DOM Bridge Client qua loopback discovery probe và vscode-file:// origin",
+    "Tự phục hồi kết nối DOM Bridge: DomBridgeClient tự phát hiện HTTP 401 để xóa token cũ và tự động tái bắt tay (re-discovery) không làm gián đoạn chuỗi lệnh",
+    "Telegram Clean Plain Text Output Engine: stripMarkdownToPlainText loại bỏ 100% cú pháp Markdown, unroll bảng GFM, gửi parse_mode: undefined triệt tiêu lỗi Bad Request",
+    "Telegram Workflow Slash Autocomplete: Đăng ký toàn bộ 21 lệnh AWF (/code, /plan, /save-brain...) qua setMyCommands kèm icon và chuyển tiếp tham số",
+    "Telegram 4-Screen Remote Flow & Live Control Dashboard UX: Quick Resume, Mode Selector, Smart Phase Picker 2-column grid batch controls, in-place editMessageText dashboard",
+    "Telegram Clean Q&A Sync (Two-Way Live Mirror): Đồng bộ 2 chiều câu hỏi và câu trả lời giữa Antigravity IDE và Telegram qua TranscriptTailEngine",
+    "Prompt Deduplication & Origin Tracking: PromptOriginTracker ring buffer 60s TTL, chặn lặp câu hỏi từ bot, format câu hỏi PC '💻 You (on PC): ...'",
+    "Typing Action Indicators: TypingActionManager phát typing indicator mỗi 4s trong khi AI reasoning/chạy tools, tự hủy ngay khi response bắt đầu gửi",
+    "Smart Markdown Code Block Aware Chunker: Cắt nhỏ chunk <= 4000 ký tự bảo toàn code block fences (```), đóng mở tự động giữa các chunk",
+    "Throttled Response Deliverer: Giữ khoảng cách >= 1000ms giữa các chunk gửi cùng chat, tự động bóc tách retry_after và exponential backoff khi gặp HTTP 429",
+    "Long-Running Phase Nudge Watchdog: Tự động nhắc nhở AI bằng steering prompt khi phase chạy vượt ngưỡng (mặc định 180s / 3 phút)",
+    "Cooperative DOM Cancel Button Interruption: Click cascade nút Cancel trong DOM Bridge để dừng model an toàn trước khi inject steering prompt",
+    "In-Session Mid-Flight Steering: Inject prompt vào hội thoại hiện tại (openNewConversation: false), bảo tồn ngữ cảnh làm việc",
+    "PromptOriginTracker SYSTEM_NUDGE: Gắn nhãn nguồn gốc prompt hệ thống, ngăn lặp echo và gửi thông báo trực quan lên Telegram"
   ],
   "decisions_made": [
     "Sử dụng kiến trúc DOM Bridge tương tự zixfel nhưng mở rộng để điều phối Prompt và Phase",
@@ -72,10 +101,32 @@
     "Chuyển toàn bộ ghi snapshot DOM sang fs.promises.writeFile để giải phóng hoàn toàn Main Thread của Extension Host",
     "Áp dụng worker pool asyncPool(16, ...) để quét song song thư mục mà không gây quá tải file descriptor (EMFILE)",
     "Bảo toàn listener 'logUpdate' trong clearRunListeners() để không ngắt event stream của Sidebar giữa các phase",
-    "Áp dụng quy ước chuẩn VS Code: đặt autoplan.timeoutPerLoopMinutes = 0 để biểu thị chế độ vô hạn (infinite timeout), hoàn toàn bỏ timer timeout và watchdog stall khi timeout <= 0"
+    "Áp dụng quy ước chuẩn VS Code: đặt autoplan.timeoutPerLoopMinutes = 0 để biểu thị chế độ vô hạn (infinite timeout), hoàn toàn bỏ timer timeout và watchdog stall khi timeout <= 0",
+    "Loại bỏ hoàn toàn bot token mặc định và user ID khỏi source code, package manifest và tài liệu",
+    "Tích hợp VS Code SecretStorage (context.secrets) để quản lý bot token ưu tiên hơn workspace settings",
+    "writeSidecarConfig luôn gọt bỏ telegramBotToken và thiết lập mode 0o600 cho file cấu hình sidecar",
+    "Tạo session token ngẫu nhiên 32 bytes (hex 64 ký tự) trên BridgeServer và bắt buộc xác thực trên mọi route nhạy cảm",
+    "Bảo vệ CORS origin nghiêm ngặt trên BridgeServer: từ chối 403 các web origin lạ, chỉ chấp nhận vscode-file://, vscode-webview:// và localhost",
+    "Dùng tham số vị trí bash ($1, $2) thay vì nội suy chuỗi để chống shell injection khi elevate bằng pkexec",
+    "Dùng UTF-16LE Base64 và tham số -LiteralPath trong PowerShell UAC để chống parameter breakout trên Windows",
+    "Lắng nghe onDidChangeConfiguration cho 4 cài đặt Telegram và tự động gọi telegramBridge.reloadConfig()",
+    "Quản lý vòng đời bridgeServer và telegramBridge bằng subscriptions và đảm bảo deactivate() async dừng an toàn",
+    "Cho phép cung cấp authToken trong /autoplan-status cho discovery probe (probe=1) và các origin tin cậy (vscode-file://, vscode-webview://) nhằm giải quyết triệt để rào cản Electron renderer sandbox không truy cập được Node.js fs",
+    "Bổ sung xử lý HTTP 401 trong DomBridgeClient để tự động xóa serverPort và authToken, lập tức chuyển sang discovery probe thay vì rơi vào vòng lặp 401 vô hạn",
+    "Sử dụng TranscriptTailEngine đọc theo byte-offset liên tục từ transcript.jsonl (Single Source of Truth) thay vì can thiệp vào Electron DOM để giữ RAM ở mức O(1) và triệt tiêu UI lag",
+    "Áp dụng PromptOriginTracker ring buffer 60s TTL để phân biệt prompt từ Telegram vs PC: triệt tiêu echo duplicate câu hỏi từ Telegram, đồng thời gắn cờ '💻 You (on PC): ...' cho câu hỏi gõ tại máy tính",
+    "Gửi typing action indicator (sendChatAction: typing) chu kỳ 4s/lần trong khi AI đang xử lý/suy nghĩ, và hủy timer ngay khi câu trả lời bắt đầu gửi",
+    "Chia nhỏ câu trả lời bằng SmartMarkdownChunker (<= 4000 ký tự) và tự động đóng/mở lại code block fences (```) giữa các chunk để loại bỏ lỗi 'can't parse entities' trên Telegram",
+    "ThrottledResponseDeliverer giữ khoảng cách tối thiểu 1000ms giữa các chunk liên tiếp cùng một chat và tự động bóc tách retry_after để exponential backoff khi gặp HTTP 429",
+    "Nudge Watchdog kích hoạt theo cơ chế one-shot duy nhất cho mỗi phase (hasNudged = true) để chống spam chat gián đoạn các tác vụ biên dịch hoặc chạy test lâu",
+    "Nếu AI đang sinh phản hồi khi kích hoạt nudge, DOM Bridge tự động click nút Cancel trước và chờ khung chat sẵn sàng trước khi inject steering prompt",
+    "Toàn bộ lỗi phát sinh từ Nudge Watchdog được xử lý dạng non-fatal cảnh báo chẩn đoán, không ngắt hay làm sụp đổ luồng chạy chính của Orchestrator"
   ],
   "knowledge_items": {
     "reports": [
+      "audit_20261012_0610_performance.md: Báo cáo kiểm định hiệu năng và tối ưu hóa tài nguyên v1.6.5 - 0 critical/high, 2 medium, 2 suggestions",
+      "audit_20261011_1215_performance.md: Báo cáo kiểm định lâm sàng chuyên sâu hiệu năng & tiêu thụ tài nguyên v1.6.3",
+      "audit_20261011_0638.md: Báo cáo kiểm định toàn diện bảo mật và độ tin cậy v1.6.1 - 5 lỗ hổng nghiêm trọng đã được khắc phục hoàn toàn trong v1.6.2",
       "audit_20260909_1433.md: Báo cáo kiểm tra lâm sàng chuyên sâu hiệu năng & độ tin cậy (AUDIT-20260909-1433) - 6/6 lỗi đã giải quyết triệt để",
       "1.md: So sánh cơ chế Auto-Plan vs Zixfel Auto Click & Scroll",
       "2.md: Đánh giá khả năng hoạt động của Auto-Plan trên Linux",
@@ -99,7 +150,16 @@
       "BridgeServer phải kiểm tra query.workspaceName theo cả primary workspaceName, mảng workspaceFolders và workspaceTitle để không bị false 409 mismatch.",
       "clearRunListeners() chỉ dọn dẹp các listener tạm thời của run-loop (completion, timeout, settle), KHÔNG được removeListener('logUpdate') vì sẽ làm mất kết nối log stream của Sidebar.",
       "fs.writeFileSync cho snapshot DOM lớn (>5MB) gây jitter main thread rất nặng; luôn dùng fs.promises.writeFile kèm kiểm tra isAborted.",
-      "Khi chuyển tiếp sang conversation mới trong Orchestrator, luôn gán offsetToUse = 0 và initialTranscriptLength = 0 để tránh bỏ qua các dòng transcript đầu của hội thoại mới."
+      "Khi chuyển tiếp sang conversation mới trong Orchestrator, luôn gán offsetToUse = 0 và initialTranscriptLength = 0 để tránh bỏ qua các dòng transcript đầu của hội thoại mới.",
+      "SecretStorageManager.getTelegramToken() ưu tiên lấy token từ keychain hệ điều hành; nếu trống mới fallback về autoplan.telegramBotToken trong settings.",
+      "buildLinuxElevationCommand dùng cú pháp 'pkexec bash -c \\'cp \"$1\" \"$2\" && chmod 644 \"$2\"\\' _ ' với '_' đóng vai trò $0 để bash bind chính xác $1 và $2.",
+      "writeSidecarConfig(config, targetDir) tự động fallback về getUserConfigStorageDir() nếu targetDir bị lỗi quyền EACCES/EPERM.",
+      ".vscodeignore loại bỏ hoàn toàn out/test/**, src/**, plans/**, docs/** khi đóng gói VSIX để bảo đảm không lọt test token hay source artifacts ra bản phát hành.",
+      "Trong Electron sandbox (workbench.html), fetch('./ag-autoplan-config.json') có thể bị chặn bởi URI scheme hoặc thiếu Node fs; cơ chế an toàn nhất là nhận authToken ngay trong response handshake của BridgeServer.",
+      "Khi BridgeServer bật requireAuth: true, nếu DOM Bridge Client không gửi X-Bridge-Auth header, polling sẽ nhận 401 và không thể lấy command dẫn đến timeout 15000ms và fallback không mong muốn.",
+      "Telegram sendChatAction: typing chỉ có hiệu lực tối đa 5s; nếu chu kỳ quá nhanh sẽ bị HTTP 429, nếu quá chậm (>5s) typing indicator sẽ bị tắt giữa chừng. Chu kỳ tối ưu là 4000ms.",
+      "Khi cắt Markdown theo giới hạn ký tự của Telegram, nếu cắt giữa code fence mà không đóng ``` và mở lại ```lang ở chunk tiếp theo, Telegram sẽ ném lỗi 400 Bad Request: can't parse entities và vỡ định dạng code.",
+      "Khi đóng gói VSIX bằng vsce, KHÔNG dùng cờ --no-dependencies nếu có dependency runtime (grammy) không được bundle, nếu không VSIX sẽ thiếu node_modules và extension fail khi activate."
     ]
   }
 }

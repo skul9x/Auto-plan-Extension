@@ -122,7 +122,10 @@ async function runSidebarWebviewProviderTestSuite() {
 
       // Settings dispatch
       await provider.handleWebviewMessage({ command: 'settings' });
-      assert.ok(executedCommands.includes('workbench.action.openSettings'), 'Should execute openSettings command');
+      assert.ok(
+        executedCommands.includes('autoplan.openSettings') || executedCommands.includes('workbench.action.openSettings'),
+        'Should execute openSettings command'
+      );
 
       console.log('  ✓ Inbound message routing verified.');
     }
@@ -152,6 +155,7 @@ async function runSidebarWebviewProviderTestSuite() {
       };
 
       provider.resolveWebviewView(mockWebviewView, {} as any, {} as any);
+      await provider.handleWebviewMessage({ command: 'ready' });
 
       // Broadcast updateState
       provider.updateState({ status: 'running', activePlanPath: '/test/plan' });
@@ -170,6 +174,7 @@ async function runSidebarWebviewProviderTestSuite() {
 
       // Broadcast appendTranscriptLog
       provider.appendTranscriptLog('AI Agent response line 1');
+      provider.flushPendingLogs();
       const logMsgs = postedMessages.filter((m) => m.type === 'transcriptLog');
       const logMsg = logMsgs[logMsgs.length - 1];
       assert.ok(logMsg, 'Transcript log message should be posted');

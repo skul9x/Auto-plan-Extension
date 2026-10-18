@@ -15,6 +15,7 @@ tmp/
 temp/
 *.tmp
 .brain/
+Data/
 
 # Dependency directories
 node_modules/

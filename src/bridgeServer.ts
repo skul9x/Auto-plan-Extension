@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { getWorkbenchPath } from './workbenchInjector';
 import { DebugLogger, debugLogger, LogLevel, LogComponent } from './debugLogger';
+import { writeSidecarConfig } from './config';
 
 export const DEFAULT_PORT_START = 48860;
 export const DEFAULT_PORT_END = 48900;
@@ -14,7 +15,7 @@ export const PORT_REGISTRY_FILENAME = 'ag-autoplan-ports.json';
 export const BRIDGE_SERVICE_NAME = 'autoplan-bridge-server';
 export const BRIDGE_PROTOCOL_VERSION = '2.0.0';
 
-export type CommandType = 'sendPrompt' | 'openNewConversation' | 'clickApproval' | 'ping' | 'captureWorkbenchDom' | string;
+export type CommandType = 'sendPrompt' | 'openNewConversation' | 'clickApproval' | 'ping' | 'captureWorkbenchDom' | 'stopGeneration' | string;
 
 export interface BridgeCommand {
   id: string;
@@ -28,7 +29,7 @@ export interface BridgeCommand {
 
 export interface BridgeCommandAck {
   commandId: string;
-  status: 'received' | 'promptInjected' | 'submitClicked' | 'completed' | 'error' | string;
+  status: 'received' | 'promptInjected' | 'submitClicked' | 'completed' | 'stopped' | 'idle' | 'error' | string;
   windowKey?: string;
   error?: string;
   timestamp?: number;
@@ -78,6 +79,8 @@ export interface BridgeServerStatus {
   watchdogEnabled?: boolean;
   cancelledCommandIds?: string[];
   cancelledCommands?: string[];
+  isExecuting?: boolean;
+  activeTask?: string;
 }
 
 export interface WatchdogStatus {
@@ -97,13 +100,23 @@ export interface PortRegistryEntry {
   windowKey: string;
   workspacePath?: string;
   workspaceName?: string;
+  authToken?: string;
   startedAt: number;
+  updatedAt: number;
+}
+
+export interface TelegramLeaderEntry {
+  pid: number;
+  windowKey?: string;
+  port?: number;
+  acquiredAt: number;
   updatedAt: number;
 }
 
 export interface PortRegistryData {
   version: number;
   ports: Record<string, PortRegistryEntry>;
+  telegramLeader?: TelegramLeaderEntry;
 }
 
 export interface BridgeServerOptions {
@@ -121,6 +134,10 @@ export interface BridgeServerOptions {
   staleClientMs?: number;
   watchdogIntervalMs?: number;
   logger?: DebugLogger;
+  authToken?: string;
+  requireAuth?: boolean;
+  isExecuting?: boolean;
+  activeTask?: string;
 }
 
 interface PendingDeferredCommand {
@@ -168,6 +185,11 @@ export class BridgeServer {
   private queuedCommands: BridgeCommand[] = [];
   private clients: Map<string, BridgeClientTelemetry> = new Map();
   private cancelledCommandIds: Map<string, number> = new Map();
+  private authToken: string;
+  private optionsAuthToken?: string;
+  private requireAuth: boolean = true;
+  private executing: boolean = false;
+  private activeTask?: string;
 
   private pruneCancelledCommands(): void {
     const now = Date.now();
@@ -210,6 +232,11 @@ export class BridgeServer {
     this.customWorkbenchDir = options.workbenchDir;
     this.customPortsRegistryPath = options.portsRegistryPath;
     this.logger = options.logger || debugLogger;
+    this.optionsAuthToken = options.authToken;
+    this.authToken = options.authToken || crypto.randomBytes(32).toString('hex');
+    this.requireAuth = options.requireAuth !== false;
+    this.executing = Boolean(options.isExecuting);
+    this.activeTask = options.activeTask;
     try {
       this.logger.registerBridgeServer(this);
     } catch {
@@ -285,6 +312,10 @@ export class BridgeServer {
         const port = await this.tryListen(currentPort);
         this.port = port;
         this.serverStartedAt = Date.now();
+        if (!this.optionsAuthToken) {
+          this.authToken = crypto.randomBytes(32).toString('hex');
+        }
+        this.exportAuthTokenToSidecarConfig();
         this.registerPortInRegistry();
         this.startWatchdog();
         this.logger.info('SERVER', `Bound to port ${this.port} (PID: ${process.pid})`, {
@@ -470,8 +501,27 @@ export class BridgeServer {
       lastHeartbeatAt: this.lastHeartbeatAt || undefined,
       watchdogEnabled: this.watchdogTimer !== null,
       cancelledCommandIds: cancelledList,
-      cancelledCommands: cancelledList
+      cancelledCommands: cancelledList,
+      isExecuting: this.isExecuting(),
+      activeTask: this.activeTask
     };
+  }
+
+  public isExecuting(): boolean {
+    return this.executing || (this.queuedCommands.length + this.pendingCommands.size > 0);
+  }
+
+  public setExecuting(executing: boolean, activeTask?: string): void {
+    this.executing = executing;
+    if (activeTask !== undefined) {
+      this.activeTask = activeTask;
+    } else if (!executing) {
+      this.activeTask = undefined;
+    }
+  }
+
+  public getActiveTask(): string | undefined {
+    return this.activeTask;
   }
 
   public getConnectedClients(): BridgeClientTelemetry[] {
@@ -590,6 +640,16 @@ export class BridgeServer {
   }
 
   /**
+   * Dispatches a stop generation command to the DOM client and awaits acknowledgment.
+   */
+  public dispatchStopGenerationCommand(options: CommandOptions = {}): Promise<CommandAckResult> {
+    return this.dispatchPromptCommand('', {
+      ...options,
+      type: 'stopGeneration'
+    });
+  }
+
+  /**
    * Dispatches a captureWorkbenchDom command to the active DOM client and retrieves the full HTML snapshot.
    */
   public async captureDomSnapshot(timeoutMs: number = 8000, windowKey?: string): Promise<{ success: boolean; html?: string; error?: string }> {
@@ -639,10 +699,27 @@ export class BridgeServer {
       return;
     }
 
-    // 2. Standard CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // 2. Strict CORS & Origin Enforcement
+    const originHeader = req.headers['origin'];
+    const rawOrigin = Array.isArray(originHeader) ? originHeader[0] : originHeader;
+    const origin = typeof rawOrigin === 'string' ? rawOrigin.trim() : '';
+
+    if (origin) {
+      const isApprovedOrigin = origin.startsWith('vscode-file://') || origin.startsWith('vscode-webview://');
+      if (!isApprovedOrigin) {
+        this.logger.warn('SERVER', `CORS origin validation rejected untrusted origin: "${origin}"`, {
+          origin,
+          remoteAddr
+        });
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Forbidden: Untrusted origin', origin }));
+        return;
+      }
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Window-Key');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Window-Key, X-Bridge-Auth, Authorization');
     res.setHeader('Content-Type', 'application/json');
 
     // 3. Preflight OPTIONS request
@@ -658,10 +735,32 @@ export class BridgeServer {
     const queryKey = parsedUrl.searchParams.get('windowKey');
     const reqWindowKey = (typeof queryKey === 'string' ? queryKey : (typeof headerKey === 'string' ? headerKey : '')).trim();
 
-    // 4. Routing
+    // 4. Request Authentication Middleware
+    const isProbe = (pathname === '/autoplan-status') &&
+      (parsedUrl.searchParams.get('probe') === '1' || parsedUrl.searchParams.get('probe') === 'true');
+
+    const requiresAuth = this.requireAuth && (
+      (pathname === '/autoplan-command') ||
+      (pathname === '/autoplan-ack' || pathname === '/ack') ||
+      (pathname === '/autoplan-log') ||
+      (pathname === '/autoplan-status' && !isProbe)
+    );
+
+    if (requiresAuth && !this.isAuthorized(req)) {
+      this.logger.warn('SERVER', `Unauthorized request blocked to ${pathname} (missing or invalid auth token)`, {
+        pathname,
+        origin,
+        remoteAddr
+      });
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized: Invalid or missing bridge authentication token' }));
+      return;
+    }
+
+    // 5. Routing
     if (req.method === 'GET' && pathname === '/autoplan-status') {
       const queryParams: Record<string, string> = Object.fromEntries(parsedUrl.searchParams.entries());
-      this.handleGetStatus(reqWindowKey, queryParams, res);
+      this.handleGetStatus(reqWindowKey, queryParams, res, req);
     } else if (req.method === 'POST' && pathname === '/autoplan-log') {
       this.handlePostLog(req, res, reqWindowKey);
     } else if (req.method === 'POST' && (pathname === '/autoplan-ack' || pathname === '/ack')) {
@@ -676,11 +775,71 @@ export class BridgeServer {
     }
   }
 
-  public handleStatus(reqWindowKey: string, query: Record<string, any>, res: http.ServerResponse): void {
-    return this.handleGetStatus(reqWindowKey, query, res);
+  public extractAuthToken(req: http.IncomingMessage): string | null {
+    const customHeader = req.headers['x-bridge-auth'];
+    const rawCustom = Array.isArray(customHeader) ? customHeader[0] : customHeader;
+    if (typeof rawCustom === 'string' && rawCustom.trim()) {
+      return rawCustom.trim();
+    }
+    const authHeader = req.headers['authorization'];
+    const rawAuth = Array.isArray(authHeader) ? authHeader[0] : authHeader;
+    if (typeof rawAuth === 'string') {
+      const match = rawAuth.match(/^Bearer\s+(.+)$/i);
+      if (match && match[1]) {
+        return match[1].trim();
+      }
+    }
+    return null;
   }
 
-  private handleGetStatus(reqWindowKey: string, query: Record<string, any>, res: http.ServerResponse): void {
+  public isAuthorized(req: http.IncomingMessage): boolean {
+    if (!this.authToken) {
+      return false;
+    }
+    const token = this.extractAuthToken(req);
+    if (!token) {
+      return false;
+    }
+    if (token.length !== this.authToken.length) {
+      return false;
+    }
+    try {
+      return crypto.timingSafeEqual(Buffer.from(token, 'utf8'), Buffer.from(this.authToken, 'utf8'));
+    } catch {
+      return false;
+    }
+  }
+
+  public getAuthToken(): string {
+    return this.authToken;
+  }
+
+  public setAuthToken(token: string): void {
+    this.authToken = token;
+  }
+
+  public isAuthRequired(): boolean {
+    return this.requireAuth;
+  }
+
+  public setRequireAuth(required: boolean): void {
+    this.requireAuth = required;
+  }
+
+  public exportAuthTokenToSidecarConfig(): void {
+    try {
+      const targetDir = this.customWorkbenchDir || (this.customPortsRegistryPath ? path.dirname(this.customPortsRegistryPath) : undefined);
+      writeSidecarConfig(undefined, targetDir, undefined, this.authToken);
+    } catch (err: any) {
+      this.logger.debug('SERVER', `Could not export auth token to sidecar config: ${err?.message || err}`);
+    }
+  }
+
+  public handleStatus(reqWindowKey: string, query: Record<string, any>, res: http.ServerResponse, req?: http.IncomingMessage): void {
+    return this.handleGetStatus(reqWindowKey, query, res, req);
+  }
+
+  private handleGetStatus(reqWindowKey: string, query: Record<string, any>, res: http.ServerResponse, req?: http.IncomingMessage): void {
     const isProbe = query.probe === '1' || query.probe === 'true';
 
     if (isProbe) {
@@ -830,9 +989,9 @@ export class BridgeServer {
       this.logger.warn('SERVER', `Window mismatch rejected for window "${reqWindowKey}": active owner is "${this.activeWindowKey}"`);
     }
 
-    // Filter pending commands for this window
+    // Filter pending commands for this window (never expose or drain on discovery probes)
     let commandsForClient: BridgeCommand[] = [];
-    if (!windowMismatch) {
+    if (!windowMismatch && !isProbe) {
       if (reqWindowKey) {
         commandsForClient = this.queuedCommands.filter(c => !c.windowKey || c.windowKey === reqWindowKey);
         this.queuedCommands = this.queuedCommands.filter(c => c.windowKey && c.windowKey !== reqWindowKey);
@@ -854,7 +1013,10 @@ export class BridgeServer {
     this.pruneCancelledCommands();
     const cancelledList = Array.from(this.cancelledCommandIds.keys());
 
-    const responseData = {
+    const origin = (req && req.headers && req.headers.origin) ? String(req.headers.origin) : '';
+    const isApprovedOrigin = origin.startsWith('vscode-file://') || origin.startsWith('vscode-webview://');
+
+    const responseData: Record<string, any> = {
       ...this.getStatus(),
       status: 'ready',
       serverWindowKey: this.windowKey,
@@ -868,6 +1030,11 @@ export class BridgeServer {
       cancelledCommandIds: cancelledList,
       cancelledCommands: cancelledList
     };
+
+    if (this.authToken && (isApprovedOrigin || isProbe)) {
+      responseData.authToken = this.authToken;
+      responseData.bridgeAuthToken = this.authToken;
+    }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(responseData));
@@ -972,6 +1139,7 @@ export class BridgeServer {
 
       const deferred = this.pendingCommands.get(ack.commandId);
       if (deferred) {
+        this.queuedCommands = this.queuedCommands.filter(c => c.id !== ack.commandId);
         const durationMs = Date.now() - deferred.startTime;
 
         if (ack.status === 'aborted' || ack.status === 'cancelled') {
@@ -1019,7 +1187,13 @@ export class BridgeServer {
             }
           }
           deferred.reject(errObj);
-        } else if (ack.status === 'submitClicked' || ack.status === 'completed' || ack.status === 'promptInjected') {
+        } else if (
+          ack.status === 'submitClicked' ||
+          ack.status === 'completed' ||
+          ack.status === 'promptInjected' ||
+          ack.status === 'stopped' ||
+          ack.status === 'idle'
+        ) {
           this.logger.info('SERVER', `Command ${ack.commandId} ACK received: status=${ack.status} (${durationMs}ms)`, {
             commandId: ack.commandId,
             status: ack.status,
@@ -1045,13 +1219,13 @@ export class BridgeServer {
 
   private handlePostCommand(req: http.IncomingMessage, res: http.ServerResponse): void {
     this.readJsonBody<{ type?: string; text?: string; windowKey?: string; options?: any; timeoutMs?: number }>(req, (err, body) => {
-      if (err || !body || !body.text) {
+      if (err || !body || (!body.text && body.type !== 'openNewConversation' && body.type !== 'stopGeneration')) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: 'Command payload missing required "text" field' }));
         return;
       }
 
-      this.dispatchPromptCommand(body.text, {
+      this.dispatchPromptCommand(body.text || '', {
         type: body.type,
         windowKey: body.windowKey,
         extra: body.options,
@@ -1195,6 +1369,7 @@ export class BridgeServer {
         windowKey: this.windowKey,
         workspacePath: this.workspacePath,
         workspaceName: this.workspaceName,
+        authToken: this.authToken,
         startedAt: this.serverStartedAt || Date.now(),
         updatedAt: Date.now()
       };

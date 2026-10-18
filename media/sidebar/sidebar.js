@@ -200,8 +200,9 @@
       const isFailed = phase.status === 'Failed' || phase.status === 'failed';
       const isStopped = phase.status === 'Stopped' || phase.status === 'stopped';
       const isSkipped = phase.status === 'Skipped' || phase.status === 'skipped';
+      const isNudged = Boolean(phase.hasNudged);
 
-      const desiredItemClass = `phase-item ${isCurrent ? 'running' : ''} ${isDone ? 'completed' : ''} ${isFailed ? 'failed' : ''} ${isStopped ? 'stopped' : ''}`.replace(/\s+/g, ' ').trim();
+      const desiredItemClass = `phase-item ${isCurrent ? 'running' : ''} ${isDone ? 'completed' : ''} ${isFailed ? 'failed' : ''} ${isStopped ? 'stopped' : ''} ${isNudged ? 'nudged' : ''}`.replace(/\s+/g, ' ').trim();
 
       let tagClass = 'status-tag ';
       let tagText = '';
@@ -209,8 +210,8 @@
 
       if (isCurrent) {
         tagClass += 'tag-running';
-        tagText = '🔄 Running';
-        tooltipText = 'Phase is currently executing...';
+        tagText = isNudged ? '🔄 Running (⚠️ Nudged)' : '🔄 Running';
+        tooltipText = isNudged ? 'Phase is executing (mid-flight steering guidance injected).' : 'Phase is currently executing...';
       } else if (isDone) {
         tagClass += 'tag-done';
         tagText = '✅ Completed';
@@ -284,6 +285,23 @@
             tagSpan.title = tooltipText;
           }
         }
+
+        let nudgePill = item.querySelector('.pill-nudged');
+        if (isNudged) {
+          if (!nudgePill) {
+            nudgePill = document.createElement('span');
+            nudgePill.className = 'pill-nudged';
+            nudgePill.textContent = '⚠️ Nudged';
+            nudgePill.title = 'Phase received mid-flight steering guidance';
+            if (tagSpan) {
+              item.insertBefore(nudgePill, tagSpan);
+            } else {
+              item.appendChild(nudgePill);
+            }
+          }
+        } else if (nudgePill) {
+          nudgePill.remove();
+        }
       } else {
         // Create new item DOM structure
         item = document.createElement('div');
@@ -311,6 +329,15 @@
 
         item.appendChild(checkbox);
         item.appendChild(nameSpan);
+
+        if (isNudged) {
+          const nudgePill = document.createElement('span');
+          nudgePill.className = 'pill-nudged';
+          nudgePill.textContent = '⚠️ Nudged';
+          nudgePill.title = 'Phase received mid-flight steering guidance';
+          item.appendChild(nudgePill);
+        }
+
         item.appendChild(tagSpan);
 
         phaseList.appendChild(item);

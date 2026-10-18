@@ -16,7 +16,8 @@ export type LogComponent =
   | 'DOM'
   | 'ORCHESTRATOR'
   | 'SETTINGS'
-  | 'PHASE';
+  | 'PHASE'
+  | 'TELEGRAM';
 
 export interface LogEntry {
   id: string;

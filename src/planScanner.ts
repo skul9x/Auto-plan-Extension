@@ -127,6 +127,7 @@ export interface PhaseDiagnosticInfo {
   executionTimeMs?: number;
   conversationId?: string;
   error?: string;
+  hasNudged?: boolean;
 }
 
 /**
@@ -628,6 +629,69 @@ export async function scanPlanFolderAsync(
   );
 
   return results;
+}
+
+/**
+ * Safely inspects if a directory is a valid plan folder.
+ * Returns PhaseFile[] if valid, or null if invalid or no valid phases found.
+ */
+export function tryScanPlanFolder(folderPath: string, options: ScanOptions = {}): PhaseFile[] | null {
+  try {
+    return scanPlanFolder(folderPath, options);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Asynchronously and safely inspects if a directory is a valid plan folder.
+ * Returns PhaseFile[] if valid, or null if invalid or no valid phases found.
+ */
+export async function tryScanPlanFolderAsync(
+  folderPath: string,
+  options: ScanOptions = {}
+): Promise<PhaseFile[] | null> {
+  try {
+    return await scanPlanFolderAsync(folderPath, options);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Scans multiple candidate directories and returns a Map of directory paths to PhaseFile lists.
+ */
+export function scanMultiplePlanFolders(
+  directories: string[],
+  options: ScanOptions = {}
+): Map<string, PhaseFile[]> {
+  const result = new Map<string, PhaseFile[]>();
+  for (const dir of directories) {
+    const phases = tryScanPlanFolder(dir, options);
+    if (phases && phases.length > 0) {
+      result.set(normalizePath(path.resolve(dir)), phases);
+    }
+  }
+  return result;
+}
+
+/**
+ * Asynchronously scans multiple candidate directories and returns a Map of directory paths to PhaseFile lists.
+ */
+export async function scanMultiplePlanFoldersAsync(
+  directories: string[],
+  options: ScanOptions = {}
+): Promise<Map<string, PhaseFile[]>> {
+  const result = new Map<string, PhaseFile[]>();
+  await Promise.all(
+    directories.map(async (dir) => {
+      const phases = await tryScanPlanFolderAsync(dir, options);
+      if (phases && phases.length > 0) {
+        result.set(normalizePath(path.resolve(dir)), phases);
+      }
+    })
+  );
+  return result;
 }
 
 /**

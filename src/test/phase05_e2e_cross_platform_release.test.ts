@@ -216,7 +216,7 @@ async function runPhase05E2ECrossPlatformReleaseTests() {
   fs.writeFileSync(path.join(tempPlanDir, 'phase-03-test.md'), '# Phase 3: Test\nStatus: Pending');
 
   // Active BridgeServer with connected client for Focus-Free DOM Bridge flow
-  const activeBridgeServer = new BridgeServer({ portStart: 49370, portEnd: 49390, windowKey: 'e2e-release-win' });
+  const activeBridgeServer = new BridgeServer({ portStart: 49370, portEnd: 49390, windowKey: 'e2e-release-win', requireAuth: false });
   const port = await activeBridgeServer.start();
 
   // Simulate active connected client via HTTP

@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as vscode from 'vscode';
-import { AutoPlanConfig, getConfig, DEFAULT_PROMPT_TEMPLATE } from './config';
+import { AutoPlanConfig, getConfig, DEFAULT_PROMPT_TEMPLATE, DEFAULT_LONG_PHASE_NUDGE_MESSAGE } from './config';
 import { KeyboardManager, keyboardManager as defaultKeyboardManager } from './keyboardManager';
 import { BridgeServer, bridgeServer as defaultBridgeServer } from './bridgeServer';
 import {
@@ -21,6 +21,12 @@ import {
   NewConversationTimeoutError,
   ConversationOwnershipCriteria
 } from './transcriptWatcher';
+
+import {
+  PromptOriginTracker,
+  promptOriginTracker as defaultPromptOriginTracker,
+  trackNudgePrompt
+} from './promptOriginTracker';
 
 export { NewConversationTimeoutError, ConversationOwnershipCriteria };
 import {
@@ -82,6 +88,12 @@ export interface PhaseItem {
   dispatchResult?: DispatchResult;
   /** Diagnostic stall reason if phase is blocked/stalled/failed */
   stallReason?: PhaseStallReason;
+  /** Whether mid-flight nudge has been triggered for this phase */
+  hasNudged?: boolean;
+  /** Timestamp when nudge was triggered */
+  nudgeTimestamp?: number;
+  /** Error message if nudge dispatch failed */
+  nudgeError?: string;
 }
 
 export interface OrchestratorProgressInfo {
@@ -107,6 +119,7 @@ export interface OrchestratorOptions {
   promptDispatcher?: PromptDispatcher;
   bridgeServer?: BridgeServer;
   debugLogger?: DebugLogger;
+  promptOriginTracker?: PromptOriginTracker;
   stallTimeoutMs?: number;
   stallWatchdogThresholdMs?: number;
   actionableErrorNotifier?: ActionableErrorNotifier;
@@ -123,6 +136,7 @@ export interface OrchestratorOptions {
   onWarning?: (message: string) => void;
   onStopped?: () => void;
   onSkipped?: (phase: PhaseItem) => void;
+  onPhaseNudged?: (event: { phase: PhaseItem; phaseIndex: number; message: string }) => void;
 }
 
 export class Orchestrator extends EventEmitter {
@@ -138,6 +152,7 @@ export class Orchestrator extends EventEmitter {
   private delayTimer: NodeJS.Timeout | null = null;
   private stallWatchdogTimer: NodeJS.Timeout | null = null;
   private stallWatchdogThresholdMs: number = 120000;
+  private phaseNudgeTimer: NodeJS.Timeout | null = null;
   private lastConversationId: string | undefined = undefined;
   private lastPreflightResult: DispatchReadinessResult | null = null;
   private workspaceName?: string;
@@ -151,6 +166,7 @@ export class Orchestrator extends EventEmitter {
   private promptDispatcher: PromptDispatcher;
   private bridgeServer?: BridgeServer;
   private debugLogger: DebugLogger;
+  private promptOriginTracker: PromptOriginTracker;
   private actionableErrorNotifier: ActionableErrorNotifier;
 
   constructor(options?: OrchestratorOptions) {
@@ -161,6 +177,7 @@ export class Orchestrator extends EventEmitter {
     this.transcriptWatcher = options?.transcriptWatcher ?? defaultTranscriptWatcher;
     this.bridgeServer = options?.bridgeServer;
     this.debugLogger = options?.debugLogger ?? defaultDebugLogger;
+    this.promptOriginTracker = options?.promptOriginTracker ?? defaultPromptOriginTracker;
     this.stallWatchdogThresholdMs =
       options?.stallTimeoutMs ?? options?.stallWatchdogThresholdMs ?? 120000;
     this.workspaceName = options?.workspaceName;
@@ -238,6 +255,9 @@ export class Orchestrator extends EventEmitter {
     }
     if (options?.onSkipped) {
       this.on('skipped', options.onSkipped);
+    }
+    if (options?.onPhaseNudged) {
+      this.on('phaseNudged', options.onPhaseNudged);
     }
   }
 
@@ -445,6 +465,181 @@ export class Orchestrator extends EventEmitter {
   }
 
   /**
+   * Starts the proactive mid-flight nudge watchdog timer for a long-running phase.
+   */
+  public startPhaseNudgeWatchdog(phase: PhaseItem, phaseIndex: number, thresholdMs?: number): void {
+    this.stopPhaseNudgeWatchdog();
+    const config = this.configProvider();
+    if (config.longPhaseNudgeEnabled === false) {
+      return;
+    }
+    if (phase.hasNudged) {
+      return;
+    }
+    if (thresholdMs !== undefined && thresholdMs <= 0) {
+      return;
+    }
+
+    const timeout =
+      thresholdMs !== undefined
+        ? thresholdMs
+        : (config.longPhaseThresholdSeconds ?? 180) * 1000;
+
+    if (timeout <= 0) {
+      return;
+    }
+
+    this.phaseNudgeTimer = setTimeout(async () => {
+      this.phaseNudgeTimer = null;
+      try {
+        if (
+          !this.isAborted &&
+          (this.isRunning() || phase.status === 'Running') &&
+          (this.currentPhaseIndex === -1 || this.currentPhaseIndex === phaseIndex) &&
+          phase.status !== 'Completed' &&
+          phase.status !== 'Skipped' &&
+          phase.status !== 'Stopped' &&
+          phase.status !== 'Failed'
+        ) {
+          await this.triggerPhaseNudge(phase, phaseIndex);
+        }
+      } catch (err: any) {
+        this.debugLogger.warn(
+          'ORCHESTRATOR',
+          `Unhandled error in phase nudge watchdog: ${err?.message || err}`,
+          { phaseIndex, fileName: phase.fileName, error: err?.message || err }
+        );
+      }
+    }, timeout);
+
+    if (this.phaseNudgeTimer && typeof this.phaseNudgeTimer.unref === 'function') {
+      this.phaseNudgeTimer.unref();
+    }
+  }
+
+  /**
+   * Stops and clears the active phase nudge watchdog timer safely.
+   */
+  public stopPhaseNudgeWatchdog(): void {
+    if (this.phaseNudgeTimer) {
+      clearTimeout(this.phaseNudgeTimer);
+      this.phaseNudgeTimer = null;
+    }
+  }
+
+  /**
+   * Returns whether the phase nudge watchdog timer is currently active.
+   */
+  public isPhaseNudgeTimerActive(): boolean {
+    return this.phaseNudgeTimer !== null;
+  }
+
+  /**
+   * Gets the PromptOriginTracker associated with this orchestrator.
+   */
+  public getPromptOriginTracker(): PromptOriginTracker {
+    return this.promptOriginTracker;
+  }
+
+  /**
+   * Sets the PromptOriginTracker associated with this orchestrator.
+   */
+  public setPromptOriginTracker(tracker: PromptOriginTracker): void {
+    this.promptOriginTracker = tracker;
+  }
+
+  /**
+   * Triggers a mid-flight steering nudge for a long-running phase.
+   * Stops ongoing generation, stabilizes, and dispatches steering prompt in the same conversation.
+   * Strict one-shot per phase with non-fatal error resiliency.
+   */
+  public async triggerPhaseNudge(
+    phase: PhaseItem,
+    phaseIndex: number,
+    customMessage?: string
+  ): Promise<void> {
+    if (phase.hasNudged) {
+      return;
+    }
+
+    this.stopPhaseNudgeWatchdog();
+
+    phase.hasNudged = true;
+    phase.nudgeTimestamp = Date.now();
+    if (this.phases.length === 0) {
+      this.phases = [phase];
+      this.currentPhaseIndex = 0;
+    }
+
+    const config = this.configProvider();
+    const nudgeMessage =
+      customMessage || config.longPhaseNudgeMessage || DEFAULT_LONG_PHASE_NUDGE_MESSAGE;
+
+    this.debugLogger.info(
+      'ORCHESTRATOR',
+      `Triggering long-phase nudge watchdog for Phase ${phase.phaseNumber || phaseIndex + 1} (${phase.fileName})`,
+      {
+        phaseIndex,
+        fileName: phase.fileName,
+        nudgeTimestamp: phase.nudgeTimestamp
+      }
+    );
+
+    try {
+      // 1. Halt ongoing AI generation
+      await this.promptDispatcher.stopActiveGeneration();
+
+      // 2. Wait 400ms stabilization delay
+      if (this.isAborted) return;
+      await new Promise(resolve => setTimeout(resolve, 400));
+      if (this.isAborted) return;
+
+      // Register steering prompt with PromptOriginTracker to distinguish from human PC/Telegram inputs
+      this.promptOriginTracker.trackNudgePrompt(nudgeMessage);
+
+      // 3. Dispatch steering prompt focus-free into the existing conversation
+      const dispatchResult = await this.promptDispatcher.dispatchPrompt(nudgeMessage, {
+        openNewConversation: false
+      });
+
+      if (!dispatchResult.success) {
+        throw new Error(dispatchResult.error || 'Nudge prompt dispatch failed');
+      }
+
+      // 4. Emit event & log structured telemetry
+      this.emit('phaseNudged', { phase, phaseIndex, message: nudgeMessage });
+      this.debugLogger.info(
+        'ORCHESTRATOR',
+        `Phase ${phase.phaseNumber || phaseIndex + 1} (${phase.fileName}) nudge dispatched successfully`,
+        {
+          phaseIndex,
+          fileName: phase.fileName,
+          message: nudgeMessage,
+          tier: dispatchResult.tier,
+          durationMs: dispatchResult.durationMs
+        }
+      );
+    } catch (err: any) {
+      // Non-fatal resiliency: record nudge error, log warning, but do NOT mark phase as Failed
+      const errMsg = err?.message || String(err);
+      phase.nudgeError = errMsg;
+      this.debugLogger.warn(
+        'ORCHESTRATOR',
+        `Phase ${phase.phaseNumber || phaseIndex + 1} (${phase.fileName}) nudge failed non-fatally: ${errMsg}`,
+        {
+          phaseIndex,
+          fileName: phase.fileName,
+          error: errMsg
+        }
+      );
+      this.emit(
+        'warning',
+        `[Watchdog] Phase ${phase.phaseNumber || phaseIndex + 1} (${phase.fileName}) nudge dispatch failed: ${errMsg}`
+      );
+    }
+  }
+
+  /**
    * Diagnoses and logs cascade blockers for subsequent phases when an active phase errors.
    */
   private diagnoseSubsequentPhasesOnFailure(failedIndex: number, failedError?: string): void {
@@ -525,6 +720,7 @@ export class Orchestrator extends EventEmitter {
         error: p.error,
         stallReason: p.stallReason,
         conversationId: p.conversationId,
+        hasNudged: p.hasNudged,
         executionTimeMs:
           p.startTime && p.endTime
             ? p.endTime - p.startTime
@@ -752,6 +948,16 @@ export class Orchestrator extends EventEmitter {
   }
 
   /**
+   * Starts execution of a custom list of phase files (alias/wrapper for startPhases).
+   */
+  public async startCustomExecution(
+    phaseFiles: (string | PhaseFile)[],
+    options?: { startFromIndex?: number; overrideConfig?: Partial<AutoPlanConfig> }
+  ): Promise<boolean> {
+    return this.startPhases(phaseFiles, options);
+  }
+
+  /**
    * Sequentially executes an explicit list of phase files.
    */
   public async startPhases(
@@ -871,6 +1077,7 @@ export class Orchestrator extends EventEmitter {
 
     this.isSkippingCurrentPhase = true;
     this.stopStallWatchdog();
+    this.stopPhaseNudgeWatchdog();
 
     if (this.delayTimer) {
       clearTimeout(this.delayTimer);
@@ -1190,6 +1397,7 @@ export class Orchestrator extends EventEmitter {
             if (this.isAborted) break;
             if (this.isSkippingCurrentPhase) {
               this.stopStallWatchdog();
+              this.stopPhaseNudgeWatchdog();
               phase.status = 'Skipped';
               phase.endTime = Date.now();
               this.debugLogger.logPhaseEvent(
@@ -1281,6 +1489,7 @@ export class Orchestrator extends EventEmitter {
             if (this.isAborted) break;
             if (this.isSkippingCurrentPhase) {
               this.stopStallWatchdog();
+              this.stopPhaseNudgeWatchdog();
               phase.status = 'Skipped';
               phase.endTime = Date.now();
               this.debugLogger.logPhaseEvent(
@@ -1311,6 +1520,11 @@ export class Orchestrator extends EventEmitter {
               ? Math.min(this.stallWatchdogThresholdMs, config.timeoutPerLoopMinutes * 60 * 1000 * 0.5)
               : 0;
             this.startStallWatchdog(phase, i, watchdogThreshold);
+
+            const nudgeThresholdMs = (config.longPhaseThresholdSeconds && config.longPhaseThresholdSeconds > 0)
+              ? config.longPhaseThresholdSeconds * 1000
+              : 180000;
+            this.startPhaseNudgeWatchdog(phase, i, nudgeThresholdMs);
 
             try {
               const activeWorkspaceFolder = vscode?.workspace?.workspaceFolders?.[0];
@@ -1350,6 +1564,7 @@ export class Orchestrator extends EventEmitter {
             } catch (err: any) {
               if (this.isSkippingCurrentPhase) {
                 this.stopStallWatchdog();
+                this.stopPhaseNudgeWatchdog();
                 phase.status = 'Skipped';
                 phase.endTime = Date.now();
                 this.debugLogger.logPhaseEvent(
@@ -1368,6 +1583,7 @@ export class Orchestrator extends EventEmitter {
                 if (phaseRetryCount < maxRetries) {
                   phaseRetryCount++;
                   this.stopStallWatchdog();
+                  this.stopPhaseNudgeWatchdog();
 
                   await this.saveWorkbenchSnapshot({
                     phaseIndex: i,
@@ -1406,6 +1622,7 @@ export class Orchestrator extends EventEmitter {
                   continue; // Loop for next retry attempt
                 } else {
                   this.stopStallWatchdog();
+                  this.stopPhaseNudgeWatchdog();
                   phase.status = 'Failed';
                   phase.endTime = Date.now();
                   phase.error = err.message;
@@ -1453,6 +1670,7 @@ export class Orchestrator extends EventEmitter {
           if (this.isAborted) break;
           if (this.isSkippingCurrentPhase) {
             this.stopStallWatchdog();
+            this.stopPhaseNudgeWatchdog();
             phase.status = 'Skipped';
             phase.endTime = Date.now();
             this.debugLogger.logPhaseEvent(
@@ -1530,6 +1748,7 @@ export class Orchestrator extends EventEmitter {
         }
 
         this.stopStallWatchdog();
+        this.stopPhaseNudgeWatchdog();
 
         if (this.isSkippingCurrentPhase) {
           phase.status = 'Skipped';
@@ -1609,6 +1828,7 @@ export class Orchestrator extends EventEmitter {
       }
 
       this.stopStallWatchdog();
+      this.stopPhaseNudgeWatchdog();
 
       if (this.isAborted) {
         for (const phase of this.phases) {
@@ -1629,6 +1849,7 @@ export class Orchestrator extends EventEmitter {
       return true;
     } catch (err: any) {
       this.stopStallWatchdog();
+      this.stopPhaseNudgeWatchdog();
       if (this.isAborted) {
         for (const phase of this.phases) {
           if (phase.status === 'Running') {
@@ -1929,6 +2150,7 @@ export class Orchestrator extends EventEmitter {
   public stop(): void {
     this.isAborted = true;
     this.stopStallWatchdog();
+    this.stopPhaseNudgeWatchdog();
 
     for (const phase of this.phases) {
       if (phase.status === 'Running') {

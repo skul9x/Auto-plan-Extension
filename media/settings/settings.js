@@ -30,6 +30,12 @@
     ? acquireVsCodeApi()
     : (typeof window !== 'undefined' && window.__mockVsCode ? window.__mockVsCode : { postMessage: function () {} });
 
+  // DOM Elements - Navigation & Search
+  const searchSettingsInput = document.getElementById('searchSettingsInput');
+  const btnClearSearch = document.getElementById('btnClearSearch');
+  const navTabs = document.querySelectorAll('.nav-tab');
+  const tabPanes = document.querySelectorAll('.tab-pane');
+
   // DOM Elements - Selection & Tiers
   const optTierAuto = document.getElementById('optTierAuto');
   const optTier1 = document.getElementById('optTier1');
@@ -37,6 +43,17 @@
   const optTier3 = document.getElementById('optTier3');
   const tierCards = document.querySelectorAll('.tier-card');
   const chkAllowFallback = document.getElementById('chkAllowFallback');
+
+  // DOM Elements - Telegram & Remote
+  const chkTelegramEnabled = document.getElementById('chkTelegramEnabled');
+  const chkTelegramAllowFreeChat = document.getElementById('chkTelegramAllowFreeChat');
+  const chkTelegramEnableChatMirror = document.getElementById('chkTelegramEnableChatMirror');
+  const txtTelegramAllowedUsers = document.getElementById('txtTelegramAllowedUsers');
+  const rngTelegramThrottleMs = document.getElementById('rngTelegramThrottleMs');
+  const lblTelegramThrottleVal = document.getElementById('lblTelegramThrottleVal');
+  const telegramTokenBadge = document.getElementById('telegramTokenBadge');
+  const btnSetTelegramToken = document.getElementById('btnSetTelegramToken');
+  const btnClearTelegramToken = document.getElementById('btnClearTelegramToken');
 
   // DOM Elements - Timing Controls
   const txtDelayMs = document.getElementById('txtDelayMs');
@@ -111,6 +128,139 @@
   let logBuffer = [];
   const MAX_LOG_BUFFER_SIZE = 500;
 
+  // Search & Navigation State
+  const SEARCHABLE_SELECTORS = '.card-title, .card-subtitle, .tier-name, .tier-desc, .toggle-title, .toggle-description, .form-label, .input-hint, .stat-label, .pill-label, .tier-meta-item';
+  let searchDebounceTimer = null;
+  let autoSaveTimer = null;
+  const AUTOSAVE_DEBOUNCE_MS = 300;
+
+  // Initialize Active Tab from State
+  let previousState = null;
+  try {
+    previousState = typeof vscode.getState === 'function' ? vscode.getState() : null;
+  } catch {}
+  let activeTab = (previousState && previousState.activeTab) ? previousState.activeTab : 'tab-dispatch';
+
+  let currentTelegramStatus = {
+    enabled: false,
+    allowFreeChat: true,
+    enableChatMirror: true,
+    hasToken: false,
+    allowedUsers: [],
+    throttleMs: 2500
+  };
+
+  /**
+   * Switches the active category tab and preserves selection in Webview state.
+   */
+  function showTab(tabId) {
+    if (!tabId) tabId = 'tab-dispatch';
+    activeTab = tabId;
+
+    navTabs.forEach((tab) => {
+      const isTarget = tab.getAttribute('data-tab') === tabId;
+      tab.classList.toggle('active', isTarget);
+      tab.setAttribute('aria-selected', isTarget ? 'true' : 'false');
+    });
+
+    tabPanes.forEach((pane) => {
+      const isTarget = pane.id === tabId;
+      pane.classList.toggle('active', isTarget);
+      pane.style.display = isTarget ? 'block' : 'none';
+    });
+
+    try {
+      if (typeof vscode.setState === 'function') {
+        const currentState = (typeof vscode.getState === 'function' ? vscode.getState() : null) || {};
+        vscode.setState(Object.assign({}, currentState, { activeTab: tabId }));
+      }
+    } catch {}
+  }
+
+  /**
+   * Reverts dynamic highlight marks and restores original inner HTML.
+   */
+  function clearSearchHighlights() {
+    const highlightedElements = document.querySelectorAll('[data-orig-html]');
+    highlightedElements.forEach((el) => {
+      el.innerHTML = el.getAttribute('data-orig-html') || '';
+      el.removeAttribute('data-orig-html');
+    });
+  }
+
+  /**
+   * Highlights matched search query occurrences in safe leaf text elements.
+   */
+  function highlightCardMatches(card, normalizedQuery) {
+    const elements = card.querySelectorAll(SEARCHABLE_SELECTORS);
+    const escaped = normalizedQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(${escaped})`, 'gi');
+
+    elements.forEach((el) => {
+      const text = el.textContent || '';
+      if (text.toLowerCase().includes(normalizedQuery)) {
+        if (!el.hasAttribute('data-orig-html')) {
+          el.setAttribute('data-orig-html', el.innerHTML);
+        }
+        el.innerHTML = text.replace(regex, '<mark class="search-highlight">$1</mark>');
+      }
+    });
+  }
+
+  /**
+   * Filters settings cards across categories and highlights matching terms.
+   */
+  function applySearchFilter(query) {
+    const normalized = (query || '').trim().toLowerCase();
+    const allCards = Array.from(document.querySelectorAll('.glass-card'));
+
+    if (!normalized) {
+      clearSearchHighlights();
+      if (document.body && document.body.classList) {
+        document.body.classList.remove('is-searching');
+      }
+      if (btnClearSearch) {
+        btnClearSearch.classList.add('hidden');
+      }
+      allCards.forEach((card) => {
+        card.classList.remove('search-dimmed', 'search-match');
+        card.style.display = '';
+      });
+      showTab(activeTab);
+      return;
+    }
+
+    if (btnClearSearch) {
+      btnClearSearch.classList.remove('hidden');
+    }
+    if (document.body && document.body.classList) {
+      document.body.classList.add('is-searching');
+    }
+    clearSearchHighlights();
+
+    allCards.forEach((card) => {
+      const cardText = (card.textContent || '').toLowerCase();
+      if (cardText.includes(normalized)) {
+        card.classList.remove('search-dimmed');
+        card.classList.add('search-match');
+        card.style.display = '';
+        highlightCardMatches(card, normalized);
+      } else {
+        card.classList.remove('search-match');
+        card.classList.add('search-dimmed');
+      }
+    });
+
+    tabPanes.forEach((pane) => {
+      const matchingInPane = pane.querySelectorAll('.glass-card.search-match');
+      if (matchingInPane.length > 0) {
+        pane.style.display = 'block';
+      } else {
+        pane.style.display = 'none';
+      }
+    });
+  }
+
   /**
    * Serializes current form values into a configuration object.
    */
@@ -121,7 +271,7 @@
       executionMode = checkedRadio.value;
     }
 
-    return {
+    const settings = {
       executionMode: executionMode,
       allowTierFallback: chkAllowFallback ? chkAllowFallback.checked : true,
       delayBetweenLoopsMs: txtDelayMs ? (parseInt(txtDelayMs.value, 10) || 2000) : 2000,
@@ -136,6 +286,27 @@
       autoInjectWorkbench: chkAutoInjectWorkbench ? chkAutoInjectWorkbench.checked : true,
       suppressFallbackWarnings: chkSuppressFallbackWarnings ? chkSuppressFallbackWarnings.checked : true
     };
+
+    if (chkTelegramEnabled) {
+      settings.telegramEnabled = chkTelegramEnabled.checked;
+    }
+    if (chkTelegramAllowFreeChat) {
+      settings['telegram.allowFreeChat'] = chkTelegramAllowFreeChat.checked;
+      settings.telegramAllowFreeChat = chkTelegramAllowFreeChat.checked;
+    }
+    if (chkTelegramEnableChatMirror) {
+      settings['telegram.enableChatMirror'] = chkTelegramEnableChatMirror.checked;
+      settings.telegramEnableChatMirror = chkTelegramEnableChatMirror.checked;
+    }
+    if (txtTelegramAllowedUsers) {
+      const raw = txtTelegramAllowedUsers.value.trim();
+      settings.telegramAllowedUsers = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
+    }
+    if (rngTelegramThrottleMs) {
+      settings.telegramThrottleMs = parseInt(rngTelegramThrottleMs.value, 10) || 2500;
+    }
+
+    return settings;
   }
 
   /**
@@ -185,6 +356,29 @@
       chkSuppressFallbackWarnings.checked = config.suppressFallbackWarnings !== false;
     }
 
+    if (chkTelegramEnabled && config.telegramEnabled !== undefined) {
+      chkTelegramEnabled.checked = !!config.telegramEnabled;
+    }
+    if (chkTelegramAllowFreeChat) {
+      const freeChat = config['telegram.allowFreeChat'] !== undefined ? config['telegram.allowFreeChat'] : config.telegramAllowFreeChat;
+      chkTelegramAllowFreeChat.checked = freeChat !== false;
+    }
+    if (chkTelegramEnableChatMirror) {
+      const mirror = config['telegram.enableChatMirror'] !== undefined ? config['telegram.enableChatMirror'] : config.telegramEnableChatMirror;
+      chkTelegramEnableChatMirror.checked = mirror !== false;
+    }
+    if (txtTelegramAllowedUsers && config.telegramAllowedUsers !== undefined) {
+      txtTelegramAllowedUsers.value = Array.isArray(config.telegramAllowedUsers)
+        ? config.telegramAllowedUsers.join(', ')
+        : String(config.telegramAllowedUsers || '');
+    }
+    if (rngTelegramThrottleMs && config.telegramThrottleMs !== undefined) {
+      rngTelegramThrottleMs.value = config.telegramThrottleMs;
+      if (lblTelegramThrottleVal) {
+        lblTelegramThrottleVal.textContent = `${config.telegramThrottleMs}ms`;
+      }
+    }
+
     savedBaseline = JSON.stringify(getFormSettings());
     checkDirty();
   }
@@ -204,6 +398,41 @@
   }
 
   /**
+   * Immediately dispatches configuration save to the Extension Host.
+   */
+  function triggerAutoSave() {
+    if (autoSaveTimer) {
+      clearTimeout(autoSaveTimer);
+      autoSaveTimer = null;
+    }
+    if (saveStatusText) {
+      saveStatusText.textContent = 'Saving changes...';
+      saveStatusText.className = 'save-status saving';
+    }
+    const settings = getFormSettings();
+    vscode.postMessage({
+      command: 'saveSettings',
+      settings: settings
+    });
+  }
+
+  /**
+   * Schedules debounced saving (300ms) with optimistic UI updates.
+   */
+  function scheduleAutoSave() {
+    if (autoSaveTimer) {
+      clearTimeout(autoSaveTimer);
+    }
+    if (saveStatusText) {
+      saveStatusText.textContent = 'Saving changes...';
+      saveStatusText.className = 'save-status saving';
+    }
+    autoSaveTimer = setTimeout(() => {
+      triggerAutoSave();
+    }, AUTOSAVE_DEBOUNCE_MS);
+  }
+
+  /**
    * Checks if current form values differ from the saved baseline.
    */
   function checkDirty() {
@@ -213,16 +442,26 @@
     if (btnSave) {
       btnSave.disabled = !isDirty;
     }
-    if (saveStatusText) {
+    if (saveStatusText && !autoSaveTimer && !saveStatusText.classList.contains('saving')) {
       if (isDirty) {
         saveStatusText.textContent = 'Unsaved changes';
-        saveStatusText.classList.add('unsaved');
+        saveStatusText.className = 'save-status unsaved';
       } else {
-        saveStatusText.textContent = 'All changes saved';
-        saveStatusText.classList.remove('unsaved');
+        saveStatusText.textContent = 'All changes saved ✓';
+        saveStatusText.className = 'save-status saved';
       }
     }
     return isDirty;
+  }
+
+  /**
+   * Handles user modification of inputs to update dirty state and trigger debounced save.
+   */
+  function handleInputModification() {
+    const isDirty = checkDirty();
+    if (isDirty) {
+      scheduleAutoSave();
+    }
   }
 
   /**
@@ -240,7 +479,21 @@
       const newPos = start + tag.length;
       textarea.setSelectionRange(newPos, newPos);
     }
-    checkDirty();
+    handleInputModification();
+  }
+
+  /**
+   * Updates Telegram bot token status badge indicator.
+   */
+  function updateTelegramTokenBadge(hasToken) {
+    if (!telegramTokenBadge) return;
+    if (hasToken) {
+      telegramTokenBadge.className = 'status-badge badge-success';
+      telegramTokenBadge.textContent = '🟢 Configured in SecretStorage';
+    } else {
+      telegramTokenBadge.className = 'status-badge badge-warning';
+      telegramTokenBadge.textContent = '🔴 Token Missing';
+    }
   }
 
   /**
@@ -258,6 +511,8 @@
       toastNotification.classList.add('toast-success');
     } else if (type === 'danger') {
       toastNotification.classList.add('toast-danger');
+    } else if (type === 'warning') {
+      toastNotification.classList.add('toast-warning');
     }
     toastNotification.classList.remove('hidden');
 
@@ -270,9 +525,45 @@
   // Event Binding
   // ==========================================================================
 
+  // Tab Navigation clicks
+  navTabs.forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const targetTab = btn.getAttribute('data-tab');
+      if (targetTab) {
+        if (searchSettingsInput && searchSettingsInput.value) {
+          searchSettingsInput.value = '';
+          applySearchFilter('');
+        }
+        showTab(targetTab);
+      }
+    });
+  });
+
+  // Search input events (debounced 100ms)
+  if (searchSettingsInput) {
+    searchSettingsInput.addEventListener('input', () => {
+      if (searchDebounceTimer) {
+        clearTimeout(searchDebounceTimer);
+      }
+      searchDebounceTimer = setTimeout(() => {
+        applySearchFilter(searchSettingsInput.value);
+      }, 100);
+    });
+  }
+
+  if (btnClearSearch && searchSettingsInput) {
+    btnClearSearch.addEventListener('click', (e) => {
+      e.preventDefault();
+      searchSettingsInput.value = '';
+      applySearchFilter('');
+      searchSettingsInput.focus();
+    });
+  }
+
   // Tier Card selection clicks
   tierCards.forEach((card) => {
-    card.addEventListener('click', (e) => {
+    card.addEventListener('click', () => {
       const radio = card.querySelector('input[type="radio"]');
       if (radio && !radio.checked) {
         document.querySelectorAll('input[name="executionMode"]').forEach((r) => {
@@ -280,25 +571,64 @@
         });
         radio.checked = true;
         updateActiveTierCards();
-        checkDirty();
+        handleInputModification();
       }
     });
   });
 
-  // Track inputs dirty state
+  // Track inputs dirty state and auto-save
   const formInputs = [
     optTierAuto, optTier1, optTier2, optTier3, chkAllowFallback,
     txtDelayMs, txtTimeoutMinutes, txtRepeatCount, txtFocusDelayMs, txtBridgeTimeoutMs,
     txtDefaultPlanFolder, chkAutoInjectWorkbench, chkSuppressFallbackWarnings,
-    txtPromptTemplate, txtCompletionKeyword
+    txtPromptTemplate, txtCompletionKeyword,
+    chkTelegramAllowFreeChat, chkTelegramEnableChatMirror,
+    txtTelegramAllowedUsers, rngTelegramThrottleMs
   ];
 
   formInputs.forEach((input) => {
     if (input) {
-      input.addEventListener('input', checkDirty);
-      input.addEventListener('change', checkDirty);
+      input.addEventListener('input', handleInputModification);
+      input.addEventListener('change', handleInputModification);
     }
   });
+
+  // Telegram Throttle slider label update
+  if (rngTelegramThrottleMs && lblTelegramThrottleVal) {
+    const updateThrottleDisplay = () => {
+      lblTelegramThrottleVal.textContent = `${rngTelegramThrottleMs.value}ms`;
+    };
+    rngTelegramThrottleMs.addEventListener('input', updateThrottleDisplay);
+    rngTelegramThrottleMs.addEventListener('change', updateThrottleDisplay);
+  }
+
+  // Telegram Master Bot Switch gating & prompt request with optimistic rollback
+  if (chkTelegramEnabled) {
+    chkTelegramEnabled.addEventListener('change', (e) => {
+      const isChecked = !!(e.target && e.target.checked);
+      if (isChecked && !currentTelegramStatus.hasToken) {
+        // Optimistically request token from user
+        vscode.postMessage({ command: 'requestSetTelegramToken' });
+      } else {
+        handleInputModification();
+      }
+    });
+  }
+
+  // Telegram Token buttons
+  if (btnSetTelegramToken) {
+    btnSetTelegramToken.addEventListener('click', (e) => {
+      e.preventDefault();
+      vscode.postMessage({ command: 'requestSetTelegramToken' });
+    });
+  }
+
+  if (btnClearTelegramToken) {
+    btnClearTelegramToken.addEventListener('click', (e) => {
+      e.preventDefault();
+      vscode.postMessage({ command: 'requestClearTelegramToken' });
+    });
+  }
 
   // Tag helper buttons
   tagButtons.forEach((btn) => {
@@ -316,7 +646,7 @@
     btnPresetKeyword.addEventListener('click', (e) => {
       e.preventDefault();
       txtCompletionKeyword.value = 'Done skul9x.';
-      checkDirty();
+      handleInputModification();
     });
   }
 
@@ -328,22 +658,22 @@
     });
   }
 
-  // Save button
+  // Force Save Changes button (fallback)
   if (btnSave) {
     btnSave.addEventListener('click', (e) => {
       e.preventDefault();
-      const settings = getFormSettings();
-      vscode.postMessage({
-        command: 'saveSettings',
-        settings: settings
-      });
+      triggerAutoSave();
     });
   }
 
-  // Reset button
+  // Reset Defaults button
   if (btnReset) {
     btnReset.addEventListener('click', (e) => {
       e.preventDefault();
+      if (autoSaveTimer) {
+        clearTimeout(autoSaveTimer);
+        autoSaveTimer = null;
+      }
       vscode.postMessage({ command: 'resetSettings' });
     });
   }
@@ -497,7 +827,7 @@
     if (filter === 'debug') {
       return entry.level === 'DEBUG';
     }
-    return true; // 'all'
+    return true;
   }
 
   function formatTime(isoTime, timestamp) {
@@ -645,8 +975,89 @@
 
       case 'saveConfirmed': {
         savedBaseline = JSON.stringify(getFormSettings());
-        checkDirty();
+        if (btnSave) {
+          btnSave.disabled = true;
+        }
+        if (saveStatusText) {
+          saveStatusText.textContent = 'All changes saved ✓';
+          saveStatusText.className = 'save-status saved';
+        }
         showToast('Settings successfully saved.', 'success');
+        break;
+      }
+
+      case 'telegramStatusUpdate': {
+        if (message.status) {
+          currentTelegramStatus = Object.assign({}, currentTelegramStatus, message.status);
+          if (chkTelegramEnabled) {
+            chkTelegramEnabled.checked = !!message.status.enabled;
+          }
+          if (chkTelegramAllowFreeChat) {
+            chkTelegramAllowFreeChat.checked = message.status.allowFreeChat !== false;
+          }
+          if (chkTelegramEnableChatMirror) {
+            chkTelegramEnableChatMirror.checked = message.status.enableChatMirror !== false;
+          }
+          if (txtTelegramAllowedUsers && message.status.allowedUsers !== undefined) {
+            txtTelegramAllowedUsers.value = Array.isArray(message.status.allowedUsers)
+              ? message.status.allowedUsers.join(', ')
+              : String(message.status.allowedUsers || '');
+          }
+          if (rngTelegramThrottleMs && message.status.throttleMs) {
+            rngTelegramThrottleMs.value = message.status.throttleMs;
+            if (lblTelegramThrottleVal) {
+              lblTelegramThrottleVal.textContent = `${message.status.throttleMs}ms`;
+            }
+          }
+          updateTelegramTokenBadge(message.status.hasToken);
+          savedBaseline = JSON.stringify(getFormSettings());
+          checkDirty();
+        }
+        break;
+      }
+
+      case 'tokenPromptCancelled': {
+        if (chkTelegramEnabled) {
+          chkTelegramEnabled.checked = false;
+        }
+        if (autoSaveTimer) {
+          clearTimeout(autoSaveTimer);
+          autoSaveTimer = null;
+        }
+        checkDirty();
+        if (message.rollback) {
+          showToast('Telegram requires a valid bot token to enable.', 'warning');
+        }
+        break;
+      }
+
+      case 'telegramTokenUpdated': {
+        currentTelegramStatus.hasToken = true;
+        if (message.enabled !== undefined && chkTelegramEnabled) {
+          chkTelegramEnabled.checked = !!message.enabled;
+        }
+        if (message.status) {
+          currentTelegramStatus = Object.assign({}, currentTelegramStatus, message.status);
+        }
+        updateTelegramTokenBadge(true);
+        savedBaseline = JSON.stringify(getFormSettings());
+        checkDirty();
+        showToast('Telegram bot token updated.', 'success');
+        break;
+      }
+
+      case 'telegramTokenCleared': {
+        currentTelegramStatus.hasToken = false;
+        if (chkTelegramEnabled) {
+          chkTelegramEnabled.checked = false;
+        }
+        if (message.status) {
+          currentTelegramStatus = Object.assign({}, currentTelegramStatus, message.status);
+        }
+        updateTelegramTokenBadge(false);
+        savedBaseline = JSON.stringify(getFormSettings());
+        checkDirty();
+        showToast('Telegram bot token cleared.', 'info');
         break;
       }
 
@@ -715,7 +1126,7 @@
       case 'folderSelected': {
         if (message.folderPath && txtDefaultPlanFolder) {
           txtDefaultPlanFolder.value = message.folderPath;
-          checkDirty();
+          handleInputModification();
         }
         break;
       }
@@ -741,6 +1152,10 @@
     }
   });
 
+  // Initialize Baseline & Apply Initial Tab View
+  savedBaseline = JSON.stringify(getFormSettings());
+  showTab(activeTab);
+
   // Export functions if in Node.js test environment
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
@@ -762,7 +1177,18 @@
       appendSingleLogEntry,
       updatePhaseDiagnostics,
       getLogBuffer: () => logBuffer,
-      setLogBuffer: (buf) => { logBuffer = buf; }
+      setLogBuffer: (buf) => { logBuffer = buf; },
+      // Phase 03 additions:
+      showTab,
+      getActiveTab: () => activeTab,
+      applySearchFilter,
+      clearSearchHighlights,
+      scheduleAutoSave,
+      triggerAutoSave,
+      getAutoSaveTimer: () => autoSaveTimer,
+      updateTelegramTokenBadge,
+      getCurrentTelegramStatus: () => currentTelegramStatus,
+      setCurrentTelegramStatus: (st) => { currentTelegramStatus = Object.assign({}, currentTelegramStatus, st); }
     };
   }
 

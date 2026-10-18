@@ -8,3 +8,4 @@ docs/**
 tsconfig.json
 **/*.map
 out/test/**
+Data/**

@@ -3333,7 +3333,7 @@
         }
       } catch (_) {}
 
-      if (this.serverPort && this.fetchFn) {
+      if (this.serverPort && this.fetchFn && this.authToken) {
         try {
           const logsToSend = this.logQueue.length > 0
             ? [...this.logQueue.splice(0, this.logQueue.length), logEntry]
@@ -3368,7 +3368,7 @@
      * Flushes queued startup logs to BridgeServer
      */
     async flushStartupLogQueue() {
-      if (!this.serverPort || !this.fetchFn || this.logQueue.length === 0) {
+      if (!this.serverPort || !this.fetchFn || this.logQueue.length === 0 || !this.authToken) {
         return 0;
       }
       try {
@@ -3424,6 +3424,18 @@
      * Auto-discovers the running bridge server port and records startup telemetry
      */
     async discoverPort() {
+      if (this._discoveryPromise) {
+        return this._discoveryPromise;
+      }
+      this._discoveryPromise = this._doDiscoverPort();
+      try {
+        return await this._discoveryPromise;
+      } finally {
+        this._discoveryPromise = null;
+      }
+    }
+
+    async _doDiscoverPort() {
       await this.loadSidecarConfig();
       const win = this.customWindow || (typeof window !== 'undefined' ? window : null);
       const doc = this.customDocument || (typeof document !== 'undefined' ? document : null);
@@ -3555,6 +3567,10 @@
         }
       }
 
+      if (this.serverPort) {
+        return this.serverPort;
+      }
+
       await this.sendClientLog('WARN', `Port discovery completed: No active BridgeServer found in range ${this.portStart}-${this.portEnd}`, {
         portStart: this.portStart,
         portEnd: this.portEnd
@@ -3599,9 +3615,9 @@
       this._isPolling = true;
 
       try {
-        if (!this.serverPort) {
+        if (!this.serverPort || !this.authToken) {
           const port = await this.discoverPort();
-          if (!port) return;
+          if (!port || !this.authToken) return;
         }
 
         const url = `http://127.0.0.1:${this.serverPort}/autoplan-status?windowKey=${encodeURIComponent(this.windowKey)}&clientVersion=${this.clientVersion}`;

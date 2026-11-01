@@ -287,7 +287,8 @@ async function runPhase05FullRegressionTests() {
       portEnd: 49250,
       workbenchDir: mockWbDir,
       portsRegistryPath: customRegistryPath,
-      windowKey: 'test_phase05_win'
+      windowKey: 'test_phase05_win',
+      requireAuth: false
     });
 
     const activePort = await bridgeServer.start();

@@ -184,6 +184,8 @@ class MockElement {
   public parentNode: MockElement | null = null;
   public ownerDocument: MockDocument | null = null;
   public textContent: string = '';
+  public innerText: string = '';
+  public innerHTML: string = '';
   public value: string = '';
   public disabled: boolean = false;
   public clicked: boolean = false;
@@ -240,6 +242,9 @@ class MockElement {
   }
 
   focus() {
+    if (this.ownerDocument) {
+      this.ownerDocument.activeElement = this;
+    }
     this.dispatchEvent(new MockEvent('focus', { bubbles: false }));
   }
 
@@ -378,6 +383,10 @@ class MockDocument {
   }
 
   execCommand(_command: string, _showUI?: boolean, _value?: any): boolean {
+    if (this.activeElement && _value !== undefined) {
+      this.activeElement.innerText = String(_value);
+      this.activeElement.textContent = String(_value);
+    }
     return true;
   }
 }
@@ -658,12 +667,19 @@ async function runPhase04RegressionSuite() {
     const activeConv = `conv_orch_phase_${phaseIndex}`;
     setTimeout(() => {
       writeTranscriptStep(e2eBrainDir, activeConv, {
+        step_index: 0,
+        source: 'USER',
+        type: 'USER_INPUT',
+        content: promptText
+      });
+      writeTranscriptStep(e2eBrainDir, activeConv, {
         step_index: 1,
         source: 'MODEL',
         type: 'PLANNER_RESPONSE',
         status: 'DONE',
         tool_calls: [],
-        content: `Phase ${phaseIndex} completed successfully! ${DEFAULT_COMPLETION_KEYWORD}`
+        content: `Phase ${phaseIndex} completed successfully! ${DEFAULT_COMPLETION_KEYWORD}`,
+        timestamp: Date.now() + 1000
       });
     }, 80);
 

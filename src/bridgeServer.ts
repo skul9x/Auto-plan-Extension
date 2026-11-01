@@ -1122,6 +1122,19 @@ export class BridgeServer {
     return true;
   }
 
+  private sanitizeAckMetadata(metadata: any): any {
+    if (!metadata || typeof metadata !== 'object') {
+      return metadata;
+    }
+    if (typeof metadata.html === 'string') {
+      return {
+        ...metadata,
+        html: `[HTML snapshot: ${metadata.html.length} chars]`
+      };
+    }
+    return metadata;
+  }
+
   private handlePostAck(req: http.IncomingMessage, res: http.ServerResponse): void {
     this.readJsonBody<BridgeCommandAck>(req, (err, ack) => {
       if (err || !ack || !ack.commandId) {
@@ -1159,7 +1172,7 @@ export class BridgeServer {
             commandId: ack.commandId,
             status: ack.status,
             durationMs,
-            metadata: ack.metadata
+            metadata: this.sanitizeAckMetadata(ack.metadata)
           });
           clearTimeout(deferred.timer);
           this.pendingCommands.delete(ack.commandId);
@@ -1174,7 +1187,7 @@ export class BridgeServer {
             commandId: ack.commandId,
             status: ack.status,
             durationMs,
-            metadata: ack.metadata
+            metadata: this.sanitizeAckMetadata(ack.metadata)
           }, ack.error);
           clearTimeout(deferred.timer);
           this.pendingCommands.delete(ack.commandId);
@@ -1255,7 +1268,7 @@ export class BridgeServer {
             commandId: ack.commandId,
             status: ack.status,
             durationMs,
-            metadata: ack.metadata
+            metadata: this.sanitizeAckMetadata(ack.metadata)
           });
           clearTimeout(deferred.timer);
           this.pendingCommands.delete(ack.commandId);

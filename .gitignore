@@ -61,3 +61,11 @@ Desktop.ini
 # Coverage & Diagnostics
 coverage/
 .nyc_output/
+scripts/.bin/
+
+# Temporary dumps & extracted artifacts
+audit-per.md
+body1.txt
+newprompt.txt
+*.vsix_FILES/
+

@@ -46,6 +46,10 @@ export interface AutoPlanConfig {
   longPhaseNudgeMessage?: string;
   longPhaseNudgeRecurring?: boolean;
   longPhaseNotifyTelegram?: boolean;
+  autoSubmitEnabled?: boolean;
+  autoSubmitIntervalMs?: number;
+  autoSubmitMaxQuota?: number;
+  autoSubmitNotifyTelegram?: boolean;
   bridgeAuthToken?: string;
   authToken?: string;
 }
@@ -97,6 +101,10 @@ export const DEFAULT_CONFIG: AutoPlanConfig = {
   longPhaseNudgeMessage: DEFAULT_LONG_PHASE_NUDGE_MESSAGE,
   longPhaseNudgeRecurring: false,
   longPhaseNotifyTelegram: true,
+  autoSubmitEnabled: false,
+  autoSubmitIntervalMs: 1000,
+  autoSubmitMaxQuota: 0,
+  autoSubmitNotifyTelegram: true,
   bridgeAuthToken: '',
   authToken: ''
 };
@@ -158,6 +166,10 @@ export function getConfig(): AutoPlanConfig {
     longPhaseNudgeMessage: config.get<string>('longPhaseNudgeMessage', DEFAULT_CONFIG.longPhaseNudgeMessage ?? DEFAULT_LONG_PHASE_NUDGE_MESSAGE),
     longPhaseNudgeRecurring: config.get<boolean>('longPhaseNudgeRecurring', DEFAULT_CONFIG.longPhaseNudgeRecurring ?? false),
     longPhaseNotifyTelegram: config.get<boolean>('longPhaseNotifyTelegram', DEFAULT_CONFIG.longPhaseNotifyTelegram ?? true),
+    autoSubmitEnabled: config.get<boolean>('autoSubmit.enabled', config.get<boolean>('autoSubmitEnabled', DEFAULT_CONFIG.autoSubmitEnabled ?? false)),
+    autoSubmitIntervalMs: config.get<number>('autoSubmit.intervalMs', config.get<number>('autoSubmitIntervalMs', DEFAULT_CONFIG.autoSubmitIntervalMs ?? 1000)),
+    autoSubmitMaxQuota: config.get<number>('autoSubmit.maxQuota', config.get<number>('autoSubmitMaxQuota', DEFAULT_CONFIG.autoSubmitMaxQuota ?? 0)),
+    autoSubmitNotifyTelegram: config.get<boolean>('autoSubmit.notifyTelegram', config.get<boolean>('autoSubmitNotifyTelegram', DEFAULT_CONFIG.autoSubmitNotifyTelegram ?? true)),
     bridgeAuthToken: config.get<string>('bridgeAuthToken', ''),
     authToken: config.get<string>('authToken', '')
   };
@@ -229,6 +241,48 @@ export function getTelegramConfig(): TelegramConfig {
     enableChatMirror,
     mirrorIncludePcPrompts,
     chatMirrorPrefix
+  };
+}
+
+export interface AutoSubmitConfig {
+  enabled: boolean;
+  intervalMs: number;
+  maxQuota: number;
+  notifyTelegram: boolean;
+}
+
+/**
+ * Retrieves RPC Native Auto-Submit configuration options with bounds clamping and fallback.
+ */
+export function getAutoSubmitConfig(): AutoSubmitConfig {
+  const config = getConfig();
+  let enabled = config.autoSubmitEnabled ?? false;
+  let intervalMs = config.autoSubmitIntervalMs ?? 1000;
+  let maxQuota = config.autoSubmitMaxQuota ?? 0;
+  let notifyTelegram = config.autoSubmitNotifyTelegram ?? true;
+
+  try {
+    const wsConfig = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    if (wsConfig && typeof wsConfig.get === 'function') {
+      const explicitEnabled = wsConfig.get<boolean>('autoSubmit.enabled');
+      if (explicitEnabled !== undefined) enabled = explicitEnabled;
+      const explicitInterval = wsConfig.get<number>('autoSubmit.intervalMs');
+      if (explicitInterval !== undefined) intervalMs = explicitInterval;
+      const explicitQuota = wsConfig.get<number>('autoSubmit.maxQuota');
+      if (explicitQuota !== undefined) maxQuota = explicitQuota;
+      const explicitNotify = wsConfig.get<boolean>('autoSubmit.notifyTelegram');
+      if (explicitNotify !== undefined) notifyTelegram = explicitNotify;
+    }
+  } catch {}
+
+  const clampedInterval = Math.max(200, Math.min(60000, Number(intervalMs) || 1000));
+  const sanitizedQuota = Math.max(0, Number(maxQuota) || 0);
+
+  return {
+    enabled: Boolean(enabled),
+    intervalMs: clampedInterval,
+    maxQuota: sanitizedQuota,
+    notifyTelegram: Boolean(notifyTelegram)
   };
 }
 

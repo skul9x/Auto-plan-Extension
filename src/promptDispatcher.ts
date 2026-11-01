@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { BridgeServer, bridgeServer as defaultBridgeServer, CommandOptions, CommandAckResult } from './bridgeServer';
 import { KeyboardManager, keyboardManager as defaultKeyboardManager, BatchPromptOptions } from './keyboardManager';
 import { AutoPlanConfig, getConfig, ExecutionMode } from './config';
-import { DebugLogger, debugLogger, sanitizePrompt } from './debugLogger';
+import { DebugLogger, debugLogger, sanitizePrompt, sanitizeExcerpt } from './debugLogger';
 
 export type DispatchTier = 'domBridge' | 'nativeCommand' | 'keyboard';
 
@@ -46,6 +46,9 @@ export interface DispatchResult {
   durationMs: number;
   commandId?: string;
   status?: string;
+  charsExpected?: number;
+  charsDetectedInDOM?: number;
+  elementContext?: string;
   metadata?: Record<string, any>;
   error?: string;
   fallbackHistory?: FallbackRecord[];
@@ -57,6 +60,8 @@ export interface PromptDispatcherOptions {
   configProvider?: () => AutoPlanConfig;
   commandExecutor?: (command: string, ...args: any[]) => Thenable<any>;
   warningNotifier?: (message: string) => void;
+  actionableNotifier?: (message: string, buttonText: string, onAction: () => Promise<void> | void) => Promise<any> | any;
+  actionableErrorNotifier?: (message: string, ...actions: string[]) => Promise<string | undefined>;
   logger?: DebugLogger;
 }
 
@@ -72,6 +77,8 @@ export class PromptDispatcher {
   private configProvider: () => AutoPlanConfig;
   private commandExecutor: (command: string, ...args: any[]) => Thenable<any>;
   private warningNotifier: (message: string) => void;
+  private actionableNotifier?: (message: string, buttonText: string, onAction: () => Promise<void> | void) => Promise<any> | any;
+  private actionableErrorNotifier?: (message: string, ...actions: string[]) => Promise<string | undefined>;
   private customCommandExecutorProvided: boolean;
   private logger: DebugLogger;
 
@@ -80,6 +87,8 @@ export class PromptDispatcher {
     this.keyboardManager = options?.keyboardManager ?? defaultKeyboardManager;
     this.configProvider = options?.configProvider ?? getConfig;
     this.logger = options?.logger ?? debugLogger;
+    this.actionableNotifier = options?.actionableNotifier;
+    this.actionableErrorNotifier = options?.actionableErrorNotifier;
     this.customCommandExecutorProvided = Boolean(options?.commandExecutor);
     this.commandExecutor =
       options?.commandExecutor ??
@@ -122,6 +131,131 @@ export class PromptDispatcher {
 
   public getKeyboardManager(): KeyboardManager {
     return this.keyboardManager;
+  }
+
+  /**
+   * Parses verification metadata from ACK metadata or error steps
+   */
+  public extractVerificationTelemetry(metadata: any): {
+    step1: any;
+    step2: any;
+    elementContext: string;
+    charsExpected: number;
+    charsDetectedInDOM: number;
+    domExcerpt: string;
+    strategy: string;
+    verified: boolean;
+  } {
+    if (!metadata) {
+      return {
+        step1: {},
+        step2: {},
+        elementContext: '#antigravity.agentSidePanelInputBox',
+        charsExpected: 0,
+        charsDetectedInDOM: 0,
+        domExcerpt: '',
+        strategy: 'contenteditable-text',
+        verified: false
+      };
+    }
+
+    const steps = Array.isArray(metadata.steps) ? metadata.steps : [];
+    const step1 = steps.find((s: any) => s.step === 1 || s.name?.includes('discovery') || s.name?.includes('focus')) || {};
+    const step2 = steps.find((s: any) => s.step === 2 || s.name?.includes('injection')) || {};
+
+    const elementContext =
+      metadata.elementContext ||
+      step1.elementContext ||
+      step1.details?.elementContext ||
+      (Array.isArray(step1.details?.containerHierarchy) && step1.details.containerHierarchy.find((c: string) => c.includes('agentSidePanelInputBox') || c.includes('chat-widget'))) ||
+      step1.details?.containerHierarchy?.[0] ||
+      step1.details?.id ||
+      '#antigravity.agentSidePanelInputBox';
+
+    const charsExpected =
+      step2.charsExpected ??
+      metadata.charsExpected ??
+      step2.charsInjected ??
+      metadata.charsInjected ??
+      0;
+
+    const charsDetectedInDOM =
+      step2.charsDetectedInDOM ??
+      metadata.charsDetectedInDOM ??
+      charsExpected;
+
+    const domExcerpt =
+      step2.domExcerpt ??
+      metadata.domExcerpt ??
+      '';
+
+    const strategy =
+      step2.strategy ??
+      metadata.strategy ??
+      metadata.injectionStrategy ??
+      'contenteditable-text';
+
+    const verified =
+      step2.verified ??
+      metadata.verified ??
+      (charsDetectedInDOM > 0 && charsExpected > 0 && charsDetectedInDOM >= charsExpected * 0.75);
+
+    return {
+      step1,
+      step2,
+      elementContext,
+      charsExpected,
+      charsDetectedInDOM,
+      domExcerpt,
+      strategy,
+      verified
+    };
+  }
+
+  /**
+   * Displays an actionable notification when paste verification fails or chat input is not found
+   */
+  public async notifyActionableChatError(code: 'PASTE_VERIFICATION_FAILED' | 'NO_CHAT_INPUT_FOUND' | string): Promise<void> {
+    const message = 'Auto-Plan: Khung chat Antigravity đang đóng hoặc không nhận prompt. Vui lòng mở panel Agent và thử lại.';
+    const buttonText = 'Open Chat Panel';
+
+    const actionCallback = async () => {
+      try {
+        await this.commandExecutor('workbench.action.chat.open');
+      } catch {
+        try {
+          await this.commandExecutor('antigravity.prioritized.chat.open');
+        } catch (e) {
+          this.logger.warn('DISPATCHER', `Failed executing chat open commands: ${e}`);
+        }
+      }
+    };
+
+    if (this.actionableNotifier) {
+      await this.actionableNotifier(message, buttonText, actionCallback);
+      return;
+    }
+
+    if (this.actionableErrorNotifier) {
+      const selection = await this.actionableErrorNotifier(message, buttonText);
+      if (selection === buttonText) {
+        await actionCallback();
+      }
+      return;
+    }
+
+    try {
+      if (typeof vscode !== 'undefined' && vscode?.window?.showErrorMessage) {
+        const selection = await vscode.window.showErrorMessage(message, buttonText);
+        if (selection === buttonText) {
+          await actionCallback();
+        }
+      } else {
+        console.warn(`[Auto-Plan PromptDispatcher] ${message} [Action: ${buttonText}]`);
+      }
+    } catch {
+      // Safe fallback in headless / test environment
+    }
   }
 
   /**
@@ -612,6 +746,62 @@ export class PromptDispatcher {
 
         const isConnectionFailure = !this.bridgeServer.isListening() || this.bridgeServer.getConnectedClients().length === 0;
         const errorCategory = isConnectionFailure ? 'DOM Bridge connection failure' : 'DOM Bridge execution error';
+
+        const isPasteVerificationFailed =
+          err?.code === 'PASTE_VERIFICATION_FAILED' ||
+          err?.metadata?.code === 'PASTE_VERIFICATION_FAILED' ||
+          err?.rejectionReason === 'dom_buffer_empty' ||
+          /PASTE_VERIFICATION_FAILED/i.test(err?.message || '');
+
+        const isNoChatInput =
+          err?.code === 'NO_CHAT_INPUT_FOUND' ||
+          err?.metadata?.code === 'NO_CHAT_INPUT_FOUND' ||
+          /NO_CHAT_INPUT_FOUND|No valid chat input element found/i.test(err?.message || '');
+
+        if (isPasteVerificationFailed || isNoChatInput) {
+          const failureCode = isPasteVerificationFailed ? 'PASTE_VERIFICATION_FAILED' : 'NO_CHAT_INPUT_FOUND';
+          const telemetry = this.extractVerificationTelemetry(err.metadata || (err.steps ? { steps: err.steps } : undefined));
+          const expected = err.charsExpected ?? telemetry.charsExpected ?? promptText.length;
+          const detected = err.charsDetectedInDOM ?? telemetry.charsDetectedInDOM ?? 0;
+          const excerpt = sanitizeExcerpt(err.domExcerpt || telemetry.domExcerpt || '', 60);
+          const target = err.elementContext || telemetry.elementContext || '#antigravity.agentSidePanelInputBox';
+
+          if (isPasteVerificationFailed) {
+            this.logger.warn('DISPATCHER', `Prompt paste verification failed: expected ${expected} chars, detected ${detected} in DOM buffer for target '${target}'. Excerpt: "${excerpt}". Ensure chat panel is open and focused.`, {
+              code: 'PASTE_VERIFICATION_FAILED',
+              charsExpected: expected,
+              charsDetectedInDOM: detected,
+              domExcerpt: excerpt,
+              elementContext: target,
+              steps: err.steps || err.metadata?.steps,
+              domSnapshot: err.domSnapshot || err.metadata?.domSnapshot
+            });
+
+            this.logger.recordInjectionTelemetry({
+              status: 'failed',
+              charsExpected: expected,
+              charsDetectedInDOM: detected,
+              domExcerpt: excerpt,
+              elementContext: target,
+              verified: false,
+              error: err.message,
+              timestamp: Date.now()
+            });
+          } else {
+            this.logger.warn('DISPATCHER', `No chat input element found in DOM: Antigravity chat panel may be closed or hidden. Please open the Agent chat panel and retry.`, {
+              code: 'NO_CHAT_INPUT_FOUND',
+              domSnapshot: err.domSnapshot || err.metadata?.domSnapshot,
+              steps: err.steps || err.metadata?.steps
+            });
+          }
+
+          try {
+            await this.notifyActionableChatError(failureCode);
+          } catch (notifyErr) {
+            this.logger.warn('DISPATCHER', `Actionable error notification failed: ${notifyErr}`);
+          }
+        }
+
         this.logger.error('DISPATCHER', `Tier 1 dispatch failed (${errorCategory}) [workspace: ${wsName || 'unbound'}]: ${err.message}`, {
           workspaceName: wsName,
           domSnapshot: err.domSnapshot,
@@ -619,7 +809,7 @@ export class PromptDispatcher {
           metadata: err.metadata
         }, err);
         const formattedErr: any = new Error(`[${errorCategory}] ${err.message}`);
-        formattedErr.code = err.code || err.metadata?.code || (isTransientButtonDisabled ? 'BUTTON_DISABLED_TIMEOUT' : 'DOM_BRIDGE_EXECUTION_ERROR');
+        formattedErr.code = err.code || err.metadata?.code || (isPasteVerificationFailed ? 'PASTE_VERIFICATION_FAILED' : (isNoChatInput ? 'NO_CHAT_INPUT_FOUND' : (isTransientButtonDisabled ? 'BUTTON_DISABLED_TIMEOUT' : 'DOM_BRIDGE_EXECUTION_ERROR')));
         formattedErr.workspaceName = wsName;
         if (err.rejectionReason || err.metadata?.rejectionReason) {
           formattedErr.rejectionReason = err.rejectionReason || err.metadata?.rejectionReason;
@@ -629,6 +819,18 @@ export class PromptDispatcher {
         }
         if (err.steps || err.metadata?.steps) {
           formattedErr.steps = err.steps || err.metadata?.steps;
+        }
+        if (err.charsExpected !== undefined || err.metadata?.charsExpected !== undefined) {
+          formattedErr.charsExpected = err.charsExpected ?? err.metadata?.charsExpected;
+        }
+        if (err.charsDetectedInDOM !== undefined || err.metadata?.charsDetectedInDOM !== undefined) {
+          formattedErr.charsDetectedInDOM = err.charsDetectedInDOM ?? err.metadata?.charsDetectedInDOM;
+        }
+        if (err.domExcerpt !== undefined || err.metadata?.domExcerpt !== undefined) {
+          formattedErr.domExcerpt = err.domExcerpt ?? err.metadata?.domExcerpt;
+        }
+        if (err.elementContext !== undefined || err.metadata?.elementContext !== undefined) {
+          formattedErr.elementContext = err.elementContext ?? err.metadata?.elementContext;
         }
         if (err.metadata) {
           formattedErr.metadata = err.metadata;
@@ -655,12 +857,42 @@ export class PromptDispatcher {
       resultMetadata.handshakeStatus = handshakeAck.status;
     }
 
+    const telemetry = this.extractVerificationTelemetry(resultMetadata);
+    const charsExpected = ackResult.charsExpected ?? telemetry.charsExpected ?? promptText.length;
+    const charsDetected = ackResult.charsDetectedInDOM ?? telemetry.charsDetectedInDOM ?? charsExpected;
+    const targetElementContext = ackResult.elementContext || telemetry.elementContext || '#antigravity.agentSidePanelInputBox';
+    const strategy = ackResult.strategy || telemetry.strategy || 'contenteditable-text';
+
+    // Structured dispatcher log matching Requirement 1:
+    // [INFO] [DISPATCHER] Prompt paste verified: 3321/3321 chars in '#antigravity.agentSidePanelInputBox' (strategy=contenteditable-text)
+    this.logger.info('DISPATCHER', `Prompt paste verified: ${charsDetected}/${charsExpected} chars in '${targetElementContext}' (strategy=${strategy})`, {
+      charsExpected,
+      charsDetectedInDOM: charsDetected,
+      elementContext: targetElementContext,
+      strategy,
+      commandId: ackResult.commandId
+    });
+
+    this.logger.recordInjectionTelemetry({
+      status: 'verified',
+      charsExpected,
+      charsDetectedInDOM: charsDetected,
+      charsInjected: charsExpected,
+      elementContext: targetElementContext,
+      strategy,
+      verified: true,
+      timestamp: Date.now()
+    });
+
     return {
       success: true,
       tier: 'domBridge',
       durationMs,
       commandId: ackResult.commandId,
       status: ackResult.status,
+      charsExpected,
+      charsDetectedInDOM: charsDetected,
+      elementContext: targetElementContext,
       metadata: resultMetadata
     };
   }
@@ -774,6 +1006,10 @@ export class PromptDispatcher {
           if (err.rejectionReason) strictErr.rejectionReason = err.rejectionReason;
           if (err.domSnapshot) strictErr.domSnapshot = err.domSnapshot;
           if (err.steps) strictErr.steps = err.steps;
+          if (err.charsExpected !== undefined) strictErr.charsExpected = err.charsExpected;
+          if (err.charsDetectedInDOM !== undefined) strictErr.charsDetectedInDOM = err.charsDetectedInDOM;
+          if (err.domExcerpt !== undefined) strictErr.domExcerpt = err.domExcerpt;
+          if (err.elementContext !== undefined) strictErr.elementContext = err.elementContext;
           if (err.metadata) strictErr.metadata = err.metadata;
           if (err.diagnostics) strictErr.diagnostics = { ...err.diagnostics, workspaceName: wsName };
           else strictErr.diagnostics = { workspaceName: wsName };

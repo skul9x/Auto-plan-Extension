@@ -2,13 +2,20 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { getConfig, setPromptText, writeConfigJson, secretStorageManager } from './config';
+import { getConfig, getTelegramConfig, setPromptText, writeConfigJson, secretStorageManager, getAutoSubmitConfig, AutoSubmitConfig } from './config';
 import { orchestrator, OrchestratorProgressInfo } from './orchestrator';
 import { scanPlanFolder, scanPlanFolderAsync, sortPhaseFiles, getPhasesFrom, normalizePath, PhaseFile, auditPlanPhases, auditPlanPhasesAsync } from './planScanner';
 import { getDefaultBrainDir, getTranscriptPath, findLatestConversation, transcriptWatcher } from './transcriptWatcher';
 import { BridgeServer, bridgeServer as defaultBridgeServer, BRIDGE_PROTOCOL_VERSION } from './bridgeServer';
 import { TelegramBridge, telegramBridge } from './telegramBridge';
 import { TelegramChatMirror } from './telegramChatMirror';
+import {
+  createIdeAutoSubmit,
+  IdeAutoSubmitStateInfo,
+  getActiveWorkspaceUris,
+  generateAutoSubmitDiagnosticReport,
+  BUILTIN_EXTENSION_ID
+} from './antigravityRpcAutoSubmit';
 
 const activeWorkspaceFolder = vscode.workspace?.workspaceFolders?.[0];
 const workspaceName = activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined;
@@ -39,6 +46,8 @@ import { debugLogger } from './debugLogger';
 
 let mainStatusBarItem: vscode.StatusBarItem;
 let bridgeStatusBarItem: vscode.StatusBarItem;
+export let autoSubmitStatusBarItem: vscode.StatusBarItem | undefined;
+export let autoSubmitService: ReturnType<typeof createIdeAutoSubmit> | null = null;
 export let sidebarProvider: SidebarProvider | undefined;
 let currentPlanFolder: string | undefined;
 let runStartTime: number = 0;
@@ -1337,6 +1346,150 @@ export function showOutputChannel(): void {
 }
 
 /**
+ * Updates the Auto-Submit status bar item with current engine status.
+ */
+export function updateAutoSubmitStatusBar(stateInfo?: IdeAutoSubmitStateInfo): void {
+  if (!autoSubmitStatusBarItem) return;
+  const cfg = getAutoSubmitConfig();
+  const info = stateInfo || autoSubmitService?.status();
+  const phase = info?.phase || (cfg.enabled ? 'waiting' : 'disabled');
+
+  if (!cfg.enabled) {
+    autoSubmitStatusBarItem.text = '$(circle-slash) Auto-Submit: Off';
+    autoSubmitStatusBarItem.tooltip = 'Auto-Plan Auto-Submit: Disabled in settings\nClick to run Diagnostics';
+  } else {
+    switch (phase) {
+      case 'ready':
+        autoSubmitStatusBarItem.text = '$(zap) Auto-Submit: Ready';
+        autoSubmitStatusBarItem.tooltip = `Auto-Plan Auto-Submit: Connected (Approved: ${info?.approved || 0})\nClick to run Diagnostics`;
+        break;
+      case 'waiting':
+        autoSubmitStatusBarItem.text = '$(sync~spin) Auto-Submit: Waiting';
+        autoSubmitStatusBarItem.tooltip = 'Auto-Plan Auto-Submit: Waiting for built-in Antigravity extension\nClick to run Diagnostics';
+        break;
+      case 'unsupported':
+        autoSubmitStatusBarItem.text = '$(warning) Auto-Submit: Unsupported';
+        autoSubmitStatusBarItem.tooltip = 'Auto-Plan Auto-Submit: RPC client unavailable\nClick to run Diagnostics';
+        break;
+      case 'dormant':
+        autoSubmitStatusBarItem.text = '$(history) Auto-Submit: Quota Full';
+        autoSubmitStatusBarItem.tooltip = `Auto-Plan Auto-Submit: Max quota reached (${info?.approved || 0})\nClick to run Diagnostics`;
+        break;
+      case 'retrying':
+        autoSubmitStatusBarItem.text = '$(sync~spin) Auto-Submit: Retrying';
+        autoSubmitStatusBarItem.tooltip = `Auto-Plan Auto-Submit: Retrying connection (Error: ${info?.lastError || 'unknown'})\nClick to run Diagnostics`;
+        break;
+      default:
+        autoSubmitStatusBarItem.text = `$(gear) Auto-Submit: ${phase}`;
+        autoSubmitStatusBarItem.tooltip = `Auto-Plan Auto-Submit: ${phase}\nClick to run Diagnostics`;
+        break;
+    }
+  }
+  autoSubmitStatusBarItem.command = 'autoplan.diagnoseAutoSubmit';
+  autoSubmitStatusBarItem.show();
+}
+
+/**
+ * Diagnostic command handler: queries active engine status and prints structured report.
+ */
+export function diagnoseAutoSubmit(): string {
+  const cfg = getAutoSubmitConfig();
+  const status = autoSubmitService
+    ? autoSubmitService.status()
+    : {
+        phase: (cfg.enabled ? 'waiting' : 'disabled') as any,
+        available: false,
+        approved: 0,
+        summaryCount: 0,
+        waitingStepsCount: 0,
+        eligiblePermissions: 0,
+        consecutiveFailures: 0,
+        currentDelayMs: cfg.intervalMs,
+        quarantineSize: 0
+      };
+
+  const builtinExt = vscode.extensions?.getExtension(BUILTIN_EXTENSION_ID);
+  const report = generateAutoSubmitDiagnosticReport(status, {
+    activeWorkspaceUris: getActiveWorkspaceUris(),
+    builtinExtensionStatus: {
+      installed: !!builtinExt,
+      active: !!builtinExt?.isActive,
+      version: builtinExt?.packageJSON?.version
+    },
+    config: cfg
+  });
+
+  const channel = debugLogger.getOrCreateOutputChannel();
+  if (channel && typeof channel.appendLine === 'function') {
+    channel.appendLine(report);
+  }
+  debugLogger.showOutputChannel(true);
+  return report;
+}
+
+/**
+ * Handles live hot-reloading for autoplan.autoSubmit settings with zero file I/O.
+ */
+export function handleAutoSubmitConfigChange(): void {
+  const cfg = getAutoSubmitConfig();
+  if (!autoSubmitService) {
+    return;
+  }
+  if (!cfg.enabled) {
+    autoSubmitService.stop();
+  } else {
+    autoSubmitService.triggerTick().catch(() => {});
+  }
+  updateAutoSubmitStatusBar();
+  try {
+    if (SettingsProvider.currentPanel) {
+      SettingsProvider.currentPanel.sendAutoSubmitStatus();
+    }
+  } catch {}
+}
+
+/**
+ * Forwards auto-approved permission events to Telegram if notifyTelegram is enabled.
+ */
+export async function notifyTelegramOnApproval(event: {
+  pattern: string;
+  button?: string;
+  candidate?: any;
+}): Promise<boolean> {
+  const cfg = getAutoSubmitConfig();
+  if (!cfg.notifyTelegram) {
+    return false;
+  }
+  const tgCfg = getTelegramConfig();
+  if (!tgCfg.enabled) {
+    return false;
+  }
+  try {
+    const notifier = telegramBridge.getNotifier();
+    if (notifier && typeof (notifier as any).sendApprovalNotification === 'function') {
+      return await (notifier as any).sendApprovalNotification(event.candidate);
+    } else if (notifier && typeof (notifier as any).queueApprovalNotification === 'function') {
+      return (notifier as any).queueApprovalNotification(event.candidate);
+    } else if (notifier && typeof (notifier as any).sendInfo === 'function') {
+      const action = event.candidate?.resource?.action || 'Granted';
+      const target = event.candidate?.resource?.target || event.candidate?.pattern || 'Permission';
+      const msg = `⚡ [Auto-Submit] Approved ${action} for: ${target}`;
+      await (notifier as any).sendInfo(msg);
+      return true;
+    } else if (notifier && typeof (notifier as any).broadcastMessage === 'function') {
+      const action = event.candidate?.resource?.action || 'Granted';
+      const target = event.candidate?.resource?.target || event.candidate?.pattern || 'Permission';
+      const msg = `⚡ [Auto-Submit] Approved ${action} for: ${target}`;
+      await (notifier as any).broadcastMessage(msg);
+      return true;
+    }
+  } catch (err: any) {
+    debugLogger.warn('AUTOSUBMIT', `Failed to send Telegram notification: ${err?.message || err}`);
+  }
+  return false;
+}
+
+/**
  * Actionable failure notification offering 1-click diagnostic log copy, settings, and retry.
  */
 export async function showFailureNotificationWithDiagnostics(
@@ -1401,6 +1554,70 @@ export function activate(context: vscode.ExtensionContext) {
   } catch {
     bridgeStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
   }
+
+  // Create Auto-Submit Status Bar Item (Priority 98)
+  try {
+    autoSubmitStatusBarItem = (vscode.window.createStatusBarItem as any)(
+      'autoplan.autoSubmitStatusBar',
+      vscode.StatusBarAlignment.Right,
+      98
+    );
+  } catch {
+    autoSubmitStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
+  }
+
+  // Prevent duplicate service instances from running simultaneously during Extension Host restarts
+  if (autoSubmitService) {
+    try {
+      autoSubmitService.dispose();
+    } catch {}
+    autoSubmitService = null;
+  }
+
+  // Instantiate and manage RPC Native Auto-Submit Engine
+  const initialAutoSubmitCfg = getAutoSubmitConfig();
+  autoSubmitService = createIdeAutoSubmit({
+    getPolicy: () => {
+      const cfg = getAutoSubmitConfig();
+      return {
+        enabled: cfg.enabled,
+        intervalMs: cfg.intervalMs,
+        maxQuota: cfg.maxQuota,
+        patterns: ['Submit'],
+        workspaceUris: getActiveWorkspaceUris()
+      };
+    },
+    onClick: async (event) => {
+      debugLogger.info('AUTOSUBMIT', `Auto-approved permission: ${event.pattern}`);
+      await notifyTelegramOnApproval(event);
+      try {
+        if (SettingsProvider.currentPanel) {
+          SettingsProvider.currentPanel.sendAutoSubmitStatus();
+        }
+      } catch {}
+    },
+    onState: (stateInfo) => {
+      updateAutoSubmitStatusBar(stateInfo);
+      try {
+        if (SettingsProvider.currentPanel) {
+          SettingsProvider.currentPanel.sendAutoSubmitStatus();
+        }
+      } catch {}
+    }
+  });
+
+  if (initialAutoSubmitCfg.enabled) {
+    autoSubmitService.start();
+  }
+  if (typeof (telegramBridge as any).attachAutoSubmitEngine === 'function') {
+    (telegramBridge as any).attachAutoSubmitEngine(autoSubmitService);
+  }
+  updateAutoSubmitStatusBar();
+  try {
+    if (SettingsProvider.currentPanel) {
+      SettingsProvider.currentPanel.sendAutoSubmitStatus();
+    }
+  } catch {}
 
   // Instantiate and register Sidebar WebviewViewProvider
   sidebarProvider = new SidebarProvider(context.extensionUri, context);
@@ -1515,6 +1732,9 @@ export function activate(context: vscode.ExtensionContext) {
         workspaceName: updatedName,
         isMultiWorkspace: () => (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders.length > 1 : false)
       });
+      if (autoSubmitService) {
+        autoSubmitService.invalidate(true);
+      }
     })
   );
 
@@ -1678,9 +1898,17 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.showInformationMessage('Telegram Bot Token removed from Keychain.');
   });
 
+  const diagnoseAutoSubmitCmd = vscode.commands.registerCommand('autoplan.diagnoseAutoSubmit', () => {
+    return diagnoseAutoSubmit();
+  });
+
   // Watch for configuration changes with 300ms debounce (LOGIC-007)
   const configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration('autoplan')) {
+    const isAutoSubmitChange = e.affectsConfiguration('autoplan.autoSubmit');
+    if (isAutoSubmitChange) {
+      handleAutoSubmitConfigChange();
+    }
+    if (e.affectsConfiguration('autoplan') && !isAutoSubmitChange) {
       triggerDebouncedConfigUpdate(context);
     }
     if (
@@ -1713,9 +1941,19 @@ export function activate(context: vscode.ExtensionContext) {
     }
   };
 
+  const autoSubmitSubscription = {
+    dispose: () => {
+      if (autoSubmitService) {
+        autoSubmitService.dispose();
+        autoSubmitService = null;
+      }
+    }
+  };
+
   context.subscriptions.push(
     mainStatusBarItem,
     bridgeStatusBarItem,
+    ...(autoSubmitStatusBarItem ? [autoSubmitStatusBarItem] : []),
     sidebarRegistration,
     transcriptWatcher,
     orchestrator,
@@ -1738,9 +1976,11 @@ export function activate(context: vscode.ExtensionContext) {
     showOutputChannelCmd,
     setTelegramTokenCmd,
     clearTelegramTokenCmd,
+    diagnoseAutoSubmitCmd,
     configWatcher,
     telegramSubscription,
-    bridgeServerSubscription
+    bridgeServerSubscription,
+    autoSubmitSubscription
   );
 
   // Initialize status bar and sidecar config states safely
@@ -1787,6 +2027,18 @@ export async function deactivate() {
   orchestrator.dispose();
   transcriptWatcher.dispose();
   debugLogger.dispose();
+  if (autoSubmitService) {
+    try {
+      autoSubmitService.dispose();
+    } catch {}
+    autoSubmitService = null;
+  }
+  if (autoSubmitStatusBarItem) {
+    try {
+      autoSubmitStatusBarItem.dispose();
+    } catch {}
+    autoSubmitStatusBarItem = undefined;
+  }
   try {
     await telegramBridge.stop();
   } catch {}

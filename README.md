@@ -1,7 +1,7 @@
 # Antigravity Auto-Plan Extension
 
 <p align="center">
-  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/version-1.6.7-blue.svg?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/version-1.7.1-blue.svg?style=flat-square" alt="Version"></a>
   <a href="https://code.visualstudio.com/"><img src="https://img.shields.io/badge/VS_Code-^1.80.0-informational.svg?style=flat-square" alt="VS Code Compatibility"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.3.3-3178C6.svg?style=flat-square" alt="TypeScript"></a>
   <a href="https://grammy.dev/"><img src="https://img.shields.io/badge/Telegram-grammY_1.21.0-26A5E4.svg?style=flat-square" alt="grammY Framework"></a>
@@ -14,6 +14,8 @@
 ## 📌 Table of Contents
 - [Overview](#overview)
 - [Key Features](#key-features)
+  - [🛡️ Hardened DOM Bridge & Two-Phase Verification (v1.7.1)](#️-hardened-dom-bridge--two-phase-verification-v171)
+  - [⚡ Native RPC Auto-Submit & Permission Approval (v1.7.0)](#-native-rpc-auto-submit--permission-approval-v170)
   - [🤖 Telegram Chat Gating & Modern Tabbed Settings (v1.6.7)](#-telegram-chat-gating--modern-tabbed-settings-v167)
   - [⚡ High-Performance Remediation & Resource Optimization (v1.6.6)](#-high-performance-remediation--resource-optimization)
   - [⏱️ Long-Running Phase Nudge Watchdog & Mid-Flight Steering](#️-long-running-phase-nudge-watchdog--mid-flight-steering)
@@ -57,6 +59,20 @@ Equipped with an in-process DOM injection engine, a 3-tier resilient transport f
 ---
 
 ## Key Features
+
+### 🛡️ Hardened DOM Bridge & Two-Phase Verification (v1.7.1)
+- **Container-Scoped Chat Input Discovery**: Strictly isolates the Antigravity Agent chat panel (`#antigravity.agentSidePanelInputBox`, `div[data-lexical-editor="true"]`, `div[aria-label="Message input"]`), eliminating dangerous global `[role="textbox"]` fallbacks.
+- **Monaco Code Editor Exclusion Guard**: Actively detects and excludes code editor elements (`.monaco-workbench .part.editor`, `.native-edit-context`, `overflow-guard`), ensuring open code tabs are never mistakenly targeted when the chat panel is unrendered.
+- **Two-Phase Buffer Verification (Post-Paste Check)**: Verifies that prompt text physically materialized in the DOM buffer before dispatching any submit actions. Halts with `PASTE_VERIFICATION_FAILED` if buffer is empty or below threshold.
+- **Proof-1 State Transition Hardening**: Eliminates false-positive instant clearances (`input_cleared_immediately` in 0ms) on initially empty elements by enforcing a verified pre-submit populated state requirement.
+- **Enhanced Semantic Telemetry & Diagnostics**: End-to-end telemetry propagation detailing `charsExpected`, `charsDetectedInDOM`, `domExcerpt`, and target element context across both Renderer logs and Extension Host diagnostic reports.
+
+### ⚡ Native RPC Auto-Submit & Permission Approval (v1.7.0)
+- **Internal RPC Interface Integration**: Directly connects to `google.google-antigravity` extension RPC services (`getAllCascadeTrajectories`, `handleCascadeUserInteraction`) to auto-approve tool execution and file modification requests without DOM click synthesis or `<iframe>` boundary friction.
+- **Strict Multi-Workspace Boundary Validation**: Confirms trajectory targets belong strictly to the active workspace folders before approval, defending against cross-project permission leakage.
+- **Cryptographic SHA-256 Deduplication & Quota Guard**: Prevents redundant execution loops with canonical JSON hashing and LRU Quarantine Caching. Automatically pauses when configurable per-session quota limits are reached.
+- **Settings Dashboard & Live Telemetry Synchronization**: Control card inside Timing & Automation tab featuring real-time connection badges (`🟢 Connected (Ready)`, `🟡 Waiting for Agent`, `⚪ Disabled`, `🔴 Unsupported`), poll interval slider, session quota input, approved counter, and 300ms auto-save.
+- **Real-Time Telegram Event Mirroring**: Stream plain-text approval notifications with tool call summaries and secret-redacted command arguments while respecting Telegram rate limits.
 
 ### 🤖 Telegram Chat Gating & Modern Tabbed Settings (v1.6.7)
 - **Free-Text Silent Drop Gating (`autoplan.telegram.allowFreeChat`)**: Independent control toggle enabling arbitrary text messages from Telegram to be silently ignored without prompt dispatching or error replies into Antigravity IDE. All workflow commands (`/code`, `/recap`, `/init`, etc.) and management commands (`/plans`, `/plan_status`, `/screen`, `/new_chat`) remain active.
@@ -330,10 +346,10 @@ sudo dnf install xdotool gnome-screenshot
 ### VSIX Installation
 ```bash
 # Install to Antigravity IDE
-antigravity --install-extension antigravity-auto-plan-1.6.7.vsix
+antigravity --install-extension antigravity-auto-plan-1.7.1.vsix
 
 # Install to Visual Studio Code
-code --install-extension antigravity-auto-plan-1.6.7.vsix
+code --install-extension antigravity-auto-plan-1.7.1.vsix
 ```
 
 ---
@@ -378,6 +394,10 @@ All settings are available under the `autoplan.*` namespace in VS Code Settings 
 | `autoplan.longPhaseNudgeMessage` | `string` | *(Prompt)* | Exact prompt message dispatched to the IDE during long phase nudge. |
 | `autoplan.longPhaseNudgeRecurring` | `boolean` | `false` | Whether to trigger nudge only once per phase (`false`) or periodically (`true`). |
 | `autoplan.longPhaseNotifyTelegram` | `boolean` | `true` | Whether to alert the user on Telegram when a nudge is triggered. |
+| `autoplan.autoSubmit.enabled` | `boolean` | `false` | Master switch for automatic permission submission via Antigravity native RPC. |
+| `autoplan.autoSubmit.intervalMs` | `number` | `1000` | Polling interval in milliseconds for candidate permission scanning (200ms – 60,000ms). |
+| `autoplan.autoSubmit.maxQuota` | `number` | `0` | Maximum approvals allowed per session (`0` = unlimited). |
+| `autoplan.autoSubmit.notifyTelegram` | `boolean` | `true` | Whether to forward approval events to Telegram. |
 
 ### Dynamic Prompt Template Variables
 The template engine supports the following dynamic placeholder replacements:
@@ -414,6 +434,7 @@ The extension registers the following commands in the Command Palette (`Ctrl+Shi
 | `autoplan.showOutputChannel` | `Auto-Plan: Show DOM Bridge Output Channel` | Reveal dedicated extension Output Channel. |
 | `autoplan.setTelegramToken` | `Auto-Plan: Set Telegram Bot Token` | Securely store Telegram bot token in VS Code SecretStorage. |
 | `autoplan.clearTelegramToken` | `Auto-Plan: Clear Telegram Bot Token` | Remove Telegram bot token from SecretStorage. |
+| `autoplan.diagnoseAutoSubmit` | `Auto-Plan: Diagnose Auto-Submit Status` | Query RPC connectivity, trajectory state, quotas, and telemetry report. |
 
 ### Telegram Bot Commands Reference
 When the Telegram Bridge is enabled, authorized users can interact with the IDE via:

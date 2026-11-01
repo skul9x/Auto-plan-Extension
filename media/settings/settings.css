@@ -1317,3 +1317,38 @@ input:checked + .toggle-slider:before {
   flex: 1;
 }
 
+/* ==========================================================================
+   RPC Native Auto-Submit & Approval Styling (v1.7.0)
+   ========================================================================== */
+.status-badge.badge-disabled {
+  background: rgba(120, 120, 120, 0.15);
+  color: #aaaaaa;
+  border-color: rgba(120, 120, 120, 0.3);
+}
+
+.telemetry-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  border: 1px solid var(--card-border);
+}
+
+.telemetry-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.badge-pill {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--success-color, #4ec9b0);
+  background: var(--success-bg, rgba(78, 201, 176, 0.15));
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+

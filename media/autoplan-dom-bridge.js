@@ -339,15 +339,32 @@
       };
     }
 
-    let activeElement = { tagName: '', className: '', id: '', isContentEditable: false };
+    let activeElement = { tagName: '', className: '', id: '', isContentEditable: false, isInChatPanel: false, ariaLabel: '', boundingBox: { width: 0, height: 0, top: 0, left: 0 }, isCodeEditor: false };
     try {
       const activeEl = root.activeElement || (typeof document !== 'undefined' ? document.activeElement : null);
       if (activeEl) {
+        let bBox = { width: 0, height: 0, top: 0, left: 0 };
+        try {
+          if (typeof activeEl.getBoundingClientRect === 'function') {
+            const r = activeEl.getBoundingClientRect();
+            bBox = {
+              width: typeof r.width === 'number' ? r.width : 0,
+              height: typeof r.height === 'number' ? r.height : 0,
+              top: typeof r.top === 'number' ? r.top : 0,
+              left: typeof r.left === 'number' ? r.left : 0
+            };
+          }
+        } catch (_) {}
+
         activeElement = {
           tagName: activeEl.tagName || '',
           className: activeEl.className || '',
           id: activeEl.id || '',
-          isContentEditable: Boolean(activeEl.getAttribute?.('contenteditable') === 'true' || activeEl.contentEditable === 'true' || activeEl.contentEditable === true)
+          isContentEditable: Boolean(activeEl.getAttribute?.('contenteditable') === 'true' || activeEl.contentEditable === 'true' || activeEl.contentEditable === true),
+          isInChatPanel: isInsideChatContainer(activeEl),
+          ariaLabel: activeEl.getAttribute?.('aria-label') || activeEl.getAttribute?.('aria-roledescription') || '',
+          boundingBox: bBox,
+          isCodeEditor: isCodeEditorElement(activeEl)
         };
       }
     } catch (actErr) {
@@ -360,37 +377,51 @@
       const taList = queryDeep('textarea', root);
       for (let i = 0; i < taList.length; i++) {
         const ta = taList[i];
-        let rect = { width: 0, height: 0 };
+        let rect = { width: 0, height: 0, top: 0, left: 0 };
         try {
           if (typeof ta.getBoundingClientRect === 'function') {
             const r = ta.getBoundingClientRect();
-            rect = { width: r.width || 0, height: r.height || 0 };
+            rect = {
+              width: typeof r.width === 'number' ? r.width : 0,
+              height: typeof r.height === 'number' ? r.height : 0,
+              top: typeof r.top === 'number' ? r.top : 0,
+              left: typeof r.left === 'number' ? r.left : 0
+            };
           }
         } catch (_) {}
 
         textareas.push({
           className: ta.className || '',
           placeholder: ta.getAttribute?.('placeholder') || ta.placeholder || '',
+          ariaLabel: ta.getAttribute?.('aria-label') || ta.getAttribute?.('aria-roledescription') || '',
           visible: isElementVisible(ta),
           disabled: Boolean(ta.disabled),
-          rect
+          isInChatPanel: isInsideChatContainer(ta),
+          boundingBox: { ...rect },
+          rect,
+          isCodeEditor: isCodeEditorElement(ta)
         });
       }
     } catch (taErr) {
       logBridge('WARN', `Failed inspecting textareas: ${taErr?.message || taErr}`, {}, taErr);
     }
 
-    // ContentEditables
+    // ContentEditables & Editor Contexts
     const contentEditables = [];
     try {
-      const ceList = queryDeep('[contenteditable="true"], div.monaco-editor, div.ProseMirror, div[data-lexical-editor="true"]', root);
+      const ceList = queryDeep('[contenteditable="true"], div.monaco-editor, div.ProseMirror, div[data-lexical-editor="true"], .native-edit-context', root);
       for (let i = 0; i < ceList.length; i++) {
         const ce = ceList[i];
-        let rect = { width: 0, height: 0 };
+        let rect = { width: 0, height: 0, top: 0, left: 0 };
         try {
           if (typeof ce.getBoundingClientRect === 'function') {
             const r = ce.getBoundingClientRect();
-            rect = { width: r.width || 0, height: r.height || 0 };
+            rect = {
+              width: typeof r.width === 'number' ? r.width : 0,
+              height: typeof r.height === 'number' ? r.height : 0,
+              top: typeof r.top === 'number' ? r.top : 0,
+              left: typeof r.left === 'number' ? r.left : 0
+            };
           }
         } catch (_) {}
 
@@ -398,12 +429,54 @@
           tagName: ce.tagName || '',
           className: ce.className || '',
           role: ce.getAttribute?.('role') || ce.role || '',
-          rect
+          ariaLabel: ce.getAttribute?.('aria-label') || ce.getAttribute?.('aria-roledescription') || '',
+          placeholder: ce.getAttribute?.('placeholder') || ce.getAttribute?.('data-placeholder') || '',
+          visible: isElementVisible(ce),
+          isInChatPanel: isInsideChatContainer(ce),
+          boundingBox: { ...rect },
+          rect,
+          isCodeEditor: isCodeEditorElement(ce)
         });
       }
     } catch (ceErr) {
       logBridge('WARN', `Failed inspecting contentEditables: ${ceErr?.message || ceErr}`, {}, ceErr);
     }
+
+    // Nearby input elements summary and visibility aggregation
+    const nearbyInputs = [];
+    try {
+      for (let i = 0; i < textareas.length; i++) {
+        const ta = textareas[i];
+        nearbyInputs.push({
+          type: 'textarea',
+          selector: ta.className ? `textarea.${ta.className.trim().split(/\s+/).slice(0, 2).join('.')}` : 'textarea',
+          visible: Boolean(ta.visible),
+          isInChatPanel: Boolean(ta.isInChatPanel),
+          isCodeEditor: Boolean(ta.isCodeEditor),
+          ariaLabel: ta.ariaLabel || undefined
+        });
+      }
+      for (let i = 0; i < contentEditables.length; i++) {
+        const ce = contentEditables[i];
+        const tag = (ce.tagName || 'div').toLowerCase();
+        nearbyInputs.push({
+          type: tag,
+          selector: ce.className ? `${tag}.${ce.className.trim().split(/\s+/).slice(0, 2).join('.')}` : tag,
+          visible: Boolean(ce.visible),
+          isInChatPanel: Boolean(ce.isInChatPanel),
+          isCodeEditor: Boolean(ce.isCodeEditor),
+          ariaLabel: ce.ariaLabel || undefined
+        });
+      }
+    } catch (_) {}
+
+    const nearbyInputsSummary = {
+      totalFound: nearbyInputs.length,
+      visibleCount: nearbyInputs.filter(inp => inp.visible).length,
+      inChatPanelCount: nearbyInputs.filter(inp => inp.isInChatPanel).length,
+      codeEditorCount: nearbyInputs.filter(inp => inp.isCodeEditor).length,
+      elements: nearbyInputs.slice(0, 10)
+    };
 
     // Count shadow roots
     let shadowRootsCount = 0;
@@ -452,8 +525,170 @@
       contentEditables,
       shadowRootsCount,
       iframes,
-      evaluatedSelectors
+      evaluatedSelectors,
+      nearbyInputs,
+      nearbyInputsSummary
     };
+  }
+
+  /**
+   * Helper to check whether an element has a given class name.
+   */
+  function hasClass(elem, clsName) {
+    if (!elem) return false;
+    if (elem.classList && typeof elem.classList.contains === 'function') {
+      return elem.classList.contains(clsName);
+    }
+    const cls = typeof elem.className === 'string' ? elem.className : (elem.getAttribute ? elem.getAttribute('class') || '' : '');
+    return new RegExp(`(^|\\s)${clsName}(\\s|$)`).test(cls);
+  }
+
+  /**
+   * Checks whether an element has explicit chat identifiers (e.g. Message input, lexical editor, chat testids).
+   */
+  function hasChatIdentifiers(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.hasAttribute && (el.hasAttribute('data-lexical-editor') || el.getAttribute('data-lexical-editor') === 'true')) {
+      return true;
+    }
+    const aria = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('aria-roledescription'))) || '';
+    if (/message\s*input|chat|composer|prompt/i.test(aria)) {
+      return true;
+    }
+    const testid = (el.getAttribute && el.getAttribute('data-testid')) || '';
+    if (/chat|composer|prompt/i.test(testid)) {
+      return true;
+    }
+    const placeholder = (el.placeholder || (el.getAttribute && (el.getAttribute('placeholder') || el.getAttribute('data-placeholder')))) || '';
+    if (/ask|chat|message|prompt/i.test(placeholder)) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Helper to determine if an element is inside an Antigravity Agent chat panel or widget.
+   */
+  function isInsideChatContainer(el) {
+    if (!el || el.nodeType !== 1) return false;
+
+    if (hasChatIdentifiers(el)) {
+      return true;
+    }
+
+    try {
+      if (typeof el.closest === 'function') {
+        const match = el.closest('#antigravity\\.agentSidePanelInputBox, [id*="agentSidePanelInputBox"], .chat-widget, .interactive-session, .interactive-input, .chat-input-container, .chat-input-part, div.chat-input, .composer-container, .composer-bar, .chat-editor-widget, [data-testid*="chat"], [data-testid*="composer"]');
+        if (match) return true;
+      }
+    } catch (_) {}
+
+    let curr = el;
+    while (curr && curr.nodeType === 1) {
+      const id = curr.id || (typeof curr.getAttribute === 'function' ? curr.getAttribute('id') : '');
+      if (id && id.includes('agentSidePanelInputBox')) return true;
+      const cls = typeof curr.className === 'string' ? curr.className : (curr.getAttribute ? curr.getAttribute('class') || '' : '');
+      if (/\b(chat-widget|interactive-session|interactive-input|chat-input|chat-input-container|chat-input-part|composer-container|composer-bar|chat-editor-widget)\b/.test(cls)) {
+        return true;
+      }
+      if (hasChatIdentifiers(curr)) {
+        return true;
+      }
+      curr = curr.parentElement || (curr.parentNode && curr.parentNode.nodeType === 1 ? curr.parentNode : null);
+    }
+    return false;
+  }
+
+  /**
+   * Active Exclusion Guard: Rejects any element rooted inside the main Monaco Code Editor workbench (.monaco-workbench .part.editor),
+   * un-scoped native-edit-context or overflow-guard elements, or editor role elements without chat identifiers.
+   */
+  function isCodeEditorElement(el) {
+    if (!el || el.nodeType !== 1) return false;
+
+    const inChat = isInsideChatContainer(el);
+
+    // 1. Returns true if element has or is descendant of .monaco-editor inside .part.editor (main editor tab container)
+    try {
+      let inEditorPart = false;
+      if (typeof el.closest === 'function') {
+        inEditorPart = Boolean(el.closest('.part.editor, [id*="workbench.parts.editor"], .editor-group-container, .monaco-workbench .part.editor'));
+      }
+      if (!inEditorPart) {
+        let p = el;
+        while (p && p.nodeType === 1) {
+          const id = p.id || (typeof p.getAttribute === 'function' ? p.getAttribute('id') : '');
+          if (id && id.includes('workbench.parts.editor')) {
+            inEditorPart = true;
+            break;
+          }
+          const cls = typeof p.className === 'string' ? p.className : (p.getAttribute ? p.getAttribute('class') || '' : '');
+          if (/\bpart\s+editor\b/.test(cls) || (cls.includes('part') && cls.includes('editor')) || cls.includes('editor-group-container')) {
+            inEditorPart = true;
+            break;
+          }
+          p = p.parentElement || (p.parentNode && p.parentNode.nodeType === 1 ? p.parentNode : null);
+        }
+      }
+
+      if (inEditorPart && !inChat) {
+        const isMonaco = (el.classList && el.classList.contains('monaco-editor')) ||
+          (typeof el.closest === 'function' && el.closest('.monaco-editor')) ||
+          (typeof el.querySelector === 'function' && el.querySelector('.monaco-editor'));
+        if (isMonaco || hasClass(el, 'native-edit-context') || hasClass(el, 'overflow-guard') || el.tagName === 'TEXTAREA') {
+          return true;
+        }
+        return true;
+      }
+    } catch (_) {}
+
+    // 2. Returns true if class name matches native-edit-context or overflow-guard outside chat containers
+    try {
+      if (!inChat) {
+        if (hasClass(el, 'native-edit-context') || hasClass(el, 'overflow-guard')) {
+          return true;
+        }
+        if (typeof el.closest === 'function') {
+          if (el.closest('.native-edit-context, .overflow-guard')) {
+            return true;
+          }
+        } else {
+          let curr = el.parentElement;
+          while (curr && curr.nodeType === 1) {
+            if (hasClass(curr, 'native-edit-context') || hasClass(curr, 'overflow-guard')) {
+              return true;
+            }
+            curr = curr.parentElement;
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 3. Returns true if element has attribute aria-roledescription="editor" without chat identifiers
+    try {
+      const getRoleDesc = (elem) => (elem && typeof elem.getAttribute === 'function') ? elem.getAttribute('aria-roledescription') : null;
+      if (getRoleDesc(el) === 'editor') {
+        if (!inChat && !hasChatIdentifiers(el)) {
+          return true;
+        }
+      }
+      if (typeof el.closest === 'function') {
+        const editorDesc = el.closest('[aria-roledescription="editor"]');
+        if (editorDesc && !inChat && !hasChatIdentifiers(editorDesc)) {
+          return true;
+        }
+      } else {
+        let curr = el.parentElement;
+        while (curr && curr.nodeType === 1) {
+          if (getRoleDesc(curr) === 'editor' && !inChat && !hasChatIdentifiers(curr)) {
+            return true;
+          }
+          curr = curr.parentElement;
+        }
+      }
+    } catch (_) {}
+
+    return false;
   }
 
   /**
@@ -465,20 +700,24 @@
     if (!root) return null;
 
     const selectors = [
-      'div[data-lexical-editor="true"]',
-      'div[aria-label="Message input"]',
       '#antigravity\\.agentSidePanelInputBox [contenteditable="true"]',
+      '#antigravity\\.agentSidePanelInputBox [data-lexical-editor="true"]',
+      '#antigravity\\.agentSidePanelInputBox textarea',
+      'div[data-lexical-editor="true"][aria-label="Message input"]',
+      'div[data-lexical-editor="true"]',
+      'div[aria-label="Message input"][contenteditable="true"]',
+      'textarea[aria-label="Message input"]',
+      '.chat-widget [contenteditable="true"]',
+      '.interactive-session .interactive-input [contenteditable="true"], .interactive-input-editor textarea',
+      'div[aria-label="Message input"]',
       'div[contenteditable="true"][role="combobox"]',
       '.chat-widget .monaco-editor textarea.inputarea',
       '.interactive-session .monaco-editor textarea.inputarea',
       '.interactive-input .monaco-editor textarea.inputarea',
       'div.interactive-input-editor textarea',
       'textarea.interactive-input-editor',
-      'div.monaco-editor textarea.inputarea',
-      'div.monaco-editor[role="textbox"]',
       'div.ProseMirror[contenteditable="true"]',
       'div.ProseMirror',
-      'div[contenteditable="true"][role="textbox"]',
       '[data-testid*="composer-input"]',
       '[data-testid*="chat-input"]',
       '[data-testid*="prompt-input"]',
@@ -486,9 +725,7 @@
       'textarea[placeholder*="Message"]',
       'textarea[placeholder*="Prompt"]',
       'textarea[placeholder*="Chat"]',
-      'textarea[placeholder*="Type"]',
-      'textarea.inputarea',
-      '[role="textbox"]'
+      'textarea[placeholder*="Type"]'
     ];
 
     const evaluatedSelectors = [];
@@ -500,7 +737,16 @@
 
       for (let j = 0; j < candidates.length; j++) {
         const el = candidates[j];
-        if (el && isElementVisible(el)) {
+        if (!el) continue;
+        if (isCodeEditorElement(el)) {
+          logBridge('DEBUG', 'Candidate rejected by isCodeEditorElement guard', {
+            tagName: el.tagName,
+            className: el.className,
+            selector: sel
+          });
+          continue;
+        }
+        if (isElementVisible(el)) {
           return el;
         }
       }
@@ -878,21 +1124,44 @@
   }
 
   /**
-   * Evaluates whether an input element's buffer has been cleared or submitted (LOGIC-008).
-   * Inspects value for standard inputs/textareas, and textContent/innerHTML for rich text (Lexical/ProseMirror).
+   * Evaluates whether an input element's buffer has been cleared or submitted (LOGIC-008 & Phase 03 Hardening).
+   * Enforces State Transition Verification: Proof 1 (Input Clearance) can ONLY be declared
+   * if options.hasConfirmedContentBeforeSubmit is true (or charsDetectedInDOM >= 1 prior to submit).
+   * An initially empty input element must NOT return true under any circumstances.
    */
-  function isInputClearedOrSubmitted(inputElem, promptText) {
-    if (!inputElem) return true;
+  function isInputClearedOrSubmitted(inputElem, promptText, options = {}) {
+    if (!inputElem) return false;
+
+    // Phase 03: Proof 1 State Transition Hardening
+    // Clearance can ONLY be declared if content presence was verified prior to submission.
+    // If hasConfirmedContentBeforeSubmit is false, undefined, or unverified (0 chars), return false immediately.
+    const hasConfirmedContentBeforeSubmit = Boolean(
+      options && (
+        options.hasConfirmedContentBeforeSubmit === true ||
+        (options.hasConfirmedContentBeforeSubmit !== false && (
+          (typeof options.charsDetectedInDOM === 'number' && options.charsDetectedInDOM > 0) ||
+          (typeof options.priorCharsDetected === 'number' && options.priorCharsDetected > 0)
+        ))
+      )
+    );
+
+    if (!hasConfirmedContentBeforeSubmit) {
+      return false;
+    }
 
     const trimmedPrompt = (typeof promptText === 'string' ? promptText : '').trim();
 
     // 1. Textarea / Input
     if (inputElem.tagName === 'TEXTAREA' || inputElem.tagName === 'INPUT') {
-      const val = (inputElem.value || '').trim();
-      if (!val) {
+      const val = (inputElem.value || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+      if (!val || val.length === 0) {
         return true;
       }
-      if (trimmedPrompt && (val === trimmedPrompt || val.includes(trimmedPrompt))) {
+      // Non-printable or whitespace residue <= 2 chars
+      if (val.length <= 2 && !trimmedPrompt.includes(val)) {
+        return true;
+      }
+      if (trimmedPrompt && (val === trimmedPrompt || val.includes(trimmedPrompt) || trimmedPrompt.includes(val))) {
         return false;
       }
       return false;
@@ -903,31 +1172,38 @@
       if (typeof inputElem.getModel === 'function') {
         const model = inputElem.getModel();
         if (model && typeof model.getValue === 'function') {
-          const mVal = model.getValue().trim();
-          if (!mVal) return true;
-          if (trimmedPrompt && (mVal === trimmedPrompt || mVal.includes(trimmedPrompt))) return false;
+          const mVal = model.getValue().replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+          if (!mVal || mVal.length === 0) return true;
+          if (mVal.length <= 2 && !trimmedPrompt.includes(mVal)) return true;
+          if (trimmedPrompt && (mVal === trimmedPrompt || mVal.includes(trimmedPrompt) || trimmedPrompt.includes(mVal))) return false;
           return false;
         }
       }
     } catch (_) {}
 
     // 3. Contenteditable / Rich Text / Lexical / ProseMirror
-    const textProp = (inputElem.textContent !== undefined && inputElem.textContent !== null)
-      ? inputElem.textContent
-      : (inputElem.innerText !== undefined && inputElem.innerText !== null ? inputElem.innerText : '');
-    const rawText = String(textProp).replace(/\u200B/g, '').trim();
-    if (!rawText) {
-      return true;
-    }
-
-    if (trimmedPrompt && (rawText === trimmedPrompt || rawText.includes(trimmedPrompt) || trimmedPrompt.includes(rawText))) {
-      return false;
-    }
-
-    // Inspect inner HTML structure for empty structural tags (e.g. <p><br></p>, <p></p>, <br>)
+    const textProp = (inputElem.innerText !== undefined && inputElem.innerText !== null && inputElem.innerText !== '')
+      ? inputElem.innerText
+      : ((inputElem.textContent !== undefined && inputElem.textContent !== null) ? inputElem.textContent : '');
+    const rawText = String(textProp).replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
     const html = (inputElem.innerHTML || '').trim();
-    if (html && (/^<(p|div|span)[^>]*>\s*(<br\s*\/?>)?\s*<\/\1>$/i.test(html) || /^<br\s*\/?>$/i.test(html))) {
-      return true;
+
+    // Check if the prompt is still present in the buffer
+    if (rawText.length > 0 && trimmedPrompt) {
+      if (rawText === trimmedPrompt || rawText.includes(trimmedPrompt) || (rawText.length > 2 && trimmedPrompt.includes(rawText))) {
+        return false;
+      }
+    }
+
+    // If buffer is empty or <= 2 non-printable characters or whitespace
+    if (rawText.length === 0 || (rawText.length <= 2 && !trimmedPrompt.includes(rawText))) {
+      // Empty structural tags in Lexical / ProseMirror (e.g. <p><br></p>, <div><br/></div>, <br>, or empty tags)
+      if (!html ||
+          /^<(p|div|span)[^>]*>\s*(<br\s*\/?>)?\s*<\/\1>$/i.test(html) ||
+          /^<br\s*\/?>$/i.test(html) ||
+          html.replace(/<[^>]*>/g, '').replace(/[\u200B-\u200D\uFEFF\s]/g, '').length === 0) {
+        return true;
+      }
     }
     return false;
   }
@@ -936,6 +1212,7 @@
    * Helper targeting active Cancel/Stop button replacing send button (Phase 03 Proof 2).
    * Targets button[aria-label*="Cancel"][data-tooltip-id*="input-send-button-cancel-tooltip"]
    * and button[aria-label*="Cancel"][data-tooltip-id*="cancel"] containing .bg-red-500.
+   * Excludes modal dialog cancel buttons and unmounted/disconnected elements.
    */
   function findCancelButton(doc) {
     if (!doc) return null;
@@ -947,6 +1224,15 @@
 
       for (const btn of btns) {
         if (!btn) continue;
+        if (btn.isConnected === false) continue;
+
+        // Exclude dialog / modal cancel buttons (e.g. "Do you want to discard changes? [Cancel]")
+        if (typeof btn.closest === 'function') {
+          if (btn.closest('.monaco-dialog-box, .dialog-buttons, .notifications-toasts, .monaco-dialog-modal-block')) {
+            continue;
+          }
+        }
+
         const ariaLabel = (btn.getAttribute ? btn.getAttribute('aria-label') : '') || '';
         const tooltipId = (btn.getAttribute ? btn.getAttribute('data-tooltip-id') : '') || '';
         const hasRedSquare = btn.querySelector && Boolean(btn.querySelector('.bg-red-500, [class*="bg-red-500"]'));
@@ -968,6 +1254,7 @@
   /**
    * Helper counting user messages in the chat history (Phase 03 Proof 3).
    * Targets div[role="article"][aria-label="User message"], div[data-testid="user-input-step"]
+   * Excludes detached/unmounted elements to prevent race conditions during conversation switches.
    */
   function countUserMessages(doc) {
     if (!doc) return 0;
@@ -981,6 +1268,7 @@
 
       const uniqueMessages = new Set();
       for (const el of elements) {
+        if (!el || el.isConnected === false) continue;
         let root = el;
         if (typeof el.closest === 'function') {
           const parentArticle = el.closest('div[role="article"][aria-label="User message"]');
@@ -1006,7 +1294,7 @@
       const announcer = (typeof queryDeep === 'function')
         ? (queryDeep('#a11y-live-announcer', doc)[0] || null)
         : (doc.querySelector ? doc.querySelector('#a11y-live-announcer') : null);
-      if (announcer) {
+      if (announcer && announcer.isConnected !== false) {
         const text = announcer.textContent || announcer.innerText || '';
         if (text.includes('Working...')) {
           return true;
@@ -1021,7 +1309,8 @@
    * or triggered an active agent response / new user message (Phase 03: 3-Point Proof Verification Standard).
    *
    * A submission is confirmed as verified if and only if at least ONE of the following 3 hard criteria evaluates to true:
-   * - Proof 1 (Input Clearance): isInputClearedOrSubmitted(inputElem, promptText) returns true
+   * - Proof 1 (Input Clearance): isInputClearedOrSubmitted(inputElem, promptText, options) returns true
+   *   (Requires confirmed pre-submit content presence; empty inputs NEVER verify clearance)
    * - Proof 2 (Active Agent Cancel Button): findCancelButton(doc) !== null or #a11y-live-announcer contains "Working..."
    * - Proof 3 (Message Count Increment): countUserMessages(doc) > initialMessageCount
    *
@@ -1030,6 +1319,7 @@
   async function verifyInputSubmission(inputElem, promptText, options = {}) {
     const startTime = Date.now();
     const doc = options.document || (typeof document !== 'undefined' ? document : (inputElem?.ownerDocument || null));
+    const win = options.window || (typeof window !== 'undefined' ? window : null);
 
     // Observation window (default 1000ms per Phase 03 Requirement 2.3)
     const observationTimeoutMs = options.observationTimeoutMs !== undefined
@@ -1044,20 +1334,33 @@
       ? options.initialMessageCount
       : countUserMessages(doc);
 
+    // Phase 03: Content transition pre-condition flag
+    // Proof 1 is only eligible if the element previously verified containing >= 1 characters of the prompt.
+    // If charsDetectedInDOM prior to submit was 0 or unverified, hasConfirmedContentBeforeSubmit is false.
+    let hasConfirmedContentBeforeSubmit = false;
+    if (options.hasConfirmedContentBeforeSubmit === true) {
+      hasConfirmedContentBeforeSubmit = true;
+    } else if (options.hasConfirmedContentBeforeSubmit === false) {
+      hasConfirmedContentBeforeSubmit = false;
+    } else if (typeof options.charsDetectedInDOM === 'number') {
+      hasConfirmedContentBeforeSubmit = options.charsDetectedInDOM > 0;
+    } else if (typeof options.priorCharsDetected === 'number') {
+      hasConfirmedContentBeforeSubmit = options.priorCharsDetected > 0;
+    }
+
+    const verificationOptions = {
+      ...options,
+      hasConfirmedContentBeforeSubmit
+    };
+
     // Three-Point Proof verification checks
-    const checkProof1 = () => isInputClearedOrSubmitted(inputElem, promptText);
+    const checkProof1 = () => isInputClearedOrSubmitted(inputElem, promptText, verificationOptions);
     const checkProof2 = () => isCancelButtonOrWorkingActive(doc);
     const checkProof3 = () => countUserMessages(doc) > initialMessageCount;
 
-    // 1. Immediate proof evaluation
-    if (checkProof1()) {
-      return {
-        verified: true,
-        reason: 'input_cleared_immediately',
-        proof: 'proof1_input_clearance',
-        durationMs: Date.now() - startTime
-      };
-    }
+    // 1. Immediate proof evaluation (at t = 0)
+    // Constraint: Never report verified: true with durationMs: 0 unless Proof 2 (Active Cancel Button)
+    // or Proof 3 (Message Count increment) is genuinely active in the DOM.
     if (checkProof2()) {
       return {
         verified: true,
@@ -1074,6 +1377,14 @@
         durationMs: Date.now() - startTime
       };
     }
+    if (hasConfirmedContentBeforeSubmit && checkProof1()) {
+      return {
+        verified: true,
+        reason: 'input_cleared',
+        proof: 'proof1_input_clearance',
+        durationMs: Math.max(1, Date.now() - startTime)
+      };
+    }
 
     // 2. Polling loop: generic body mutations are completely ignored.
     // Only the 3 hard proof criteria can verify submission.
@@ -1083,7 +1394,7 @@
           verified: true,
           reason: 'input_cleared',
           proof: 'proof1_input_clearance',
-          durationMs: Date.now() - startTime
+          durationMs: Math.max(1, Date.now() - startTime)
         };
       }
       if (checkProof2()) {
@@ -1112,9 +1423,9 @@
     if (checkProof1()) {
       return {
         verified: true,
-        reason: 'input_cleared_at_deadline',
+        reason: 'input_cleared',
         proof: 'proof1_input_clearance',
-        durationMs: Date.now() - startTime
+        durationMs: Math.max(1, Date.now() - startTime)
       };
     }
     if (checkProof2()) {
@@ -1147,6 +1458,216 @@
   }
 
   /**
+   * Extracts raw and cleaned DOM text buffer from an input/editor element using multi-pathway extraction.
+   * Handles Textarea/Input (.value), Monaco Editor (getModel().getValue()), Lexical/ProseMirror (innerText/textContent).
+   * Normalizes zero-width spaces (\u200B-\u200D, \uFEFF) and \r\n to \n.
+   */
+  function extractDomBufferText(inputElem, options = {}) {
+    if (!inputElem) {
+      return {
+        rawText: '',
+        cleanText: '',
+        charsDetectedInDOM: 0,
+        domExcerpt: '',
+        pathway: 'none'
+      };
+    }
+
+    const win = options.window || (typeof window !== 'undefined' ? window : null);
+    let rawText = '';
+    let pathway = 'unknown';
+
+    // 1. Monaco Editor Model API
+    try {
+      if (typeof inputElem.getModel === 'function') {
+        const model = inputElem.getModel();
+        if (model && typeof model.getValue === 'function') {
+          rawText = model.getValue();
+          pathway = 'monaco-model';
+        }
+      } else if (win && win.monaco && win.monaco.editor && typeof win.monaco.editor.getEditors === 'function') {
+        const editors = win.monaco.editor.getEditors();
+        if (Array.isArray(editors)) {
+          for (let i = 0; i < editors.length; i++) {
+            const ed = editors[i];
+            if (!ed) continue;
+            const domNode = typeof ed.getDomNode === 'function' ? ed.getDomNode() : null;
+            if (domNode && (
+              domNode === inputElem ||
+              (typeof domNode.contains === 'function' && domNode.contains(inputElem)) ||
+              (typeof inputElem.contains === 'function' && inputElem.contains(domNode)) ||
+              (inputElem.closest && inputElem.closest('.monaco-editor') === domNode)
+            )) {
+              const model = typeof ed.getModel === 'function' ? ed.getModel() : null;
+              if (model && typeof model.getValue === 'function') {
+                rawText = model.getValue();
+                pathway = 'monaco-model';
+                break;
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 2. Standard Textarea / Input
+    if (!pathway.startsWith('monaco') && (inputElem.tagName === 'TEXTAREA' || inputElem.tagName === 'INPUT')) {
+      rawText = typeof inputElem.value === 'string' ? inputElem.value : '';
+      pathway = 'input-value';
+    }
+
+    // 3. Lexical / ContentEditable / Rich Text / ProseMirror
+    if (!pathway.startsWith('monaco') && pathway !== 'input-value') {
+      const hasInnerText = typeof inputElem.innerText === 'string';
+      const hasTextContent = typeof inputElem.textContent === 'string';
+
+      if (hasInnerText && inputElem.innerText.length > 0) {
+        rawText = inputElem.innerText;
+        pathway = 'inner-text';
+      } else if (hasTextContent && inputElem.textContent.length > 0) {
+        rawText = inputElem.textContent;
+        pathway = 'text-content';
+      } else if (hasInnerText) {
+        rawText = inputElem.innerText;
+        pathway = 'inner-text';
+      } else if (hasTextContent) {
+        rawText = inputElem.textContent;
+        pathway = 'text-content';
+      } else if (typeof inputElem.value === 'string') {
+        rawText = inputElem.value;
+        pathway = 'element-value';
+      }
+    }
+
+    // Clean non-printable zero-width spaces (\u200B-\u200D, \uFEFF) and normalize newlines
+    const cleanText = String(rawText || '')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/\r\n/g, '\n');
+
+    return {
+      rawText: rawText || '',
+      cleanText,
+      charsDetectedInDOM: cleanText.length,
+      domExcerpt: cleanText.slice(0, 60),
+      pathway
+    };
+  }
+
+  /**
+   * Verifies that the target DOM input buffer physically contains the expected prompt text.
+   * Performs multi-pathway content extraction, length ratio check (>= min(expected * 0.75, 50)),
+   * non-whitespace initial 30-char prefix containment check, and suffix containment check.
+   * Returns boolean (true/false) and populates options.diagnostics.
+   */
+  function verifyBufferHasText(inputElem, expectedText, options = {}) {
+    if (!inputElem) {
+      const emptyDiag = {
+        verified: false,
+        rejectionReason: 'no_target_element',
+        charsExpected: expectedText ? String(expectedText).length : 0,
+        charsDetectedInDOM: 0,
+        domExcerpt: '',
+        pathway: 'none'
+      };
+      if (options && typeof options === 'object') {
+        if (options.diagnostics && typeof options.diagnostics === 'object') Object.assign(options.diagnostics, emptyDiag);
+        if (options.details && typeof options.details === 'object') Object.assign(options.details, emptyDiag);
+      }
+      verifyBufferHasText.lastResult = emptyDiag;
+      return options && options.detailed ? emptyDiag : false;
+    }
+
+    const extracted = extractDomBufferText(inputElem, options);
+    const cleanDomText = extracted.cleanText;
+    const charsDetectedInDOM = extracted.charsDetectedInDOM;
+    const domExcerpt = extracted.domExcerpt;
+
+    const rawExpected = typeof expectedText === 'string' ? expectedText : (expectedText != null ? String(expectedText) : '');
+    const cleanExpected = rawExpected
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/\r\n/g, '\n');
+    const charsExpected = cleanExpected.length;
+
+    const minRatio = typeof options.minCharsRatio === 'number' ? options.minCharsRatio : 0.75;
+    const prefixTargetLen = typeof options.prefixLength === 'number' ? options.prefixLength : 30;
+
+    const expectedNonWs = cleanExpected.replace(/\s+/g, '');
+    const domNonWs = cleanDomText.replace(/\s+/g, '');
+
+    let verified = true;
+    let rejectionReason = null;
+
+    // 1. Empty buffer check
+    if (charsExpected > 0 && charsDetectedInDOM === 0) {
+      verified = false;
+      rejectionReason = 'dom_buffer_empty';
+    }
+
+    // 2. Length check: For prompts > 50 chars, charsDetectedInDOM >= expected * 0.75
+    // For prompts <= 50 chars, verify >= min(expected * 0.75, 50)
+    if (verified && charsExpected > 0) {
+      const minRequiredChars = charsExpected > 50
+        ? (charsExpected * minRatio)
+        : Math.min(charsExpected * minRatio, 50);
+
+      if (charsDetectedInDOM < minRequiredChars) {
+        verified = false;
+        rejectionReason = 'insufficient_characters_detected';
+      }
+    }
+
+    // 3. Prefix containment check: at least initial 30 non-whitespace characters of promptText
+    if (verified && expectedNonWs.length > 0) {
+      const prefixNonWs = expectedNonWs.slice(0, Math.min(prefixTargetLen, expectedNonWs.length));
+      const prefixContained = domNonWs.includes(prefixNonWs) ||
+        cleanDomText.includes(cleanExpected.trim().slice(0, Math.min(prefixTargetLen, cleanExpected.trim().length)));
+
+      if (!prefixContained) {
+        verified = false;
+        rejectionReason = 'prefix_not_found_in_dom';
+      }
+    }
+
+    // 4. Suffix containment check (for prompts > 50 chars or when checkSuffix is explicitly requested)
+    const shouldCheckSuffix = options.checkSuffix !== undefined ? Boolean(options.checkSuffix) : (charsExpected > 50);
+    if (verified && shouldCheckSuffix && expectedNonWs.length >= 20) {
+      const suffixNonWs = expectedNonWs.slice(-Math.min(20, expectedNonWs.length));
+      const suffixContained = domNonWs.includes(suffixNonWs) ||
+        cleanDomText.includes(cleanExpected.trim().slice(-Math.min(20, cleanExpected.trim().length)));
+
+      if (!suffixContained) {
+        verified = false;
+        rejectionReason = 'suffix_not_found_in_dom';
+      }
+    }
+
+    const result = {
+      verified,
+      rejectionReason: verified ? null : rejectionReason,
+      charsExpected,
+      charsDetectedInDOM,
+      domExcerpt,
+      pathway: extracted.pathway
+    };
+
+    if (options && typeof options === 'object') {
+      if (options.diagnostics && typeof options.diagnostics === 'object') {
+        Object.assign(options.diagnostics, result);
+      }
+      if (options.details && typeof options.details === 'object') {
+        Object.assign(options.details, result);
+      }
+    }
+
+    verifyBufferHasText.lastResult = result;
+
+    if (options && options.detailed) {
+      return result;
+    }
+    return verified;
+  }
+
+  /**
    * Injects prompt text into active chat input and triggers submit with step-by-step diagnostics
    */
   async function injectPromptAndSubmit(promptText, options = {}) {
@@ -1175,6 +1696,7 @@
     const inputElem = options.targetElement || findChatInput(doc, inputDiag);
     if (!inputElem) {
       const err = new Error('No valid chat input element found in DOM');
+      err.code = 'NO_CHAT_INPUT_FOUND';
       const snapshot = inputDiag.snapshot || findChatInput.lastSnapshot || captureDomDiagnosticSnapshot(doc);
       err.domSnapshot = snapshot;
       steps.push({
@@ -1182,6 +1704,7 @@
         name: 'Input discovery & focus',
         status: 'failed',
         error: err.message,
+        code: 'NO_CHAT_INPUT_FOUND',
         domSnapshot: snapshot
       });
       err.steps = steps;
@@ -1211,14 +1734,93 @@
       }
     }
 
+    // Semantic target fingerprinting
+    let isInChatPanel = false;
+    try {
+      if (typeof inputElem.closest === 'function') {
+        isInChatPanel = Boolean(inputElem.closest('#antigravity\\.agentSidePanelInputBox, [id*="agentSidePanelInputBox"], .chat-widget'));
+      }
+      if (!isInChatPanel) {
+        let curr = inputElem;
+        while (curr && curr.nodeType === 1) {
+          const id = curr.id || (typeof curr.getAttribute === 'function' ? curr.getAttribute('id') : '');
+          if (id && id.includes('agentSidePanelInputBox')) {
+            isInChatPanel = true;
+            break;
+          }
+          const cls = typeof curr.className === 'string' ? curr.className : (curr.getAttribute ? curr.getAttribute('class') || '' : '');
+          if (cls.includes('chat-widget')) {
+            isInChatPanel = true;
+            break;
+          }
+          curr = curr.parentElement || (curr.parentNode && curr.parentNode.nodeType === 1 ? curr.parentNode : null);
+        }
+      }
+    } catch (_) {
+      isInChatPanel = false;
+    }
+
+    const ariaLabel = (typeof inputElem.getAttribute === 'function'
+      ? (inputElem.getAttribute('aria-label') || inputElem.getAttribute('aria-roledescription'))
+      : '') || '';
+
+    const placeholder = (inputElem.placeholder ||
+      (typeof inputElem.getAttribute === 'function'
+        ? (inputElem.getAttribute('placeholder') || inputElem.getAttribute('data-placeholder'))
+        : '')) || '';
+
+    let boundingBox = { width: 0, height: 0, top: 0, left: 0 };
+    try {
+      if (typeof inputElem.getBoundingClientRect === 'function') {
+        const rect = inputElem.getBoundingClientRect();
+        if (rect) {
+          boundingBox = {
+            width: typeof rect.width === 'number' ? rect.width : 0,
+            height: typeof rect.height === 'number' ? rect.height : 0,
+            top: typeof rect.top === 'number' ? rect.top : 0,
+            left: typeof rect.left === 'number' ? rect.left : 0
+          };
+        }
+      }
+    } catch (_) {}
+
+    const visible = isElementVisible(inputElem);
+
+    const containerHierarchy = [];
+    try {
+      let p = inputElem.parentElement;
+      while (p && p.nodeType === 1 && containerHierarchy.length < 10) {
+        const tag = (p.tagName || '').toLowerCase();
+        const id = p.id ? `#${p.id}` : '';
+        const cls = (typeof p.className === 'string' && p.className)
+          ? `.${p.className.trim().split(/\s+/).slice(0, 3).join('.')}`
+          : '';
+        containerHierarchy.push(`${tag}${id}${cls}`);
+        p = p.parentElement;
+      }
+    } catch (_) {}
+
+    const chatContainer = containerHierarchy.find(c => c.includes('agentSidePanelInputBox') || c.includes('chat-widget'));
+    const targetElementContext = chatContainer
+      ? chatContainer
+      : (inputElem.id ? `#${inputElem.id}` : (containerHierarchy[0] || (inputElem.tagName ? inputElem.tagName.toLowerCase() : 'element')));
+
     steps.push({
       step: 1,
       name: 'Input discovery & focus',
       status: 'success',
+      elementContext: targetElementContext,
       details: {
         tagName: inputElem.tagName,
         className: inputElem.className,
-        focused
+        focused,
+        isInChatPanel,
+        ariaLabel,
+        placeholder,
+        boundingBox,
+        visible,
+        containerHierarchy,
+        elementContext: targetElementContext
       }
     });
 
@@ -1325,7 +1927,9 @@
         }
         if (execSuccess) {
           valueSet = true;
-          injectionStrategy = 'execCommand';
+          injectionStrategy = (inputElem.hasAttribute?.('data-lexical-editor') || (inputElem.closest && inputElem.closest('[data-lexical-editor]')))
+            ? 'lexical-execCommand'
+            : 'execCommand';
         }
       } catch (cmdErr) {
         logBridge('WARN', `doc.execCommand failed: ${cmdErr?.message || cmdErr}`, {}, cmdErr);
@@ -1403,13 +2007,60 @@
       injectionStrategy = 'textarea-value';
     } else if (!valueSet) {
       // Strategy 5: ContentEditable / Text Direct Fallback
-      if (typeof inputElem.innerText !== 'undefined') {
-        inputElem.innerText = promptText;
-      } else {
-        inputElem.textContent = promptText;
+      try {
+        if (typeof inputElem.innerText !== 'undefined') {
+          inputElem.innerText = promptText;
+        } else {
+          inputElem.textContent = promptText;
+        }
+        valueSet = true;
+        injectionStrategy = 'contenteditable-text';
+      } catch (err) {
+        logBridge('WARN', `Direct text assignment failed: ${err?.message || err}`, {}, err);
       }
-      valueSet = true;
-      injectionStrategy = 'contenteditable-text';
+    }
+
+    // Post-Paste Buffer Verification (Phase 02)
+    const verificationDiag = {};
+    const isBufferVerified = verifyBufferHasText(inputElem, promptText, {
+      window: win,
+      document: doc,
+      diagnostics: verificationDiag
+    });
+
+    if (!isBufferVerified) {
+      const err = new Error(`PASTE_VERIFICATION_FAILED: Prompt text failed to materialize in target DOM buffer (expected ${promptText.length} chars, detected ${verificationDiag.charsDetectedInDOM || 0} in DOM)`);
+      err.name = 'PASTE_VERIFICATION_FAILED';
+      err.code = 'PASTE_VERIFICATION_FAILED';
+      err.charsExpected = promptText.length;
+      err.charsDetectedInDOM = verificationDiag.charsDetectedInDOM || 0;
+      err.domExcerpt = verificationDiag.domExcerpt || '';
+      err.rejectionReason = verificationDiag.rejectionReason || 'dom_buffer_empty';
+
+      steps.push({
+        step: 2,
+        name: 'Content injection',
+        status: 'failed',
+        strategy: injectionStrategy,
+        charsExpected: promptText.length,
+        charsDetectedInDOM: err.charsDetectedInDOM,
+        domExcerpt: err.domExcerpt,
+        verified: false,
+        rejectionReason: err.rejectionReason,
+        error: err.message,
+        code: 'PASTE_VERIFICATION_FAILED'
+      });
+
+      err.steps = steps;
+      logBridge('ERROR', err.message, {
+        charsExpected: err.charsExpected,
+        charsDetectedInDOM: err.charsDetectedInDOM,
+        domExcerpt: err.domExcerpt,
+        rejectionReason: err.rejectionReason,
+        steps
+      });
+
+      throw err;
     }
 
     steps.push({
@@ -1417,7 +2068,11 @@
       name: 'Content injection',
       status: 'success',
       strategy: injectionStrategy,
-      charsInjected: promptText.length
+      charsInjected: promptText.length,
+      charsExpected: promptText.length,
+      charsDetectedInDOM: verificationDiag.charsDetectedInDOM,
+      domExcerpt: verificationDiag.domExcerpt,
+      verified: true
     });
 
     // Step 3: Event dispatching
@@ -1657,7 +2312,9 @@
           initialMessageCount,
           observationTimeoutMs: options.observationTimeoutMs !== undefined ? options.observationTimeoutMs : (options.clearanceObservationMs !== undefined ? options.clearanceObservationMs : (options.verificationDelayMs !== undefined ? options.verificationDelayMs : 1000)),
           pollIntervalMs: options.pollIntervalMs !== undefined ? options.pollIntervalMs : 15,
-          ...options
+          ...options,
+          hasConfirmedContentBeforeSubmit: options.hasConfirmedContentBeforeSubmit !== undefined ? options.hasConfirmedContentBeforeSubmit : isBufferVerified,
+          charsDetectedInDOM: options.charsDetectedInDOM !== undefined ? options.charsDetectedInDOM : verificationDiag.charsDetectedInDOM
         });
         verificationResult = verifyRes;
         if (!verifyRes || !verifyRes.verified) {
@@ -1778,7 +2435,9 @@
           initialMessageCount,
           observationTimeoutMs: options.observationTimeoutMs !== undefined ? options.observationTimeoutMs : (options.clearanceObservationMs !== undefined ? options.clearanceObservationMs : (options.verificationDelayMs !== undefined ? options.verificationDelayMs : 1000)),
           pollIntervalMs: options.pollIntervalMs !== undefined ? options.pollIntervalMs : 15,
-          ...options
+          ...options,
+          hasConfirmedContentBeforeSubmit: options.hasConfirmedContentBeforeSubmit !== undefined ? options.hasConfirmedContentBeforeSubmit : isBufferVerified,
+          charsDetectedInDOM: options.charsDetectedInDOM !== undefined ? options.charsDetectedInDOM : verificationDiag.charsDetectedInDOM
         });
         verificationResult = verifyRes;
         if (!verifyRes || !verifyRes.verified) {
@@ -1823,7 +2482,9 @@
                 initialMessageCount,
                 observationTimeoutMs: options.observationTimeoutMs !== undefined ? options.observationTimeoutMs : (options.clearanceObservationMs !== undefined ? options.clearanceObservationMs : (options.verificationDelayMs !== undefined ? options.verificationDelayMs : 1000)),
                 pollIntervalMs: options.pollIntervalMs !== undefined ? options.pollIntervalMs : 15,
-                ...options
+                ...options,
+                hasConfirmedContentBeforeSubmit: options.hasConfirmedContentBeforeSubmit !== undefined ? options.hasConfirmedContentBeforeSubmit : isBufferVerified,
+                charsDetectedInDOM: options.charsDetectedInDOM !== undefined ? options.charsDetectedInDOM : verificationDiag.charsDetectedInDOM
               });
               verificationResult = verifyRes;
               if (!verifyRes || !verifyRes.verified) {
@@ -1880,6 +2541,10 @@
       buttonWaitDurationMs,
       initialDisabled,
       charsInjected: promptText.length,
+      charsExpected: promptText.length,
+      charsDetectedInDOM: verificationDiag.charsDetectedInDOM,
+      domExcerpt: verificationDiag.domExcerpt,
+      elementContext: targetElementContext,
       steps,
       diagnostics: {
         timestamp: Date.now(),
@@ -1893,6 +2558,10 @@
         doubleTapExecuted,
         buttonWaitDurationMs,
         initialDisabled,
+        charsExpected: promptText.length,
+        charsDetectedInDOM: verificationDiag.charsDetectedInDOM,
+        domExcerpt: verificationDiag.domExcerpt,
+        elementContext: targetElementContext,
         steps
       }
     };
@@ -3170,6 +3839,24 @@
         if (err?.steps) {
           metadata.steps = err.steps;
         }
+        if (err?.code) {
+          metadata.code = err.code;
+        }
+        if (err?.charsExpected !== undefined) {
+          metadata.charsExpected = err.charsExpected;
+        }
+        if (err?.charsDetectedInDOM !== undefined) {
+          metadata.charsDetectedInDOM = err.charsDetectedInDOM;
+        }
+        if (err?.domExcerpt !== undefined) {
+          metadata.domExcerpt = err.domExcerpt;
+        }
+        if (err?.rejectionReason) {
+          metadata.rejectionReason = err.rejectionReason;
+        }
+        if (err?.elementContext !== undefined) {
+          metadata.elementContext = err.elementContext;
+        }
 
         const isAborted = err?.code === 'COMMAND_ABORTED_BY_TIMEOUT' || err?.aborted === true;
         const isButtonDisabledTimeout = err?.code === 'BUTTON_DISABLED_TIMEOUT' || err?.rejectionReason === 'button_disabled_timeout';
@@ -3314,6 +4001,9 @@
     CONTAINER_SELECTORS,
     queryDeep,
     isElementVisible,
+    isCodeEditorElement,
+    isInsideChatContainer,
+    hasChatIdentifiers,
     captureDomDiagnosticSnapshot,
     findChatInput,
     findSendButton,
@@ -3323,6 +4013,8 @@
     dispatchButtonClickCascade,
     isInputClearedOrSubmitted,
     verifyInputSubmission,
+    extractDomBufferText,
+    verifyBufferHasText,
     injectPromptAndSubmit,
     triggerNewConversation,
     handleOpenNewConversation,

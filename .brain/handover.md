@@ -1,14 +1,15 @@
 # 📋 HANDOVER DOCUMENT - Auto-Plan Extension
 
-**Ngày cập nhật:** 2026-10-18T19:09:00+07:00  
-**Phiên bản hiện tại:** v1.6.7  
-**Trạng thái hệ thống:** 🟢 Hoàn hảo & 100% Sẵn sàng (Telegram Chat Control & Settings UI Modernization v1.6.7 Đã hoàn tất, đóng gói VSIX và cài đặt thành công vào Antigravity IDE)
+**Ngày cập nhật:** 2026-10-31T22:25:00+07:00  
+**Phiên bản hiện tại:** v1.7.0  
+**Trạng thái hệ thống:** 🟢 Hoàn hảo & 100% Sẵn sàng (Native RPC Auto-Submit & Permission Approval Engine v1.7.0 Đã hoàn tất, đóng gói VSIX và kiểm thử hồi quy thành công)
 
 ---
 
 ## 📍 Đang làm & Trạng thái hiện tại
-- **Tính năng vừa thực hiện:** Telegram Chat Control & Settings UI Modernization (v1.6.7)
-- **Tiến độ:** Hoàn tất 5/5 Phase của Plan `plans/261014-0555-telegram-chat-toggle-and-settings-ui/` (Target Version: v1.6.7)
+- **Tính năng vừa thực hiện:** Native RPC Auto-Submit & Permission Approval Engine (v1.7.0)
+- **Tiến độ:** Hoàn tất 5/5 Phase của Plan `plans/261031-1933-native-rpc-auto-submit/` (Target Version: v1.7.0)
+- **VSIX Release:** `antigravity-auto-plan-1.7.0.vsix`
 
 ### ✅ ĐÃ XONG:
 1. **Phase 01: Core Configuration & Telegram Free-Text Silent Drop Gating** ✓

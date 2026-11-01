@@ -8,6 +8,7 @@ import {
   writeConfigJson,
   AutoPlanConfig,
   getTelegramConfig,
+  getAutoSubmitConfig,
   SecretStorageManager,
   secretStorageManager as defaultSecretStorageManager
 } from './config';
@@ -18,8 +19,87 @@ import { keyboardManager } from './keyboardManager';
 import { debugLogger, DebugLogger, LogEntry } from './debugLogger';
 import { orchestrator } from './orchestrator';
 import { auditPlanPhases, PlanPhasesAuditReport } from './planScanner';
-import { getCurrentPlanFolder } from './extension';
+import { getCurrentPlanFolder, autoSubmitService } from './extension';
 import { telegramBridge } from './telegramBridge';
+
+/**
+ * Maps camelCase setting aliases to their canonical dot-notation VS Code configuration keys.
+ */
+export const CONFIG_KEY_MAPPINGS: Record<string, string> = {
+  telegramAllowFreeChat: 'telegram.allowFreeChat',
+  telegramEnableChatMirror: 'telegram.enableChatMirror',
+  telegramMirrorIncludePcPrompts: 'telegram.mirrorIncludePcPrompts',
+  telegramChatMirrorPrefix: 'telegram.chatMirrorPrefix',
+  autoSubmitEnabled: 'autoSubmit.enabled',
+  autoSubmitIntervalMs: 'autoSubmit.intervalMs',
+  autoSubmitMaxQuota: 'autoSubmit.maxQuota',
+  autoSubmitNotifyTelegram: 'autoSubmit.notifyTelegram'
+};
+
+/**
+ * Settings that belong only to sidecar/memory state and are never written to VS Code User Settings.
+ */
+export const IGNORED_CONFIG_KEYS = new Set([
+  'strictMode',
+  'bridgeAuthToken',
+  'authToken',
+  'enableVerboseBridgeLogs',
+  'enablePhaseAuditLogging',
+  'maxLogEntries',
+  'autoOpenBridgeLogOnError'
+]);
+
+/**
+ * Registered configuration keys declared in package.json under contributes.configuration.properties.
+ */
+export const REGISTERED_CONFIG_KEYS = new Set([
+  'defaultPromptTemplate',
+  'promptTemplate',
+  'promptText',
+  'defaultPlanFolder',
+  'repeatCount',
+  'completionKeyword',
+  'delayBetweenLoopsMs',
+  'timeoutPerLoopMinutes',
+  'focusDelayMs',
+  'executionMode',
+  'allowTierFallback',
+  'bridgeTimeoutMs',
+  'newConversationTimeoutMs',
+  'staleClientMs',
+  'autoInjectWorkbench',
+  'suppressFallbackWarnings',
+  'enableDomSnapshots',
+  'domSnapshotFolder',
+  'autoRetryOnTimeout',
+  'retryDelaySeconds',
+  'maxAutoRetries',
+  'telegramEnabled',
+  'telegramBotToken',
+  'telegramAllowedUsers',
+  'telegramThrottleMs',
+  'telegram.allowFreeChat',
+  'telegram.enableChatMirror',
+  'telegram.mirrorIncludePcPrompts',
+  'telegram.chatMirrorPrefix',
+  'telegramAllowFreeChat',
+  'telegramEnableChatMirror',
+  'telegramMirrorIncludePcPrompts',
+  'telegramChatMirrorPrefix',
+  'longPhaseNudgeEnabled',
+  'longPhaseThresholdSeconds',
+  'longPhaseNudgeMessage',
+  'longPhaseNudgeRecurring',
+  'longPhaseNotifyTelegram',
+  'autoSubmit.enabled',
+  'autoSubmit.intervalMs',
+  'autoSubmit.maxQuota',
+  'autoSubmit.notifyTelegram',
+  'autoSubmitEnabled',
+  'autoSubmitIntervalMs',
+  'autoSubmitMaxQuota',
+  'autoSubmitNotifyTelegram'
+]);
 
 /**
  * Generates a cryptographically secure random nonce for Content Security Policy.
@@ -97,6 +177,7 @@ export class SettingsProvider {
         if (e.affectsConfiguration('autoplan')) {
           this.sendInitSettings();
           this.sendTelegramStatus();
+          this.sendAutoSubmitStatus();
         }
       });
       this._disposables.push(configWatcher);
@@ -289,12 +370,64 @@ export class SettingsProvider {
     try {
       const currentConfig = getConfig();
       const planPhases = this.getPhaseDiagnostics();
+      const autoSubmitStatus = this.getAutoSubmitStatus();
       this._panel.webview.postMessage({
         command: 'initSettings',
         type: 'initSettings',
         settings: currentConfig,
         config: currentConfig,
-        planPhases
+        planPhases,
+        autoSubmitStatus
+      });
+    } catch {}
+  }
+
+  /**
+   * Retrieves RPC Native Auto-Submit status and session metrics.
+   */
+  public getAutoSubmitStatus(): {
+    phase: string;
+    available: boolean;
+    approved: number;
+    intervalMs: number;
+    maxQuota: number;
+    notifyTelegram: boolean;
+    waitingStepsCount: number;
+    eligiblePermissions: number;
+    lastError: string | null;
+  } {
+    const cfg = getAutoSubmitConfig();
+    let serviceStatus: any = null;
+    try {
+      if (autoSubmitService && typeof autoSubmitService.status === 'function') {
+        serviceStatus = autoSubmitService.status();
+      }
+    } catch {}
+
+    const phase = serviceStatus?.phase || (cfg.enabled ? 'waiting' : 'disabled');
+    return {
+      phase: phase,
+      available: serviceStatus?.available ?? (phase === 'ready'),
+      approved: serviceStatus?.approved ?? 0,
+      intervalMs: cfg.intervalMs,
+      maxQuota: cfg.maxQuota,
+      notifyTelegram: cfg.notifyTelegram,
+      waitingStepsCount: serviceStatus?.waitingStepsCount ?? 0,
+      eligiblePermissions: serviceStatus?.eligiblePermissions ?? 0,
+      lastError: serviceStatus?.lastError ?? null
+    };
+  }
+
+  /**
+   * Broadcasts RPC Native Auto-Submit status and session metrics to the webview.
+   */
+  public sendAutoSubmitStatus(): void {
+    try {
+      const status = this.getAutoSubmitStatus();
+      this._panel.webview.postMessage({
+        command: 'autoSubmitStatusUpdate',
+        type: 'autoSubmitStatusUpdate',
+        status
       });
     } catch {}
   }
@@ -397,6 +530,7 @@ export class SettingsProvider {
         this.sendPhaseDiagnostics();
         this.sendLogBuffer();
         await this.sendTelegramStatus();
+        this.sendAutoSubmitStatus();
         break;
       }
 
@@ -409,11 +543,38 @@ export class SettingsProvider {
         try {
           const settings = message.settings || {};
           const configSection = vscode.workspace.getConfiguration('autoplan');
-          for (const key of Object.keys(settings)) {
-            await configSection.update(key, settings[key], vscode.ConfigurationTarget.Global);
+
+          // Normalize and filter settings to update canonical registered keys
+          const settingsToPersist: Record<string, any> = {};
+          for (const rawKey of Object.keys(settings)) {
+            if (IGNORED_CONFIG_KEYS.has(rawKey)) {
+              continue;
+            }
+            const canonicalKey = CONFIG_KEY_MAPPINGS[rawKey] || rawKey;
+            if (REGISTERED_CONFIG_KEYS.has(canonicalKey)) {
+              if (settingsToPersist[canonicalKey] === undefined || rawKey === canonicalKey) {
+                settingsToPersist[canonicalKey] = settings[rawKey];
+              }
+            }
           }
+
+          for (const key of Object.keys(settingsToPersist)) {
+            try {
+              await configSection.update(key, settingsToPersist[key], vscode.ConfigurationTarget.Global);
+            } catch (updateErr: any) {
+              console.warn(`[Auto-Plan] Could not persist setting "${key}" to User Settings:`, updateErr?.message || updateErr);
+            }
+          }
+
           try {
-            writeConfigJson(settings);
+            // Build complete sidecar configuration payload with camelCase aliases
+            const sidecarSettings: Record<string, any> = { ...settings };
+            for (const [camelKey, dotKey] of Object.entries(CONFIG_KEY_MAPPINGS)) {
+              if (sidecarSettings[camelKey] === undefined && sidecarSettings[dotKey] !== undefined) {
+                sidecarSettings[camelKey] = sidecarSettings[dotKey];
+              }
+            }
+            writeConfigJson(sidecarSettings as any);
           } catch {}
 
           this._panel.webview.postMessage({
@@ -435,9 +596,25 @@ export class SettingsProvider {
       case 'resetSettings': {
         try {
           const configSection = vscode.workspace.getConfiguration('autoplan');
-          for (const key of Object.keys(DEFAULT_CONFIG)) {
-            await configSection.update(key, (DEFAULT_CONFIG as any)[key], vscode.ConfigurationTarget.Global);
+          const resetPayload: Record<string, any> = {};
+          for (const rawKey of Object.keys(DEFAULT_CONFIG)) {
+            if (IGNORED_CONFIG_KEYS.has(rawKey)) {
+              continue;
+            }
+            const canonicalKey = CONFIG_KEY_MAPPINGS[rawKey] || rawKey;
+            if (REGISTERED_CONFIG_KEYS.has(canonicalKey)) {
+              resetPayload[canonicalKey] = (DEFAULT_CONFIG as any)[rawKey];
+            }
           }
+
+          for (const key of Object.keys(resetPayload)) {
+            try {
+              await configSection.update(key, resetPayload[key], vscode.ConfigurationTarget.Global);
+            } catch (resetErr: any) {
+              console.warn(`[Auto-Plan] Could not reset setting "${key}":`, resetErr?.message || resetErr);
+            }
+          }
+
           try {
             writeConfigJson(DEFAULT_CONFIG);
           } catch {}
@@ -641,6 +818,25 @@ export class SettingsProvider {
           type: 'telegramStatusUpdate',
           status
         });
+        break;
+      }
+
+      case 'requestAutoSubmitStatus': {
+        this.sendAutoSubmitStatus();
+        break;
+      }
+
+      case 'resetAutoSubmitStats':
+      case 'resetAutoSubmitQuota': {
+        try {
+          if (autoSubmitService && typeof (autoSubmitService as any).resetStats === 'function') {
+            (autoSubmitService as any).resetStats();
+          } else if (autoSubmitService && typeof (autoSubmitService as any).resetApprovedCount === 'function') {
+            (autoSubmitService as any).resetApprovedCount();
+          }
+        } catch {}
+        this.sendAutoSubmitStatus();
+        vscode.window.showInformationMessage('Auto-Plan: Auto-Submit session statistics reset.');
         break;
       }
     }

@@ -2,7 +2,7 @@
   "name": "antigravity-auto-plan",
   "displayName": "Antigravity Auto-Plan Runner",
   "description": "Automate repeated prompts and monitor completion in Antigravity IDE",
-  "version": "1.6.7",
+  "version": "1.7.1",
   "publisher": "skul9x",
   "engines": {
     "vscode": "^1.80.0"
@@ -36,7 +36,8 @@
     "onCommand:autoplan.clearDebugLog",
     "onCommand:autoplan.showOutputChannel",
     "onCommand:autoplan.setTelegramToken",
-    "onCommand:autoplan.clearTelegramToken"
+    "onCommand:autoplan.clearTelegramToken",
+    "onCommand:autoplan.diagnoseAutoSubmit"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -156,6 +157,11 @@
       {
         "command": "autoplan.clearTelegramToken",
         "title": "Clear Telegram Bot Token",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.diagnoseAutoSubmit",
+        "title": "Diagnose RPC Auto-Submit Status",
         "category": "Auto-Plan"
       }
     ],
@@ -320,20 +326,44 @@
           "default": true,
           "description": "Allow arbitrary free-text messages from Telegram to be dispatched as prompts into Antigravity IDE. When disabled, non-command messages are silently dropped."
         },
+        "autoplan.telegramAllowFreeChat": {
+          "type": "boolean",
+          "default": true,
+          "markdownDeprecationMessage": "Use `autoplan.telegram.allowFreeChat` instead.",
+          "description": "Allow arbitrary free-text messages from Telegram to be dispatched as prompts into Antigravity IDE (alias for autoplan.telegram.allowFreeChat)."
+        },
         "autoplan.telegram.enableChatMirror": {
           "type": "boolean",
           "default": true,
           "description": "Enable or disable live Q&A chat mirroring to Telegram"
+        },
+        "autoplan.telegramEnableChatMirror": {
+          "type": "boolean",
+          "default": true,
+          "markdownDeprecationMessage": "Use `autoplan.telegram.enableChatMirror` instead.",
+          "description": "Enable or disable live Q&A chat mirroring to Telegram (alias for autoplan.telegram.enableChatMirror)."
         },
         "autoplan.telegram.mirrorIncludePcPrompts": {
           "type": "boolean",
           "default": true,
           "description": "Whether to forward prompts entered on the PC keyboard"
         },
+        "autoplan.telegramMirrorIncludePcPrompts": {
+          "type": "boolean",
+          "default": true,
+          "markdownDeprecationMessage": "Use `autoplan.telegram.mirrorIncludePcPrompts` instead.",
+          "description": "Whether to forward prompts entered on the PC keyboard (alias for autoplan.telegram.mirrorIncludePcPrompts)."
+        },
         "autoplan.telegram.chatMirrorPrefix": {
           "type": "string",
           "default": "🤖 Antigravity:",
           "description": "Customizable header prefix for assistant responses mirrored to Telegram"
+        },
+        "autoplan.telegramChatMirrorPrefix": {
+          "type": "string",
+          "default": "🤖 Antigravity:",
+          "markdownDeprecationMessage": "Use `autoplan.telegram.chatMirrorPrefix` instead.",
+          "description": "Customizable header prefix for assistant responses mirrored to Telegram (alias for autoplan.telegram.chatMirrorPrefix)."
         },
         "autoplan.longPhaseNudgeEnabled": {
           "type": "boolean",
@@ -360,16 +390,72 @@
           "type": "boolean",
           "default": true,
           "description": "Whether to alert the user on Telegram when a nudge is triggered"
+        },
+        "autoplan.autoSubmit.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Master switch for automatic permission submission via Antigravity native RPC"
+        },
+        "autoplan.autoSubmitEnabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDeprecationMessage": "Use `autoplan.autoSubmit.enabled` instead.",
+          "description": "Master switch for automatic permission submission via Antigravity native RPC (alias for autoplan.autoSubmit.enabled)."
+        },
+        "autoplan.autoSubmit.intervalMs": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 200,
+          "maximum": 60000,
+          "description": "Polling interval in milliseconds for candidate permission scanning"
+        },
+        "autoplan.autoSubmitIntervalMs": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 200,
+          "maximum": 60000,
+          "markdownDeprecationMessage": "Use `autoplan.autoSubmit.intervalMs` instead.",
+          "description": "Polling interval in milliseconds for candidate permission scanning (alias for autoplan.autoSubmit.intervalMs)."
+        },
+        "autoplan.autoSubmit.maxQuota": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Maximum approvals allowed per session (0 = unlimited)"
+        },
+        "autoplan.autoSubmitMaxQuota": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDeprecationMessage": "Use `autoplan.autoSubmit.maxQuota` instead.",
+          "description": "Maximum approvals allowed per session (0 = unlimited, alias for autoplan.autoSubmit.maxQuota)."
+        },
+        "autoplan.autoSubmit.notifyTelegram": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to forward approval events to Telegram"
+        },
+        "autoplan.autoSubmitNotifyTelegram": {
+          "type": "boolean",
+          "default": true,
+          "markdownDeprecationMessage": "Use `autoplan.autoSubmit.notifyTelegram` instead.",
+          "description": "Whether to forward approval events to Telegram (alias for autoplan.autoSubmit.notifyTelegram)."
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "package": "vsce package --allow-missing-repository --no-git-tag-version",
+    "vscode:prepublish": "node ./node_modules/typescript/bin/tsc -p ./",
+    "compile": "node ./node_modules/typescript/bin/tsc -p ./",
+    "watch": "node ./node_modules/typescript/bin/tsc -watch -p ./",
+    "package": "node scripts/package.js package --allow-missing-repository --no-git-tag-version",
     "test": "node out/test/phase05_e2e_cross_platform_release.test.js",
+    "test:phase05-dom-bridge": "node out/test/phase05_dom_bridge_full_regression_release.test.js",
+    "test:phase01-rpc": "node out/test/phase01_rpc_discovery_candidate_filtering.test.js",
+    "test:phase02-rpc": "node out/test/phase02_rpc_auto_submit_execution_dedup.test.js",
+    "test:phase03-rpc": "node out/test/phase03_auto_submit_lifecycle_and_diagnostics.test.js",
+    "test:phase04-rpc": "node out/test/phase04_auto_submit_telegram_mirroring.test.js",
+    "test:phase05-rpc": "node out/test/phase05_auto_submit_settings_ui_and_release.test.js",
     "test:phase04-perf-release": "node out/test/phase04_performance_remediation_release.test.js",
     "test:phase01-nudge": "node out/test/phase01_nudge_config_and_bridge_stop.test.js",
     "test:phase02-nudge": "node out/test/phase02_orchestrator_nudge_watchdog.test.js",

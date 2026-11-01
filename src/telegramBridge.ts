@@ -448,6 +448,7 @@ export class TelegramBridge {
   private screenCaptureOptions?: ScreenCaptureOptions;
   private secretManager: SecretStorageManager;
   private promptOriginTracker: PromptOriginTracker;
+  private autoSubmitEngine: any = null;
   private chatMirror: TelegramChatMirror | null = null;
   public allowFreeChat: boolean = true;
   private enableChatMirror: boolean = true;
@@ -1099,6 +1100,26 @@ export class TelegramBridge {
     if (this.transcriptWatcher) {
       this.notifier.attachTranscriptWatcher(this.transcriptWatcher);
     }
+    if (this.autoSubmitEngine && typeof (this.notifier as any).attachAutoSubmitEngine === 'function') {
+      (this.notifier as any).attachAutoSubmitEngine(this.autoSubmitEngine);
+    }
+  }
+
+  /**
+   * Attaches an RPC Auto-Submit coordinator engine to the bridge and notifier.
+   */
+  public attachAutoSubmitEngine(engine: any): void {
+    this.autoSubmitEngine = engine;
+    if (this.notifier && typeof (this.notifier as any).attachAutoSubmitEngine === 'function') {
+      (this.notifier as any).attachAutoSubmitEngine(engine);
+    }
+  }
+
+  /**
+   * Gets the active RPC Auto-Submit coordinator engine.
+   */
+  public getAutoSubmitEngine(): any {
+    return this.autoSubmitEngine;
   }
 
   /**

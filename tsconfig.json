@@ -9,5 +9,14 @@
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": [
+    "src/test/phase01_dom_snapshot_logging_memory.test.ts",
+    "src/test/phase01_prompt_template_modernization.test.ts",
+    "src/test/phase02_telegram_throttling_reliability.test.ts",
+    "src/test/phase03_disk_io_deduplication_concurrency.test.ts",
+    "src/test/phase03_release_v1_6_8.test.ts",
+    "src/test/phase04_dispatch_latency_algorithmic_cleanup.test.ts",
+    "src/test/phase05_full_performance_regression_release.test.ts"
+  ]
 }

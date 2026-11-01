@@ -7,9 +7,9 @@
   "project": {
     "name": "Auto-Plan_Extension",
     "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan, inject prompt focus-free qua DOM Renderer Bridge hoặc OS Keyboard Simulation, theo dõi log transcript AI sinh code, tự động chuyển tiếp phase, kèm hệ thống Full-Screen Settings Panel hiện đại 4-Tab với Instant Search Filter, Debounced Auto-Save và Optimistic Rollback, DOM Bridge Diagnostic Logger, hỗ trợ toàn diện Single-Folder, Multi-Root Workspace & Untitled Workspaces, cầu nối điều khiển từ xa qua Telegram Remote Control Bot (4-Screen Interactive Flow, Live Control Dashboard, Free-Text Silent Drop Gating), hệ thống Telegram Clean Q&A Sync (Two-Way Live Question & Answer Mirror), Long-Running Phase Nudge Watchdog & Mid-Flight Steering tự động nhắc nhở AI khi phase chạy > 3 phút, và hệ thống tối ưu hóa hiệu năng & tài nguyên toàn diện.",
-    "version": "1.6.7",
+    "version": "1.7.0",
     "created_at": "2026-08-27T23:51:00+07:00",
-    "active_plan": "plans/261014-0555-telegram-chat-toggle-and-settings-ui/plan.md"
+    "active_plan": "plans/261031-1933-native-rpc-auto-submit/plan.md"
   },
   "tech_stack": {
     "language": "TypeScript 5.3 / JavaScript (Node.js 20+)",

@@ -1,7 +1,7 @@
 import { Bot, GrammyError, HttpError } from 'grammy';
 import * as path from 'path';
 import { debugLogger, DebugLogger } from './debugLogger';
-import { getTelegramConfig } from './config';
+import { getConfig, getTelegramConfig } from './config';
 import { splitMessage, stripMarkdownToPlainText } from './telegramUtils';
 
 /**
@@ -167,14 +167,163 @@ export function formatActivityPreview(data: any): string {
   return '⏳ In progress...';
 }
 
+/**
+ * Sanitizes and masks sensitive passwords, authentication tokens, API keys,
+ * and environment credentials from text strings before Telegram transmission.
+ */
+export function maskSensitiveTokens(input: string): string {
+  if (typeof input !== 'string') {
+    return '';
+  }
+  let result = input;
+
+  // 1. Authorization Bearer header / tokens
+  result = result.replace(/Bearer\s+([A-Za-z0-9_\-\.]+)/gi, 'Bearer [REDACTED]');
+
+  // 2. Specific known token formats: GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
+  result = result.replace(/\b(gh[pousr]_[A-Za-z0-9_]{15,})\b/g, '[REDACTED_TOKEN]');
+
+  // 3. Google API Keys (AIzaSy...)
+  result = result.replace(/\b(AIza[0-9A-Za-z-_]{35})\b/g, '[REDACTED_KEY]');
+
+  // 4. AWS access key ID / secret patterns
+  result = result.replace(/\b(AKIA[0-9A-Z]{16})\b/g, '[REDACTED_AWS_KEY]');
+
+  // 5. JWT tokens (header.payload.signature)
+  result = result.replace(/\bey[A-Za-z0-9-_=]+\.ey[A-Za-z0-9-_=]+\.[A-Za-z0-9-_.+/=]+\b/g, '[REDACTED_JWT]');
+
+  // 6. Common sensitive key=value or key: value flags / parameters
+  result = result.replace(
+    /((?:--?[a-zA-Z0-9_\-]*?(?:password|passwd|pwd|secret|token|api[_-]?key|auth|credential)[a-zA-Z0-9_\-]*?)\s*[:=]\s*)(['"]?)([^'"\s&|;]+)\2/gi,
+    '$1$2[REDACTED]$2'
+  );
+
+  // 7. CLI flags separated by space: e.g. --token my_token or --password secret
+  result = result.replace(
+    /((?:--?[a-zA-Z0-9_\-]*?(?:password|passwd|pwd|secret|token|api[_-]?key|credential))\s+)(['"]?)([^'"\s&|;]+)\2/gi,
+    '$1$2[REDACTED]$2'
+  );
+
+  // 8. Shell environment variable export/assignments: e.g. SECRET_KEY=xxx or TOKEN=xxx
+  result = result.replace(
+    /(\b(?:[a-zA-Z0-9_]*?(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|KEY|AUTH|CREDENTIAL)[a-zA-Z0-9_]*?)=)(['"]?)([^'"\s&|;]+)\2/gi,
+    '$1$2[REDACTED]$2'
+  );
+
+  // 9. URLs with embedded credentials: https://user:pass@host
+  result = result.replace(/(https?:\/\/)([^:\s]+):([^@\s]+)@/gi, '$1$2:[REDACTED]@');
+
+  return result;
+}
+
+/**
+ * Truncates overly long command strings while preserving core context.
+ */
+export function truncateCommand(cmd: string, maxLength: number = 200): string {
+  if (typeof cmd !== 'string') {
+    return '';
+  }
+  const singleLine = cmd.replace(/[\r\n]+/g, ' ').trim();
+  if (singleLine.length <= maxLength) {
+    return singleLine;
+  }
+  const truncationNotice = '... [truncated]';
+  const keepLength = Math.max(10, maxLength - truncationNotice.length);
+  return singleLine.slice(0, keepLength) + truncationNotice;
+}
+
+/**
+ * Cleanly sanitizes and truncates shell command arguments.
+ */
+export function sanitizeApprovalCommand(cmd: string, maxLength: number = 200): string {
+  const masked = maskSensitiveTokens(cmd);
+  return truncateCommand(masked, maxLength);
+}
+
+/**
+ * Formats permission approval details into a structured, plain-text Telegram notification.
+ */
+export function formatApprovalMessage(candidateOrEvent: any, nowFn: () => number = Date.now): string {
+  const candidate = candidateOrEvent?.candidate || candidateOrEvent;
+  if (!candidate) {
+    return '⚡ [Auto-Submit] Approved: Permission Approval\n• Scope: Allow Once (Single-use)';
+  }
+
+  // 1. Tool / Action Name determination
+  const resource = candidate.resource || {};
+  let actionName = resource.action || candidate.toolName || candidate.toolCall?.name || '';
+  if (!actionName) {
+    actionName = candidate.pattern ? `${candidate.pattern} Permission` : 'Permission Approval';
+  }
+
+  // 2. Target Resource / Command String
+  let target = resource.target || resource.command || resource.path || resource.file || '';
+  if (!target && candidate.toolCall?.parameters) {
+    const params = candidate.toolCall.parameters;
+    target = params.CommandLine || params.command || params.cmd || params.path || params.file || '';
+  }
+
+  // Check if this is a command execution action
+  const isCommand = /command|terminal|bash|shell|run|exec/i.test(actionName) ||
+    /npm|git|bash|sh|node|cargo|python|make|docker|kubectl/i.test(String(target));
+
+  let targetDisplay = target ? String(target) : '';
+  if (isCommand && targetDisplay) {
+    targetDisplay = sanitizeApprovalCommand(targetDisplay, 200);
+  } else if (targetDisplay && targetDisplay.length > 250) {
+    targetDisplay = targetDisplay.slice(0, 247) + '...';
+  }
+
+  // 3. Timestamp
+  const ts = new Date(typeof nowFn === 'function' ? nowFn() : Date.now()).toISOString();
+
+  // 4. Single-use indicator
+  const scopeIndicator = 'Allow Once (Single-use)';
+
+  // Build clean plain-text message
+  const lines: string[] = [
+    `⚡ [Auto-Submit] Approved: ${stripMarkdownToPlainText(actionName)}`,
+    targetDisplay ? `• Target: ${stripMarkdownToPlainText(targetDisplay)}` : '',
+    `• Scope: ${scopeIndicator}`,
+    `• Timestamp: ${ts}`
+  ].filter(Boolean);
+
+  return lines.join('\n');
+}
+
+/**
+ * Extracts a content signature key for approval candidate deduplication.
+ */
+export function getApprovalDedupKey(candidateOrEvent: any): string {
+  if (!candidateOrEvent) {
+    return '';
+  }
+  if (typeof candidateOrEvent === 'string') {
+    return candidateOrEvent.replace(/• Timestamp:.*$/m, '').trim();
+  }
+  const candidate = candidateOrEvent?.candidate || candidateOrEvent;
+  const resource = candidate.resource || {};
+  const actionName = resource.action || candidate.toolName || candidate.toolCall?.name || candidate.pattern || '';
+  const target = resource.target || resource.command || resource.path || resource.file || '';
+  const params = candidate.toolCall?.parameters || {};
+  const cmd = params.CommandLine || params.command || params.cmd || '';
+  return `${actionName}::${target}::${cmd}`;
+}
+
 export interface ThrottledNotifierOptions {
   bot?: Bot | null;
   chatId?: number | string | (number | string)[];
   chatIds?: (number | string)[];
   throttleMs?: number;
+  approvalRateLimitMs?: number;
+  approvalDedupWindowMs?: number;
   logger?: DebugLogger;
   transcriptWatcher?: any;
   orchestrator?: any;
+  autoSubmitEngine?: any;
+  nowFn?: () => number;
+  setTimerFn?: (fn: (...args: any[]) => void, ms: number) => any;
+  clearTimerFn?: (timer: any) => void;
 }
 
 /**
@@ -201,10 +350,44 @@ export class ThrottledNotifier {
   private orchListeners: { [evt: string]: (...args: any[]) => void } = {};
   private watcherListeners: { [evt: string]: (...args: any[]) => void } = {};
 
+  private approvalQueue: Array<{
+    text: string;
+    candidate?: any;
+    addedAt: number;
+    resolve?: (val: boolean) => void;
+    reject?: (err: any) => void;
+  }> = [];
+  private approvalRateLimitMs: number = 1000;
+  private approvalDedupWindowMs: number = 5000;
+  private lastApprovalKey: string = '';
+  private lastApprovalText: string = '';
+  private lastApprovalTime: number = 0;
+  private lastApprovalSendTime: number = 0;
+  private recentApprovalSignatures: Map<string, number> = new Map();
+  private isProcessingApprovalQueue: boolean = false;
+  private approvalQueueTimer: any = null;
+  private nowFn: () => number = Date.now;
+  private setTimerFn: (fn: (...args: any[]) => void, ms: number) => any = setTimeout;
+  private clearTimerFn: (timer: any) => void = clearTimeout;
+  private autoSubmitEngine: any = null;
+  private autoSubmitUnsubscribe: (() => void) | null = null;
+
   constructor(options?: ThrottledNotifierOptions) {
     this.logger = options?.logger || debugLogger;
     this.bot = options?.bot || null;
     this.throttleMs = options?.throttleMs ?? getTelegramConfig().throttleMs ?? 2500;
+    this.approvalRateLimitMs = options?.approvalRateLimitMs ?? 1000;
+    this.approvalDedupWindowMs = options?.approvalDedupWindowMs ?? 5000;
+
+    if (options?.nowFn) {
+      this.nowFn = options.nowFn;
+    }
+    if (options?.setTimerFn) {
+      this.setTimerFn = options.setTimerFn;
+    }
+    if (options?.clearTimerFn) {
+      this.clearTimerFn = options.clearTimerFn;
+    }
 
     if (options?.chatId !== undefined) {
       if (Array.isArray(options.chatId)) {
@@ -222,6 +405,9 @@ export class ThrottledNotifier {
     }
     if (options?.transcriptWatcher) {
       this.attachTranscriptWatcher(options.transcriptWatcher);
+    }
+    if (options?.autoSubmitEngine) {
+      this.attachAutoSubmitEngine(options.autoSubmitEngine);
     }
   }
 
@@ -745,6 +931,297 @@ export class ThrottledNotifier {
   }
 
   /**
+   * Attaches approval event listener to an RPC Auto-Submit coordinator engine.
+   */
+  public attachAutoSubmitEngine(engine: any): void {
+    if (!engine) {
+      return;
+    }
+    this.detachAutoSubmitEngine();
+    this.autoSubmitEngine = engine;
+
+    const handler = (event: any) => {
+      const cfg = getConfig();
+      if (cfg.autoSubmitNotifyTelegram === false) {
+        return;
+      }
+      const tgCfg = getTelegramConfig();
+      if (tgCfg.enabled === false) {
+        return;
+      }
+      const candidate = event?.candidate || event;
+      this.queueApprovalNotification(candidate);
+    };
+
+    if (typeof engine.onApproval === 'function') {
+      const sub = engine.onApproval(handler);
+      this.autoSubmitUnsubscribe = typeof sub?.dispose === 'function' ? () => sub.dispose() : null;
+    } else if (typeof engine.on === 'function') {
+      engine.on('approval', handler);
+      this.autoSubmitUnsubscribe = () => {
+        if (typeof engine.off === 'function') {
+          engine.off('approval', handler);
+        } else if (typeof engine.removeListener === 'function') {
+          engine.removeListener('approval', handler);
+        }
+      };
+    }
+  }
+
+  /**
+   * Detaches the active Auto-Submit coordinator engine and cleans up event subscriptions.
+   */
+  public detachAutoSubmitEngine(): void {
+    if (this.autoSubmitUnsubscribe) {
+      try {
+        this.autoSubmitUnsubscribe();
+      } catch {}
+      this.autoSubmitUnsubscribe = null;
+    }
+    this.autoSubmitEngine = null;
+  }
+
+  /**
+   * Enqueues an approval event into the rate-limited dispatch queue with deduplication.
+   * Returns true if successfully enqueued, false if suppressed by deduplication or disabled config.
+   */
+  public queueApprovalNotification(candidateOrEvent: any): boolean {
+    const cfg = getConfig();
+    if (cfg.autoSubmitNotifyTelegram === false) {
+      return false;
+    }
+    const tgCfg = getTelegramConfig();
+    if (tgCfg.enabled === false) {
+      return false;
+    }
+
+    const text = formatApprovalMessage(candidateOrEvent, () => this.nowFn());
+    const dedupKey = getApprovalDedupKey(candidateOrEvent);
+    const now = this.nowFn();
+
+    // Deduplicate consecutive identical messages within rolling short window
+    if (
+      (this.lastApprovalKey === dedupKey || this.lastApprovalText === text) &&
+      now - this.lastApprovalTime < this.approvalDedupWindowMs
+    ) {
+      this.logger.info('TELEGRAM', `Deduplicated consecutive identical approval notification: ${dedupKey}`);
+      return false;
+    }
+
+    // Deduplicate rolling window identical messages
+    const lastSeen = this.recentApprovalSignatures.get(dedupKey);
+    if (lastSeen !== undefined && now - lastSeen < this.approvalDedupWindowMs) {
+      this.logger.info('TELEGRAM', `Deduplicated rolling window approval notification: ${dedupKey}`);
+      return false;
+    }
+
+    this.lastApprovalKey = dedupKey;
+    this.lastApprovalText = text;
+    this.lastApprovalTime = now;
+    this.recentApprovalSignatures.set(dedupKey, now);
+
+    // Prune stale rolling window entries
+    for (const [sig, time] of this.recentApprovalSignatures.entries()) {
+      if (now - time > this.approvalDedupWindowMs * 2) {
+        this.recentApprovalSignatures.delete(sig);
+      }
+    }
+
+    this.approvalQueue.push({
+      text,
+      candidate: candidateOrEvent?.candidate || candidateOrEvent,
+      addedAt: now
+    });
+
+    this.scheduleApprovalQueueDrain();
+    return true;
+  }
+
+  /**
+   * Enqueues an approval event and returns a promise that resolves when the message is dispatched.
+   */
+  public async sendApprovalNotification(candidateOrEvent: any): Promise<boolean> {
+    const cfg = getConfig();
+    if (cfg.autoSubmitNotifyTelegram === false) {
+      return false;
+    }
+    const tgCfg = getTelegramConfig();
+    if (tgCfg.enabled === false) {
+      return false;
+    }
+
+    return new Promise<boolean>((resolve, reject) => {
+      const text = formatApprovalMessage(candidateOrEvent, () => this.nowFn());
+      const dedupKey = getApprovalDedupKey(candidateOrEvent);
+      const now = this.nowFn();
+
+      if (
+        (this.lastApprovalKey === dedupKey || this.lastApprovalText === text) &&
+        now - this.lastApprovalTime < this.approvalDedupWindowMs
+      ) {
+        this.logger.info('TELEGRAM', `Deduplicated consecutive identical approval notification: ${dedupKey}`);
+        resolve(false);
+        return;
+      }
+
+      const lastSeen = this.recentApprovalSignatures.get(dedupKey);
+      if (lastSeen !== undefined && now - lastSeen < this.approvalDedupWindowMs) {
+        this.logger.info('TELEGRAM', `Deduplicated rolling window approval notification: ${dedupKey}`);
+        resolve(false);
+        return;
+      }
+
+      this.lastApprovalKey = dedupKey;
+      this.lastApprovalText = text;
+      this.lastApprovalTime = now;
+      this.recentApprovalSignatures.set(dedupKey, now);
+
+      for (const [sig, time] of this.recentApprovalSignatures.entries()) {
+        if (now - time > this.approvalDedupWindowMs * 2) {
+          this.recentApprovalSignatures.delete(sig);
+        }
+      }
+
+      this.approvalQueue.push({
+        text,
+        candidate: candidateOrEvent?.candidate || candidateOrEvent,
+        addedAt: now,
+        resolve,
+        reject
+      });
+
+      this.scheduleApprovalQueueDrain();
+    });
+  }
+
+  /**
+   * Schedules draining of the approval message queue adhering to rate limits (1 msg/sec) and backoff.
+   */
+  public scheduleApprovalQueueDrain(): void {
+    if (this.approvalQueue.length === 0 || this.isProcessingApprovalQueue) {
+      return;
+    }
+    if (this.approvalQueueTimer) {
+      return;
+    }
+
+    const now = this.nowFn();
+    // Respect Telegram 429 backoff pause
+    if (now < this.pausedUntil) {
+      const wait = this.pausedUntil - now;
+      this.approvalQueueTimer = this.setTimerFn(() => {
+        this.approvalQueueTimer = null;
+        this.scheduleApprovalQueueDrain();
+      }, wait);
+      return;
+    }
+
+    const elapsed = now - this.lastApprovalSendTime;
+    if (elapsed >= this.approvalRateLimitMs) {
+      this.processNextApprovalQueueItem().catch(() => {});
+    } else {
+      const wait = Math.max(10, this.approvalRateLimitMs - elapsed);
+      this.approvalQueueTimer = this.setTimerFn(() => {
+        this.approvalQueueTimer = null;
+        this.scheduleApprovalQueueDrain();
+      }, wait);
+    }
+  }
+
+  /**
+   * Processes the next item in the approval queue if pacing permits.
+   */
+  public async processNextApprovalQueueItem(): Promise<void> {
+    if (this.approvalQueue.length === 0 || this.isProcessingApprovalQueue) {
+      return;
+    }
+
+    const now = this.nowFn();
+    if (now < this.pausedUntil) {
+      this.scheduleApprovalQueueDrain();
+      return;
+    }
+
+    const elapsed = now - this.lastApprovalSendTime;
+    if (elapsed < this.approvalRateLimitMs) {
+      this.scheduleApprovalQueueDrain();
+      return;
+    }
+
+    const item = this.approvalQueue.shift();
+    if (!item) {
+      return;
+    }
+
+    this.isProcessingApprovalQueue = true;
+    try {
+      const results = await this.broadcastMessage(item.text);
+      if (this.isPaused()) {
+        // Paused due to 429 rate limit backoff: put item back at head of queue for automatic retry
+        this.approvalQueue.unshift(item);
+      } else {
+        this.lastApprovalSendTime = this.nowFn();
+        if (item.resolve) {
+          item.resolve(true);
+        }
+      }
+    } catch (err: any) {
+      if (this.isPaused()) {
+        this.approvalQueue.unshift(item);
+      } else {
+        this.logger.warn('TELEGRAM', `Failed to send approval notification: ${err?.message || err}`);
+        if (item.reject) {
+          item.reject(err);
+        }
+      }
+    } finally {
+      this.isProcessingApprovalQueue = false;
+      if (this.approvalQueue.length > 0) {
+        this.scheduleApprovalQueueDrain();
+      }
+    }
+  }
+
+  public getApprovalQueueLength(): number {
+    return this.approvalQueue.length;
+  }
+
+  public setApprovalRateLimitMs(ms: number): void {
+    if (ms > 0) {
+      this.approvalRateLimitMs = ms;
+    }
+  }
+
+  public getApprovalRateLimitMs(): number {
+    return this.approvalRateLimitMs;
+  }
+
+  public setApprovalDedupWindowMs(ms: number): void {
+    if (ms > 0) {
+      this.approvalDedupWindowMs = ms;
+    }
+  }
+
+  public getApprovalDedupWindowMs(): number {
+    return this.approvalDedupWindowMs;
+  }
+
+  public clearApprovalQueue(): void {
+    if (this.approvalQueueTimer) {
+      this.clearTimerFn(this.approvalQueueTimer);
+      this.approvalQueueTimer = null;
+    }
+    this.approvalQueue = [];
+    this.isProcessingApprovalQueue = false;
+  }
+
+  public async flushApprovalQueue(): Promise<void> {
+    while (this.approvalQueue.length > 0) {
+      await this.processNextApprovalQueueItem();
+    }
+  }
+
+  /**
    * Cleans up all pending timers and event listeners.
    */
   public dispose(): void {
@@ -752,6 +1229,13 @@ export class ThrottledNotifier {
       clearTimeout(this.throttleTimer);
       this.throttleTimer = null;
     }
+
+    if (this.approvalQueueTimer) {
+      this.clearTimerFn(this.approvalQueueTimer);
+      this.approvalQueueTimer = null;
+    }
+    this.approvalQueue = [];
+    this.detachAutoSubmitEngine();
 
     if (this.orchestrator) {
       const remove = typeof this.orchestrator.off === 'function' ? 'off' : 'removeListener';

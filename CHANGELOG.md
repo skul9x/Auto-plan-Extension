@@ -2,6 +2,58 @@
 
 All notable changes to the **Antigravity Auto-Plan Runner** extension will be documented in this file.
 
+## [1.7.1] - 2026-11-01
+
+### 🛡️ Hardened DOM Bridge Chat Injection & Two-Phase Verification
+- **Container-Scoped Chat Input Discovery & Monaco Code Editor Exclusion**:
+  - Reordered selector evaluation hierarchy to strictly prioritize Antigravity Agent Chat container elements (`#antigravity.agentSidePanelInputBox`, `div[data-lexical-editor="true"]`, `div[aria-label="Message input"]`).
+  - Completely removed dangerous global `[role="textbox"]` fallback.
+  - Implemented strict Monaco Code Editor exclusion guard (`isCodeEditorElement`) rejecting any element inside `.monaco-workbench .part.editor` (such as `.native-edit-context` and `overflow-guard`), ensuring active code tabs are never mistakenly targeted when the chat panel is unrendered.
+  - Added semantic target fingerprinting capturing `isInChatPanel`, `ariaLabel`, `placeholder`, and visual `boundingBox` dimensions.
+- **Two-Phase Buffer Verification (Post-Paste Check) & Fail-Fast Rejection Engine**:
+  - Implemented mandatory `verifyBufferHasText` barrier immediately after prompt injection, evaluating multiple DOM content extraction pathways (`innerText`, `textContent`, `value`, Monaco model).
+  - Enforced length matching ($\ge \min(\text{expected} \times 0.75, 50)$) and substring containment verification.
+  - Fail-fast rejection throwing structured error `PASTE_VERIFICATION_FAILED` if buffer is empty or unverified, strictly prohibiting premature submit actions.
+- **Submission Proof Transition Hardening & False-Positive Proof 1 Elimination**:
+  - Fixed critical bug where empty inputs returned instant clearance verification (`input_cleared_immediately` in 0ms).
+  - Enforced state transition requirement (`hasConfirmedContentBeforeSubmit`): Proof 1 (`input_cleared`) is only eligible if the element previously verified containing prompt text.
+  - Added untrusted fallback rejection guard if synthetic Enter dispatch is unverified within observation window.
+- **Dispatcher Telemetry & Diagnostic Report Integration**:
+  - Propagated Step 1 (`elementContext`) and Step 2 (`charsExpected`, `charsDetectedInDOM`, `domExcerpt`) verification metadata through `BridgeServer` into `PromptDispatcher`.
+  - Surfaced injection health and target element container status in `DebugLogger` diagnostic reports.
+  - Integrated actionable error notification offering one-click "Open Chat Panel" button upon injection failure.
+- **Full End-to-End Regression & Release Packaging**:
+  - Production VSIX package verification (`antigravity-auto-plan-1.7.1.vsix`) with zero leaked tokens and complete dependency audit.
+
+---
+
+## [1.7.0] - 2026-10-31
+
+### ⚡ Native RPC Auto-Submit & Permission Approval Engine
+- **Antigravity Internal RPC Discovery & Trajectory Traversal**:
+  - Direct integration with internal `google.google-antigravity` extension RPC interface (`getAllCascadeTrajectories`, `handleCascadeUserInteraction`).
+  - Completely eliminates Cross-Origin `<iframe>` sandbox restrictions and brittle DOM click synthesis.
+  - Multi-workspace boundary validation ensuring permission requests are strictly scoped to currently open folders.
+- **Cryptographic SHA-256 Deduplication & Rate Limiting**:
+  - Exact canonical JSON serialization and SHA-256 fingerprinting preventing duplicate permission approvals.
+  - LRU-bounded Quarantine Cache with 24-hour expiration window and bounded memory footprint (< 2 MB).
+  - Exponential backoff with jitter on RPC failures and strict request timeouts (1000ms–5000ms).
+- **Settings Webview Dashboard Integration & Real-Time Telemetry**:
+  - Dedicated "RPC Native Auto-Submit & Permission Approval" control card inside `#tab-timing` in Settings Webview.
+  - Master Auto-Submit switch, poll interval range slider (200ms–10,000ms) with human-readable unit display, session quota input, and Telegram notification toggle.
+  - Live status indicator badges reflecting engine connection state (`🟢 Connected (Ready)`, `🟡 Waiting for Agent`, `⚪ Disabled`, `🔴 Unsupported`).
+  - Session approved permissions telemetry counter with one-click reset action.
+  - Seamless participation in 300ms debounced auto-save and instant keyword search filtering.
+- **Real-Time Telegram Event Mirroring & Burst Alerting**:
+  - Instant plain-text notifications streaming autonomous approvals to connected Telegram chats.
+  - Human-readable formatting with target resource and tool call identity, secret token redacting, and message argument truncation.
+  - Sliding-window burst throttling preventing Telegram 429 rate limit errors.
+- **Comprehensive 3-Tier Dispatch Regression & Release Packaging**:
+  - Zero regression across Tier 1 DOM Bridge, Tier 2 VS Code command dispatch, Tier 3 keyboard simulation, and Telegram remote control.
+  - Production VSIX package verification (`antigravity-auto-plan-1.7.0.vsix`) with full dependency audit.
+
+---
+
 ## [1.6.7] - 2026-10-14
 
 ### 🤖 Telegram Remote Control & Settings UI Modernization

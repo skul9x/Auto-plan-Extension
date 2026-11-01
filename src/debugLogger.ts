@@ -17,7 +17,9 @@ export type LogComponent =
   | 'ORCHESTRATOR'
   | 'SETTINGS'
   | 'PHASE'
-  | 'TELEGRAM';
+  | 'TELEGRAM'
+  | 'AUTOSUBMIT'
+  | 'RPC';
 
 export interface LogEntry {
   id: string;
@@ -28,6 +30,19 @@ export interface LogEntry {
   message: string;
   details?: any;
   error?: string;
+}
+
+export interface DomBridgeInjectionTelemetry {
+  status: 'verified' | 'failed' | 'unknown';
+  charsExpected?: number;
+  charsDetectedInDOM?: number;
+  charsInjected?: number;
+  elementContext?: string;
+  strategy?: string;
+  domExcerpt?: string;
+  timestamp?: number;
+  error?: string;
+  verified?: boolean;
 }
 
 export interface EnvironmentReport {
@@ -71,6 +86,7 @@ export interface EnvironmentReport {
     autoOpenBridgeLogOnError: boolean;
   };
   planPhases?: PlanPhasesAuditReport;
+  injectionTelemetry?: DomBridgeInjectionTelemetry;
 }
 
 /**
@@ -100,18 +116,53 @@ function safeStringify(obj: any): string {
 }
 
 /**
+ * Masks sensitive authentication tokens, API keys, and credentials
+ */
+export function maskTokensInText(input: string): string {
+  if (!input || typeof input !== 'string') return '';
+  let result = input;
+  // 1. Authorization Bearer header / tokens
+  result = result.replace(/Bearer\s+([A-Za-z0-9_\-\.]+)/gi, 'Bearer [REDACTED]');
+  // 2. Specific known token formats: GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
+  result = result.replace(/\b(gh[pousr]_[A-Za-z0-9_]{15,})\b/g, '[REDACTED_TOKEN]');
+  // 3. Google API Keys (AIzaSy...)
+  result = result.replace(/\b(AIza[0-9A-Za-z-_]{20,})\b/g, '[REDACTED_KEY]');
+  // 4. OpenAI / Anthropic key patterns (sk-...)
+  result = result.replace(/\b(sk-[a-zA-Z0-9_\-]{20,})\b/g, '[REDACTED_KEY]');
+  // 5. Generic token / password / secret assignments
+  result = result.replace(/(token|password|secret|apikey|api_key)\s*[:=]\s*['"]?[^\s,'"]+/gi, '$1=[REDACTED]');
+  return result;
+}
+
+/**
  * Truncates and sanitizes prompt text for safe and compact logging
  */
 export function sanitizePrompt(prompt: string, maxLength: number = 120): string {
   if (!prompt || typeof prompt !== 'string') {
     return '';
   }
+  const masked = maskTokensInText(prompt);
   // Replace newlines with spaces for compact single-line preview
-  const singleLine = prompt.replace(/\r?\n|\r/g, ' ').trim();
+  const singleLine = masked.replace(/\r?\n|\r/g, ' ').trim();
   if (singleLine.length <= maxLength) {
     return singleLine;
   }
   return `${singleLine.slice(0, maxLength)}... (${prompt.length} chars)`;
+}
+
+/**
+ * Truncates and sanitizes DOM excerpt to max 60 chars with token redaction
+ */
+export function sanitizeExcerpt(excerpt: string, maxLength: number = 60): string {
+  if (!excerpt || typeof excerpt !== 'string') {
+    return '';
+  }
+  const masked = maskTokensInText(excerpt);
+  const singleLine = masked.replace(/\r?\n|\r/g, ' ').trim();
+  if (singleLine.length <= maxLength) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, maxLength)}...`;
 }
 
 export class DebugLogger {
@@ -124,6 +175,7 @@ export class DebugLogger {
   private outputChannel: vscode.OutputChannel | vscode.LogOutputChannel | null = null;
   private bridgeServerInstance: any = null;
   private planAuditProvider: (() => PlanPhasesAuditReport | null) | null = null;
+  private lastInjectionTelemetry: DomBridgeInjectionTelemetry | null = null;
   private sequenceCounter: number = 0;
 
   constructor(capacity?: number) {
@@ -153,6 +205,30 @@ export class DebugLogger {
    */
   public registerPlanAuditProvider(provider: () => PlanPhasesAuditReport | null): void {
     this.planAuditProvider = provider;
+  }
+
+  /**
+   * Records verification telemetry for the most recent DOM prompt injection
+   */
+  public recordInjectionTelemetry(telemetry: DomBridgeInjectionTelemetry): void {
+    this.lastInjectionTelemetry = {
+      ...telemetry,
+      timestamp: telemetry.timestamp || Date.now()
+    };
+  }
+
+  /**
+   * Retrieves verification telemetry from the most recent DOM prompt injection
+   */
+  public getLastInjectionTelemetry(): DomBridgeInjectionTelemetry | null {
+    return this.lastInjectionTelemetry;
+  }
+
+  /**
+   * Clears recorded injection telemetry
+   */
+  public clearInjectionTelemetry(): void {
+    this.lastInjectionTelemetry = null;
   }
 
   /**
@@ -371,6 +447,13 @@ export class DebugLogger {
   }
 
   /**
+   * Retrieves the OutputChannel instance or creates it if not initialized.
+   */
+  public getOutputChannel(): vscode.OutputChannel | null {
+    return this.getOrCreateOutputChannel();
+  }
+
+  /**
    * Reveals the output channel in the VS Code workbench
    */
   public showOutputChannel(preserveFocus: boolean = true): void {
@@ -410,7 +493,8 @@ export class DebugLogger {
    */
   public buildEnvironmentReport(
     serverOverride?: any,
-    planAuditOverride?: PlanPhasesAuditReport
+    planAuditOverride?: PlanPhasesAuditReport,
+    injectionOverride?: DomBridgeInjectionTelemetry
   ): EnvironmentReport {
     // OS details
     const osInfo = {
@@ -542,6 +626,8 @@ export class DebugLogger {
       }
     }
 
+    const injectionTelemetry = injectionOverride || this.lastInjectionTelemetry || undefined;
+
     return {
       timestamp: new Date().toISOString(),
       os: osInfo,
@@ -550,7 +636,8 @@ export class DebugLogger {
       domBridge: domBridgeInfo,
       server: serverInfo,
       config: configInfo,
-      ...(planPhases ? { planPhases } : {})
+      ...(planPhases ? { planPhases } : {}),
+      ...(injectionTelemetry ? { injectionTelemetry } : {})
     };
   }
 
@@ -560,14 +647,40 @@ export class DebugLogger {
   public exportDiagnosticReportToString(
     maxEntries: number = 100,
     serverOverride?: any,
-    planAuditOverride?: PlanPhasesAuditReport
+    planAuditOverride?: PlanPhasesAuditReport,
+    injectionOverride?: DomBridgeInjectionTelemetry
   ): string {
-    const report = this.buildEnvironmentReport(serverOverride, planAuditOverride);
+    const report = this.buildEnvironmentReport(serverOverride, planAuditOverride, injectionOverride);
     const recentLogs = this.getRecentEntries(maxEntries);
 
     const isBridgeInstalled = report.domBridge.installed;
     const isServerListening = report.server.activePort !== null;
     const hasConnectedClients = report.server.connectedClientsCount > 0;
+
+    const injection = report.injectionTelemetry || this.lastInjectionTelemetry;
+    let isInjectionVerified = false;
+    let injectionHealthStr = 'ℹ️ Not yet tested (No prompts dispatched)';
+    let isContainerVerified = false;
+    let targetContainerStr = '`#antigravity.agentSidePanelInputBox` (Default)';
+
+    if (injection) {
+      if (injection.status === 'verified' || injection.verified === true) {
+        isInjectionVerified = true;
+        const chars = injection.charsInjected ?? injection.charsDetectedInDOM ?? injection.charsExpected ?? 0;
+        injectionHealthStr = `✅ Verified (Last prompt: ${chars} chars injected, buffer matched)`;
+      } else if (injection.status === 'failed' || injection.verified === false) {
+        isInjectionVerified = false;
+        const reason = (injection.charsDetectedInDOM === 0 || !injection.charsDetectedInDOM)
+          ? 'Buffer was empty'
+          : (injection.error || 'Buffer mismatch');
+        injectionHealthStr = `❌ Failed (${reason})`;
+      }
+
+      const container = injection.elementContext || '#antigravity.agentSidePanelInputBox';
+      const inChat = container.includes('agentSidePanelInputBox') || container.includes('chat-widget') || container.includes('chat');
+      targetContainerStr = `\`${container}\`${inChat ? ' (Verified in Chat Panel)' : ''}`;
+      isContainerVerified = inChat;
+    }
 
     // Build Section 2: Phase Execution & Stall Diagnostics
     const phaseSectionLines: string[] = ['## 2. Phase Execution & Stall Diagnostics', ''];
@@ -675,6 +788,8 @@ export class DebugLogger {
       `- [${isBridgeInstalled ? 'x' : ' '}] **DOM Bridge Script Injection**: ${isBridgeInstalled ? 'Injected in workbench.html' : 'Not injected or missing markers'}`,
       `- [${isServerListening ? 'x' : ' '}] **HTTP Bridge Server**: ${isServerListening ? `Active on port ${report.server.activePort}` : 'Not running'}`,
       `- [${hasConnectedClients ? 'x' : ' '}] **Electron Renderer Client**: ${hasConnectedClients ? `Connected (${report.server.connectedClientsCount} client(s))` : 'No active renderer clients registered'}`,
+      `- [${isInjectionVerified ? 'x' : ' '}] **DOM Bridge Injection Health**: ${injectionHealthStr}`,
+      `- [${isContainerVerified ? 'x' : ' '}] **Target Element Container**: ${targetContainerStr}`,
       '',
       '---',
       '',
@@ -692,15 +807,28 @@ export class DebugLogger {
   }
 
   /**
+   * Generates formatted diagnostic report markdown (alias to exportDiagnosticReportToString)
+   */
+  public generateDiagnosticReport(
+    maxEntries: number = 100,
+    serverOverride?: any,
+    planAuditOverride?: PlanPhasesAuditReport,
+    injectionOverride?: DomBridgeInjectionTelemetry
+  ): string {
+    return this.exportDiagnosticReportToString(maxEntries, serverOverride, planAuditOverride, injectionOverride);
+  }
+
+  /**
    * Writes the compiled diagnostic report directly to a file on disk
    */
   public async exportLogToFile(
     targetFilePath: string,
     maxEntries: number = 100,
     serverOverride?: any,
-    planAuditOverride?: PlanPhasesAuditReport
+    planAuditOverride?: PlanPhasesAuditReport,
+    injectionOverride?: DomBridgeInjectionTelemetry
   ): Promise<string> {
-    const reportContent = this.exportDiagnosticReportToString(maxEntries, serverOverride, planAuditOverride);
+    const reportContent = this.exportDiagnosticReportToString(maxEntries, serverOverride, planAuditOverride, injectionOverride);
     const targetDir = path.dirname(targetFilePath);
 
     if (!fs.existsSync(targetDir)) {

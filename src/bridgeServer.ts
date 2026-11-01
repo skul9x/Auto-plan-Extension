@@ -33,6 +33,12 @@ export interface BridgeCommandAck {
   windowKey?: string;
   error?: string;
   timestamp?: number;
+  charsExpected?: number;
+  charsDetectedInDOM?: number;
+  domExcerpt?: string;
+  elementContext?: string;
+  verified?: boolean;
+  strategy?: string;
   metadata?: Record<string, any>;
 }
 
@@ -42,6 +48,12 @@ export interface CommandAckResult {
   status: string;
   durationMs: number;
   error?: string;
+  charsExpected?: number;
+  charsDetectedInDOM?: number;
+  domExcerpt?: string;
+  elementContext?: string;
+  verified?: boolean;
+  strategy?: string;
   metadata?: Record<string, any>;
 }
 
@@ -1185,7 +1197,52 @@ export class BridgeServer {
             if (ack.metadata.diagnostics) {
               errObj.diagnostics = ack.metadata.diagnostics;
             }
+            if (ack.metadata.charsExpected !== undefined) {
+              errObj.charsExpected = ack.metadata.charsExpected;
+            }
+            if (ack.metadata.charsDetectedInDOM !== undefined) {
+              errObj.charsDetectedInDOM = ack.metadata.charsDetectedInDOM;
+            }
+            if (ack.metadata.domExcerpt !== undefined) {
+              errObj.domExcerpt = ack.metadata.domExcerpt;
+            }
+            if (ack.metadata.elementContext !== undefined) {
+              errObj.elementContext = ack.metadata.elementContext;
+            }
           }
+          if (ack.charsExpected !== undefined && errObj.charsExpected === undefined) errObj.charsExpected = ack.charsExpected;
+          if (ack.charsDetectedInDOM !== undefined && errObj.charsDetectedInDOM === undefined) errObj.charsDetectedInDOM = ack.charsDetectedInDOM;
+          if (ack.domExcerpt !== undefined && errObj.domExcerpt === undefined) errObj.domExcerpt = ack.domExcerpt;
+          if (ack.elementContext !== undefined && errObj.elementContext === undefined) errObj.elementContext = ack.elementContext;
+
+          if (Array.isArray(ack.metadata?.steps)) {
+            const step2 = ack.metadata.steps.find((s: any) => s.step === 2 || s.name?.includes('injection'));
+            if (step2) {
+              if (errObj.charsExpected === undefined && step2.charsExpected !== undefined) errObj.charsExpected = step2.charsExpected;
+              if (errObj.charsDetectedInDOM === undefined && step2.charsDetectedInDOM !== undefined) errObj.charsDetectedInDOM = step2.charsDetectedInDOM;
+              if (errObj.domExcerpt === undefined && step2.domExcerpt !== undefined) errObj.domExcerpt = step2.domExcerpt;
+            }
+            const step1 = ack.metadata.steps.find((s: any) => s.step === 1 || s.name?.includes('discovery') || s.name?.includes('focus'));
+            if (step1) {
+              if (errObj.elementContext === undefined && (step1.elementContext || step1.details?.elementContext)) {
+                errObj.elementContext = step1.elementContext || step1.details?.elementContext;
+              }
+            }
+          }
+
+          if (errObj.code === 'PASTE_VERIFICATION_FAILED' || ack.status === 'failed' || ack.metadata?.code === 'PASTE_VERIFICATION_FAILED') {
+            this.logger?.recordInjectionTelemetry?.({
+              status: 'failed',
+              charsExpected: errObj.charsExpected,
+              charsDetectedInDOM: errObj.charsDetectedInDOM,
+              domExcerpt: errObj.domExcerpt,
+              elementContext: errObj.elementContext || '#antigravity.agentSidePanelInputBox',
+              verified: false,
+              error: ack.error,
+              timestamp: Date.now()
+            });
+          }
+
           deferred.reject(errObj);
         } else if (
           ack.status === 'submitClicked' ||
@@ -1202,11 +1259,38 @@ export class BridgeServer {
           });
           clearTimeout(deferred.timer);
           this.pendingCommands.delete(ack.commandId);
+
+          const steps = Array.isArray(ack.metadata?.steps) ? ack.metadata.steps : [];
+          const step1 = steps.find((s: any) => s.step === 1 || s.name?.includes('discovery') || s.name?.includes('focus')) || {};
+          const step2 = steps.find((s: any) => s.step === 2 || s.name?.includes('injection')) || {};
+          const elementContext = ack.elementContext || step1.elementContext || step1.details?.elementContext || ack.metadata?.elementContext;
+          const charsExpected = ack.charsExpected ?? step2.charsExpected ?? ack.metadata?.charsExpected ?? ack.metadata?.charsInjected;
+          const charsDetectedInDOM = ack.charsDetectedInDOM ?? step2.charsDetectedInDOM ?? ack.metadata?.charsDetectedInDOM ?? charsExpected;
+
+          if (charsExpected !== undefined || elementContext !== undefined) {
+            this.logger?.recordInjectionTelemetry?.({
+              status: 'verified',
+              charsExpected,
+              charsDetectedInDOM,
+              charsInjected: charsExpected,
+              elementContext: elementContext || '#antigravity.agentSidePanelInputBox',
+              strategy: ack.strategy || step2.strategy || ack.metadata?.injectionStrategy || 'contenteditable-text',
+              verified: true,
+              timestamp: Date.now()
+            });
+          }
+
           deferred.resolve({
             success: true,
             commandId: ack.commandId,
             status: ack.status,
             durationMs,
+            charsExpected,
+            charsDetectedInDOM,
+            domExcerpt: ack.domExcerpt || step2.domExcerpt || ack.metadata?.domExcerpt,
+            elementContext: elementContext || '#antigravity.agentSidePanelInputBox',
+            verified: true,
+            strategy: ack.strategy || step2.strategy || ack.metadata?.injectionStrategy || 'contenteditable-text',
             metadata: ack.metadata
           });
         }

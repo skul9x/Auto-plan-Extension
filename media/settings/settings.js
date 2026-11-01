@@ -55,6 +55,17 @@
   const btnSetTelegramToken = document.getElementById('btnSetTelegramToken');
   const btnClearTelegramToken = document.getElementById('btnClearTelegramToken');
 
+  // DOM Elements - RPC Native Auto-Submit & Approval
+  const chkAutoSubmitEnabled = document.getElementById('chkAutoSubmitEnabled');
+  const chkAutoSubmitNotifyTelegram = document.getElementById('chkAutoSubmitNotifyTelegram');
+  const rngAutoSubmitIntervalMs = document.getElementById('rngAutoSubmitIntervalMs');
+  const lblAutoSubmitIntervalVal = document.getElementById('lblAutoSubmitIntervalVal');
+  const txtAutoSubmitMaxQuota = document.getElementById('txtAutoSubmitMaxQuota');
+  const autoSubmitStatusBadge = document.getElementById('autoSubmitStatusBadge');
+  const autoSubmitApprovedCount = document.getElementById('autoSubmitApprovedCount');
+  const autoSubmitWaitingCountText = document.getElementById('autoSubmitWaitingCountText');
+  const btnResetAutoSubmitQuota = document.getElementById('btnResetAutoSubmitQuota');
+
   // DOM Elements - Timing Controls
   const txtDelayMs = document.getElementById('txtDelayMs');
   const txtTimeoutMinutes = document.getElementById('txtTimeoutMinutes');
@@ -186,6 +197,10 @@
       el.innerHTML = el.getAttribute('data-orig-html') || '';
       el.removeAttribute('data-orig-html');
     });
+    const allCards = document.querySelectorAll('.glass-card');
+    allCards.forEach((card) => {
+      card.classList.remove('search-dimmed', 'search-match');
+    });
   }
 
   /**
@@ -306,6 +321,25 @@
       settings.telegramThrottleMs = parseInt(rngTelegramThrottleMs.value, 10) || 2500;
     }
 
+    if (chkAutoSubmitEnabled) {
+      settings['autoSubmit.enabled'] = chkAutoSubmitEnabled.checked;
+      settings.autoSubmitEnabled = chkAutoSubmitEnabled.checked;
+    }
+    if (chkAutoSubmitNotifyTelegram) {
+      settings['autoSubmit.notifyTelegram'] = chkAutoSubmitNotifyTelegram.checked;
+      settings.autoSubmitNotifyTelegram = chkAutoSubmitNotifyTelegram.checked;
+    }
+    if (rngAutoSubmitIntervalMs) {
+      const intervalVal = parseInt(rngAutoSubmitIntervalMs.value, 10) || 1000;
+      settings['autoSubmit.intervalMs'] = intervalVal;
+      settings.autoSubmitIntervalMs = intervalVal;
+    }
+    if (txtAutoSubmitMaxQuota) {
+      const quotaVal = parseInt(txtAutoSubmitMaxQuota.value, 10) || 0;
+      settings['autoSubmit.maxQuota'] = quotaVal;
+      settings.autoSubmitMaxQuota = quotaVal;
+    }
+
     return settings;
   }
 
@@ -377,6 +411,35 @@
       if (lblTelegramThrottleVal) {
         lblTelegramThrottleVal.textContent = `${config.telegramThrottleMs}ms`;
       }
+    }
+
+    if (chkAutoSubmitEnabled) {
+      const autoEnabled = config['autoSubmit.enabled'] !== undefined ? config['autoSubmit.enabled'] : config.autoSubmitEnabled;
+      if (autoEnabled !== undefined) {
+        chkAutoSubmitEnabled.checked = !!autoEnabled;
+      }
+    }
+    if (chkAutoSubmitNotifyTelegram) {
+      const autoNotify = config['autoSubmit.notifyTelegram'] !== undefined ? config['autoSubmit.notifyTelegram'] : config.autoSubmitNotifyTelegram;
+      if (autoNotify !== undefined) {
+        chkAutoSubmitNotifyTelegram.checked = autoNotify !== false;
+      }
+    }
+    if (rngAutoSubmitIntervalMs) {
+      const autoInterval = config['autoSubmit.intervalMs'] !== undefined ? config['autoSubmit.intervalMs'] : config.autoSubmitIntervalMs;
+      if (autoInterval !== undefined) {
+        rngAutoSubmitIntervalMs.value = autoInterval;
+        updateAutoSubmitIntervalDisplay();
+      }
+    }
+    if (txtAutoSubmitMaxQuota) {
+      const autoQuota = config['autoSubmit.maxQuota'] !== undefined ? config['autoSubmit.maxQuota'] : config.autoSubmitMaxQuota;
+      if (autoQuota !== undefined) {
+        txtAutoSubmitMaxQuota.value = autoQuota;
+      }
+    }
+    if (config.autoSubmitStatus) {
+      updateAutoSubmitBadge(config.autoSubmitStatus);
     }
 
     savedBaseline = JSON.stringify(getFormSettings());
@@ -497,6 +560,64 @@
   }
 
   /**
+   * Updates Auto-Submit poll interval slider label display.
+   */
+  function updateAutoSubmitIntervalDisplay() {
+    if (!rngAutoSubmitIntervalMs || !lblAutoSubmitIntervalVal) return;
+    const ms = parseInt(rngAutoSubmitIntervalMs.value, 10) || 1000;
+    const sec = (ms / 1000).toFixed(1);
+    lblAutoSubmitIntervalVal.textContent = `${ms.toLocaleString()}ms (${sec}s)`;
+  }
+
+  /**
+   * Updates Auto-Submit live status badge and telemetry counter.
+   */
+  function updateAutoSubmitBadge(status) {
+    if (!status) return;
+    const phase = status.phase || (status.enabled ? 'waiting' : 'disabled');
+
+    if (autoSubmitStatusBadge) {
+      switch (phase) {
+        case 'ready':
+          autoSubmitStatusBadge.className = 'status-badge badge-success';
+          autoSubmitStatusBadge.textContent = '🟢 Connected (Ready)';
+          break;
+        case 'waiting':
+          autoSubmitStatusBadge.className = 'status-badge badge-warning';
+          autoSubmitStatusBadge.textContent = '🟡 Waiting for Agent';
+          break;
+        case 'disabled':
+          autoSubmitStatusBadge.className = 'status-badge badge-disabled';
+          autoSubmitStatusBadge.textContent = '⚪ Disabled';
+          break;
+        case 'unsupported':
+          autoSubmitStatusBadge.className = 'status-badge badge-danger';
+          autoSubmitStatusBadge.textContent = '🔴 Unsupported';
+          break;
+        case 'dormant':
+          autoSubmitStatusBadge.className = 'status-badge badge-warning';
+          autoSubmitStatusBadge.textContent = '🟡 Quota Reached';
+          break;
+        case 'retrying':
+          autoSubmitStatusBadge.className = 'status-badge badge-warning';
+          autoSubmitStatusBadge.textContent = '🟡 Retrying...';
+          break;
+        default:
+          autoSubmitStatusBadge.className = 'status-badge';
+          autoSubmitStatusBadge.textContent = `⚪ ${phase}`;
+          break;
+      }
+    }
+
+    if (autoSubmitApprovedCount && status.approved !== undefined) {
+      autoSubmitApprovedCount.textContent = String(status.approved);
+    }
+    if (autoSubmitWaitingCountText && status.waitingStepsCount !== undefined) {
+      autoSubmitWaitingCountText.textContent = `(Waiting: ${status.waitingStepsCount})`;
+    }
+  }
+
+  /**
    * Displays an interactive toast alert.
    */
   function showToast(message, type, duration) {
@@ -583,7 +704,9 @@
     txtDefaultPlanFolder, chkAutoInjectWorkbench, chkSuppressFallbackWarnings,
     txtPromptTemplate, txtCompletionKeyword,
     chkTelegramAllowFreeChat, chkTelegramEnableChatMirror,
-    txtTelegramAllowedUsers, rngTelegramThrottleMs
+    txtTelegramAllowedUsers, rngTelegramThrottleMs,
+    chkAutoSubmitEnabled, chkAutoSubmitNotifyTelegram,
+    rngAutoSubmitIntervalMs, txtAutoSubmitMaxQuota
   ];
 
   formInputs.forEach((input) => {
@@ -592,6 +715,20 @@
       input.addEventListener('change', handleInputModification);
     }
   });
+
+  // Auto-Submit Poll Interval slider label update
+  if (rngAutoSubmitIntervalMs && lblAutoSubmitIntervalVal) {
+    rngAutoSubmitIntervalMs.addEventListener('input', updateAutoSubmitIntervalDisplay);
+    rngAutoSubmitIntervalMs.addEventListener('change', updateAutoSubmitIntervalDisplay);
+  }
+
+  // Reset Auto-Submit Quota button
+  if (btnResetAutoSubmitQuota) {
+    btnResetAutoSubmitQuota.addEventListener('click', (e) => {
+      e.preventDefault();
+      vscode.postMessage({ command: 'resetAutoSubmitStats' });
+    });
+  }
 
   // Telegram Throttle slider label update
   if (rngTelegramThrottleMs && lblTelegramThrottleVal) {
@@ -963,6 +1100,16 @@
         if (message.planPhases) {
           updatePhaseDiagnostics(message.planPhases);
         }
+        if (message.autoSubmitStatus) {
+          updateAutoSubmitBadge(message.autoSubmitStatus);
+        }
+        break;
+      }
+
+      case 'autoSubmitStatusUpdate': {
+        if (message.status) {
+          updateAutoSubmitBadge(message.status);
+        }
         break;
       }
 
@@ -1188,7 +1335,10 @@
       getAutoSaveTimer: () => autoSaveTimer,
       updateTelegramTokenBadge,
       getCurrentTelegramStatus: () => currentTelegramStatus,
-      setCurrentTelegramStatus: (st) => { currentTelegramStatus = Object.assign({}, currentTelegramStatus, st); }
+      setCurrentTelegramStatus: (st) => { currentTelegramStatus = Object.assign({}, currentTelegramStatus, st); },
+      // Phase 05 additions:
+      updateAutoSubmitIntervalDisplay,
+      updateAutoSubmitBadge
     };
   }
 

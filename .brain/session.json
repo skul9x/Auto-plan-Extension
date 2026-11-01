@@ -1,23 +1,34 @@
 {
-  "updated_at": "2026-10-18T19:09:00+07:00",
-  "active_plan": "plans/261014-0555-telegram-chat-toggle-and-settings-ui/plan.md",
+  "updated_at": "2026-10-31T22:25:00+07:00",
+  "active_plan": "plans/261031-1933-native-rpc-auto-submit/plan.md",
   "working_on": {
-    "feature": "Telegram Chat Control & Settings UI Modernization (v1.6.7)",
-    "task": "Completed Phase 05: Regression Benchmark, Documentation & Release Packaging (v1.6.7). Packaging & installation verified into Antigravity IDE.",
+    "feature": "Native RPC Auto-Submit & Permission Approval Engine (v1.7.0)",
+    "task": "Completed Phase 05: Modern Settings Webview Card, End-to-End Regression & Release Packaging (v1.7.0).",
     "status": "completed",
     "files": [
-      "plans/261014-0555-telegram-chat-toggle-and-settings-ui/plan.md",
-      "plans/261014-0555-telegram-chat-toggle-and-settings-ui/phase-01-core-config-and-telegram-silent-drop.md",
-      "plans/261014-0555-telegram-chat-toggle-and-settings-ui/phase-02-token-secret-storage-and-rollback-ipc.md",
-      "plans/261014-0555-telegram-chat-toggle-and-settings-ui/phase-03-modern-tab-navigation-and-search-ui.md",
-      "plans/261014-0555-telegram-chat-toggle-and-settings-ui/phase-04-telegram-settings-card-and-rollback-e2e.md",
-      "plans/261014-0555-telegram-chat-toggle-and-settings-ui/phase-05-regression-benchmark-and-release-v1.6.7.md"
+      "plans/261031-1933-native-rpc-auto-submit/plan.md",
+      "plans/261031-1933-native-rpc-auto-submit/phase-01-rpc-discovery-and-candidate-filtering.md",
+      "plans/261031-1933-native-rpc-auto-submit/phase-02-permission-submission-and-deduplication.md",
+      "plans/261031-1933-native-rpc-auto-submit/phase-03-extension-lifecycle-configuration-and-diagnostics.md",
+      "plans/261031-1933-native-rpc-auto-submit/phase-04-telegram-event-mirroring-and-alerting.md",
+      "plans/261031-1933-native-rpc-auto-submit/phase-05-settings-ui-regression-and-release.md"
     ],
     "blockers": [],
     "notes": "Plan structured with exactly one test per phase and clean English phase documentation."
   },
   "pending_tasks": [],
   "recent_changes": [
+    {
+      "timestamp": "2026-10-31T22:25:00+07:00",
+      "type": "release",
+      "description": "Release v1.7.0 - Native RPC Auto-Submit & Permission Approval Engine with Settings Webview Card and Telegram event mirroring.",
+      "files": [
+        "antigravity-auto-plan-1.7.0.vsix",
+        "package.json",
+        "CHANGELOG.md",
+        "README.md"
+      ]
+    },
     {
       "timestamp": "2026-10-18T19:00:00+07:00",
       "type": "installation",

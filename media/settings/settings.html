@@ -15,7 +15,7 @@
         <span class="brand-icon">⚡</span>
         <div class="brand-info">
           <h1 class="brand-title">Auto-Plan Settings</h1>
-          <span class="version-tag">v1.6.7 • Diagnostics & Tier Automation</span>
+          <span class="version-tag">v1.7.0 • RPC Auto-Submit & Tier Automation</span>
         </div>
       </div>
       <div id="overallHealthBadge" class="health-badge status-healthy" title="Overall System Health">
@@ -301,7 +301,80 @@
 
     <!-- Category 3: Timing & Automation -->
     <div class="tab-pane" id="tab-automation" role="tabpanel" aria-labelledby="nav-btn-automation">
-      <div class="tab-content-grid">
+      <div id="tab-timing" class="tab-content-grid">
+        <!-- Section: RPC Native Auto-Submit & Permission Approval -->
+        <section class="glass-card full-width" id="sectionAutoSubmit">
+          <div class="card-header">
+            <div class="header-icon-title">
+              <span class="section-icon">⚡</span>
+              <div>
+                <h2 class="card-title">RPC Native Auto-Submit & Permission Approval</h2>
+                <p class="card-subtitle">Autonomous direct RPC approval engine for Antigravity IDE permissions.</p>
+              </div>
+            </div>
+            <div class="header-status-badge">
+              <span id="autoSubmitStatusBadge" class="status-badge badge-disabled">⚪ Disabled</span>
+            </div>
+          </div>
+
+          <div class="toggles-list">
+            <!-- Master Auto-Submit Switch -->
+            <div class="switch-container">
+              <label class="toggle-switch">
+                <input type="checkbox" id="chkAutoSubmitEnabled">
+                <span class="toggle-slider"></span>
+              </label>
+              <div class="toggle-details">
+                <span class="toggle-title">Enable RPC Native Auto-Submit</span>
+                <span class="toggle-description">Automatically approve safe Antigravity permission requests via internal RPC interface.</span>
+              </div>
+            </div>
+
+            <!-- Telegram Notification Toggle -->
+            <div class="switch-container">
+              <label class="toggle-switch">
+                <input type="checkbox" id="chkAutoSubmitNotifyTelegram" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <div class="toggle-details">
+                <span class="toggle-title">Notify Approvals via Telegram</span>
+                <span class="toggle-description">Stream real-time permission approval notifications and action details to Telegram.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-grid-2">
+            <!-- Poll Interval Slider / Input -->
+            <div class="form-group">
+              <div class="slider-header-row">
+                <label for="rngAutoSubmitIntervalMs" class="form-label">Poll Interval</label>
+                <span id="lblAutoSubmitIntervalVal" class="slider-val-badge">1,000ms (1.0s)</span>
+              </div>
+              <input type="range" id="rngAutoSubmitIntervalMs" class="form-range" min="200" max="10000" step="100" value="1000">
+              <span class="input-hint">Scanning frequency for pending IDE permissions (200ms – 10,000ms).</span>
+            </div>
+
+            <!-- Session Quota Input -->
+            <div class="form-group">
+              <label for="txtAutoSubmitMaxQuota" class="form-label">Session Approval Quota</label>
+              <input type="number" id="txtAutoSubmitMaxQuota" class="form-input" min="0" max="10000" step="1" value="0">
+              <span class="input-hint">Max approvals before automatic pause (0 for unlimited).</span>
+            </div>
+          </div>
+
+          <!-- Session Telemetry & Counter Row -->
+          <div class="telemetry-bar">
+            <div class="telemetry-item">
+              <span class="stat-label">Session Approved:</span>
+              <span id="autoSubmitApprovedCount" class="badge-pill">0</span>
+              <span id="autoSubmitWaitingCountText" class="input-hint">(Waiting: 0)</span>
+            </div>
+            <button type="button" id="btnResetAutoSubmitQuota" class="btn btn-secondary btn-sm" title="Reset approved permissions counter for the current session">
+              🔄 Reset Counter
+            </button>
+          </div>
+        </section>
+
         <!-- Section: Timing & Loop Controls -->
         <section class="glass-card" id="sectionTimingControls">
           <div class="card-header">

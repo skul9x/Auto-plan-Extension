@@ -21,6 +21,11 @@ All notable changes to the **Antigravity Auto-Plan Runner** extension will be do
 - **Telegram Remote Bridge Synchronization**:
   - Workflow slash commands (`/run`, `/plan`) and free chat prompts dispatch focus-free via native commands without window stealing.
   - Remote `/stop` and `/plan_stop` commands halt orchestrator execution and trigger native active generation cancellation.
+  - Added native `antigravity.startNewConversation` as primary execution command for remote `/new_chat`.
+- **Telegram Live Chat Mirroring & Transcript Discovery Fixes**:
+  - Fixed transcript watcher hardcoded path: updated `getDefaultBrainDir()` and `getUserConfigStorageDir()` to prioritize `~/.gemini/antigravity/brain` instead of defunct legacy path `~/.gemini/antigravity-ide/brain`.
+  - Added `workspacePath` ownership verification to `TranscriptTailEngine.findLatestConversation()` via `verifyConversationOwnershipAsync`, ensuring that the active session always matches the current project workspace.
+  - Enabled `startFromEnd: true` in `TelegramChatMirror` to prevent historical transcript replay upon bridge initialization.
 - **Packaging & Distribution Hardening**:
   - Lean `.vscodeignore` exclusions omitting test suites, source code, plans, and scratch scripts.
   - Verified clean packaging via `vsce package` producing a ~798 KB release bundle and verified installation into Antigravity IDE.

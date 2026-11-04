@@ -340,6 +340,10 @@ export function getUserConfigStorageDir(context?: any): string {
   if (context?.globalStorageUri?.fsPath) {
     return context.globalStorageUri.fsPath;
   }
+  const modernDir = path.join(os.homedir(), '.gemini', 'antigravity');
+  if (fs.existsSync(modernDir)) {
+    return modernDir;
+  }
   return path.join(os.homedir(), '.gemini', 'antigravity-ide');
 }
 

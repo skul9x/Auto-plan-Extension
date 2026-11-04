@@ -184,6 +184,10 @@ export function getDefaultBrainDir(): string {
   if (process.env.ANTIGRAVITY_BRAIN_DIR) {
     return process.env.ANTIGRAVITY_BRAIN_DIR;
   }
+  const modernBrain = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
+  if (fs.existsSync(modernBrain)) {
+    return modernBrain;
+  }
   return path.join(os.homedir(), '.gemini', 'antigravity-ide', 'brain');
 }
 

@@ -29,6 +29,19 @@
   ],
   "recent_changes": [
     {
+      "timestamp": "2026-11-04T22:48:00+07:00",
+      "type": "bug_fix",
+      "description": "Sửa lỗi Transcript Watcher trỏ nhầm thư mục ~/.gemini/antigravity-ide/brain thay vì ~/.gemini/antigravity/brain, bổ sung workspacePath filtering và startFromEnd: true cho TelegramChatMirror.",
+      "files": [
+        "src/transcriptWatcher.ts",
+        "src/config.ts",
+        "src/transcriptTailEngine.ts",
+        "src/telegramChatMirror.ts",
+        "src/telegramBridge.ts",
+        "src/extension.ts"
+      ]
+    },
+    {
       "timestamp": "2026-11-04T21:55:00+07:00",
       "type": "packaging_and_install",
       "description": "Đóng gói extension thành file VSIX antigravity-auto-plan-1.7.1.vsix và cài đặt thành công vào Antigravity IDE (skul9x.antigravity-auto-plan@1.7.1).",

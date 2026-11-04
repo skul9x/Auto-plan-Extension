@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 import { EventEmitter } from 'events';
-import { getDefaultBrainDir } from './transcriptWatcher';
+import { getDefaultBrainDir, verifyConversationOwnershipAsync } from './transcriptWatcher';
 
 export interface UserInputEvent {
   convId: string;
@@ -38,6 +38,8 @@ export interface TranscriptTailEngineOptions {
   startFromEnd?: boolean;
   discoveryThrottleMs?: number;
   maxDiscoveryCandidates?: number;
+  workspacePath?: string;
+  workspaceName?: string;
 }
 
 export interface TranscriptStep {
@@ -130,6 +132,8 @@ export class TranscriptTailEngine extends EventEmitter {
   private maxDiscoveryCandidates: number;
   private lastDiscoveryTimestamp: number = 0;
   private brainDirDebounceTimer: NodeJS.Timeout | null = null;
+  private workspacePath?: string;
+  private workspaceName?: string;
 
   private isRunning: boolean = false;
   private pollTimer: NodeJS.Timeout | null = null;
@@ -148,6 +152,8 @@ export class TranscriptTailEngine extends EventEmitter {
     this.startFromEnd = options.startFromEnd ?? false;
     this.discoveryThrottleMs = options.discoveryThrottleMs ?? 5000;
     this.maxDiscoveryCandidates = options.maxDiscoveryCandidates ?? 25;
+    this.workspacePath = options.workspacePath;
+    this.workspaceName = options.workspaceName;
   }
 
   // Typed EventEmitter overloads
@@ -546,12 +552,31 @@ export class TranscriptTailEngine extends EventEmitter {
 
           return {
             convId: candidate.convId,
-            mtime
+            mtime,
+            transcriptPath
           };
         })
       );
 
       evaluatedCandidates.sort((a, b) => b.mtime - a.mtime);
+
+      // If workspace criteria is provided, prioritize candidates that match current workspace
+      if (this.workspacePath || this.workspaceName) {
+        for (const candidate of evaluatedCandidates) {
+          if (candidate.transcriptPath && fs.existsSync(candidate.transcriptPath)) {
+            try {
+              const isOwner = await verifyConversationOwnershipAsync(candidate.transcriptPath, {
+                workspacePath: this.workspacePath,
+                workspaceName: this.workspaceName
+              });
+              if (isOwner) {
+                return candidate.convId;
+              }
+            } catch {}
+          }
+        }
+      }
+
       return evaluatedCandidates.length > 0 ? evaluatedCandidates[0].convId : null;
     } catch {
       return null;

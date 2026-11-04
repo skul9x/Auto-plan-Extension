@@ -295,6 +295,7 @@ export interface TelegramChatMirrorOptions {
   activeConvId?: string;
   transcriptPath?: string;
   workspaceName?: string;
+  workspacePath?: string;
   isMultiWorkspace?: boolean | (() => boolean);
   registryPath?: string;
   logger?: any;
@@ -317,6 +318,7 @@ export class TelegramChatMirror {
   private activeConvId?: string;
   private transcriptPath?: string;
   private workspaceName?: string;
+  private workspacePath?: string;
   private isMultiWorkspace?: boolean | (() => boolean);
   private registryPath?: string;
   private boundTailListeners: { event: string; listener: (...args: any[]) => any }[] = [];
@@ -344,6 +346,7 @@ export class TelegramChatMirror {
     this.activeConvId = options?.activeConvId;
     this.transcriptPath = options?.transcriptPath;
     this.workspaceName = options?.workspaceName;
+    this.workspacePath = options?.workspacePath;
     this.isMultiWorkspace = options?.isMultiWorkspace;
     this.registryPath = options?.registryPath;
     this.logger = options?.logger;
@@ -401,10 +404,13 @@ export class TelegramChatMirror {
     this.mirrorIncludePcPrompts = include;
   }
 
-  public setWorkspace(workspaceName?: string, isMulti?: boolean | (() => boolean)): void {
+  public setWorkspace(workspaceName?: string, isMulti?: boolean | (() => boolean), workspacePath?: string): void {
     this.workspaceName = workspaceName;
     if (isMulti !== undefined) {
       this.isMultiWorkspace = isMulti;
+    }
+    if (workspacePath !== undefined) {
+      this.workspacePath = workspacePath;
     }
   }
 
@@ -547,7 +553,10 @@ export class TelegramChatMirror {
       const engine = new TranscriptTailEngine({
         brainDir: this.brainDir,
         activeConvId: this.activeConvId,
-        transcriptPath: this.transcriptPath
+        transcriptPath: this.transcriptPath,
+        workspacePath: this.workspacePath,
+        workspaceName: this.workspaceName,
+        startFromEnd: true
       });
       this.attachTailEngine(engine);
     }

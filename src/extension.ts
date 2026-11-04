@@ -1776,6 +1776,7 @@ export function activate(context: vscode.ExtensionContext) {
       orchestrator.setWorkspace(updatedPath, updatedName, updatedFolders, updatedTitle);
       telegramBridge.applyOptions({
         workspaceName: updatedName,
+        workspacePath: updatedPath,
         isMultiWorkspace: () => (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders.length > 1 : false)
       });
       if (autoSubmitService) {
@@ -2100,6 +2101,7 @@ export function activate(context: vscode.ExtensionContext) {
     orchestrator,
     transcriptWatcher,
     workspaceName: activeWsName,
+    workspacePath: activeWorkspaceFolder?.uri?.fsPath,
     isMultiWorkspace: () => (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders.length > 1 : false)
   });
   telegramBridge.start().catch((err: any) => {

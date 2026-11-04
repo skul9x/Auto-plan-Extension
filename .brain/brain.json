@@ -2,7 +2,7 @@
   "meta": {
     "schema_version": "1.1.0",
     "awf_version": "4.0.2",
-    "updated_at": "2026-11-04T22:17:00+07:00"
+    "updated_at": "2026-11-04T22:52:00+07:00"
   },
   "project": {
     "name": "Auto-Plan_Extension",
@@ -166,7 +166,10 @@
       "Lệnh nội bộ antigravity.triggerSend gọi h.api.triggerSend({}) để kích hoạt hành động gửi tin nhắn trong chat webview.",
       "Cần một khoảng trễ nhỏ (sendDelayMs, mặc định 500ms) giữa addContext và triggerSend để webview chuyển trạng thái kích hoạt nút gửi.",
       "Lệnh antigravity.startNewConversation cần khoảng 400ms stabilization delay trước khi gọi addContext để tránh webview chưa sẵn sàng.",
-      "Đối tượng vscode và vscode.commands chỉ tồn tại trong Extension Host process, không truy cập được trực tiếp từ DevTools Renderer console."
+      "Đối tượng vscode và vscode.commands chỉ tồn tại trong Extension Host process, không truy cập được trực tiếp từ DevTools Renderer console.",
+      "Antigravity IDE phiên bản mới lưu trữ transcript tại ~/.gemini/antigravity/brain/ thay vì ~/.gemini/antigravity-ide/brain/ như các bản cũ.",
+      "Khi khởi động Telegram Live Q&A Chat Mirroring, bắt buộc đặt cờ startFromEnd: true cho TranscriptTailEngine để tránh đọc lại (replay) toàn bộ lịch sử chat cũ lên Telegram.",
+      "TranscriptTailEngine.findLatestConversation cần đối chiếu workspacePath và workspaceName qua verifyConversationOwnershipAsync để chọn chính xác session thuộc workspace hiện tại."
     ]
   }
 }

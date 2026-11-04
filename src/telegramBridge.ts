@@ -397,6 +397,7 @@ export interface TelegramBridgeOptions {
   chatMirrorPrefix?: string;
   tailEngine?: TranscriptTailEngine;
   workspaceName?: string;
+  workspacePath?: string;
   isMultiWorkspace?: boolean | (() => boolean);
   port?: number;
 }
@@ -457,6 +458,7 @@ export class TelegramBridge {
   private chatMirrorPrefix: string = DEFAULT_AI_RESPONSE_HEADER;
   private tailEngine?: TranscriptTailEngine;
   private workspaceName?: string;
+  private workspacePath?: string;
   private isMultiWorkspace?: boolean | (() => boolean);
   private port?: number;
   private targetPort?: number;
@@ -602,6 +604,9 @@ export class TelegramBridge {
     if (options.workspaceName !== undefined) {
       this.workspaceName = options.workspaceName;
     }
+    if (options.workspacePath !== undefined) {
+      this.workspacePath = options.workspacePath;
+    }
     if (options.isMultiWorkspace !== undefined) {
       this.isMultiWorkspace = options.isMultiWorkspace;
     }
@@ -621,7 +626,7 @@ export class TelegramBridge {
       this.chatMirrorPrefix = options.chatMirrorPrefix;
     }
     if (this.chatMirror) {
-      this.chatMirror.setWorkspace(this.workspaceName, this.isMultiWorkspace);
+      this.chatMirror.setWorkspace(this.workspaceName, this.isMultiWorkspace, this.workspacePath);
       this.chatMirror.updateConfig({
         enableChatMirror: this.enableChatMirror,
         mirrorIncludePcPrompts: this.mirrorIncludePcPrompts,
@@ -1739,6 +1744,7 @@ export class TelegramBridge {
           promptOriginTracker: this.promptOriginTracker,
           tailEngine: this.tailEngine,
           workspaceName: this.workspaceName,
+          workspacePath: this.workspacePath,
           isMultiWorkspace: this.isMultiWorkspace,
           registryPath: this.getPortRegistryPath(),
           logger: this.logger
@@ -1746,7 +1752,7 @@ export class TelegramBridge {
       } else {
         this.chatMirror.setBot(this.bot);
         this.chatMirror.setAllowedUsers(this.allowedUsers);
-        this.chatMirror.setWorkspace(this.workspaceName, this.isMultiWorkspace);
+        this.chatMirror.setWorkspace(this.workspaceName, this.isMultiWorkspace, this.workspacePath);
       }
 
       this.logger.info('TELEGRAM', 'Telegram Bot initialized successfully with security middleware, plan handlers, chat dispatchers, throttled notifier, and chat mirror');
@@ -1820,6 +1826,7 @@ export class TelegramBridge {
         const vs = getVscodeSafe();
         if (vs?.commands?.executeCommand) {
           const candidateCommands = [
+            'antigravity.startNewConversation',
             'antigravity.prioritized.chat.openNewConversation',
             'workbench.action.chat.newChat',
             'antigravity.newConversation'

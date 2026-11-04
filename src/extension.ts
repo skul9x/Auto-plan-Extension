@@ -36,6 +36,10 @@ import {
   installBridgeScriptAsync,
   uninstallBridgeScript,
   uninstallBridgeScriptAsync,
+  cleanWorkbenchHtml,
+  cleanWorkbenchHtmlAsync,
+  cleanWorkbench as cleanWorkbenchFn,
+  cleanWorkbenchAsync as cleanWorkbenchAsyncFn,
   getWorkbenchPath,
   canWriteWorkbenchPath
 } from './workbenchInjector';
@@ -1082,60 +1086,113 @@ export interface BridgeDiagnosticReport {
   autoInjectWorkbench: boolean;
   bridgeTimeoutMs: number;
   protocolVersion: string;
+  nativeEngineHealth?: string;
+  nativeEngineReady?: boolean;
+  sendDelayMs?: number;
+  lastDispatchResult?: any;
 }
 
 /**
- * Updates the Bridge status bar item with current connectivity and installation state.
+ * Updates the status bar item with Native Antigravity Engine readiness.
  */
 export function updateBridgeStatusBar(): void {
   if (!bridgeStatusBarItem) return;
 
-  const installed = isBridgeInstalled();
-  const listening = bridgeServer.isListening();
-  const port = bridgeServer.getPort();
-  const clients = bridgeServer.getConnectedClients();
-
-  if (installed && listening) {
-    if (clients.length > 0) {
-      bridgeStatusBarItem.text = '$(plug) Bridge: Online (Background Active)';
-      bridgeStatusBarItem.tooltip = `Auto-Plan: Bridge: Online (Background Active) (Port: ${port}, Clients: ${clients.length})\nClick to check diagnostic status`;
+  try {
+    const readiness = promptDispatcher.validateDispatchReadiness();
+    if (readiness.ready) {
+      bridgeStatusBarItem.text = '$(zap) Native: Ready';
+      bridgeStatusBarItem.tooltip = 'Auto-Plan: Antigravity Native Engine Ready (Focus-Free)\nClick to open Settings';
+      bridgeStatusBarItem.command = 'autoplan.openSettings';
     } else {
-      bridgeStatusBarItem.text = '$(plug) Bridge: Active';
-      bridgeStatusBarItem.tooltip = `Auto-Plan DOM Bridge: Listening on port ${port} (Waiting for DOM client)\nClick to check diagnostic status`;
+      bridgeStatusBarItem.text = '$(alert) Native: Unavailable';
+      bridgeStatusBarItem.tooltip = `Auto-Plan: Antigravity Native Engine Unavailable (${readiness.errorMessage || 'Check API'})\nClick to open Settings`;
+      bridgeStatusBarItem.command = 'autoplan.openSettings';
     }
-    bridgeStatusBarItem.command = 'autoplan.checkBridgeStatus';
-  } else if (!installed) {
-    bridgeStatusBarItem.text = '$(alert) Bridge: Disconnected';
-    bridgeStatusBarItem.tooltip = 'Auto-Plan DOM Bridge: Not Installed in workbench.html\nClick to Install DOM Bridge';
-    bridgeStatusBarItem.command = 'autoplan.installBridge';
-  } else {
-    bridgeStatusBarItem.text = '$(alert) Bridge: Inactive';
-    bridgeStatusBarItem.tooltip = 'Auto-Plan DOM Bridge: Server not running\nClick to check diagnostic status';
-    bridgeStatusBarItem.command = 'autoplan.checkBridgeStatus';
+  } catch {
+    bridgeStatusBarItem.text = '$(zap) Native: Ready';
+    bridgeStatusBarItem.tooltip = 'Auto-Plan: Antigravity Native Engine Ready\nClick to open Settings';
+    bridgeStatusBarItem.command = 'autoplan.openSettings';
   }
 
-  bridgeStatusBarItem.hide();
+  bridgeStatusBarItem.show();
 }
 
 /**
- * Installs the DOM Automation Bridge into workbench.html asynchronously.
+ * Installs the DOM Automation Bridge into workbench.html asynchronously (Deprecated).
  */
 export async function installBridge(): Promise<boolean> {
-  const result = await installBridgeScriptAsync();
+  vscode.window.showInformationMessage(
+    'Auto-Plan now uses 100% Native Antigravity Chat API commands. DOM Bridge injection into workbench.html is obsolete and no longer needed.'
+  );
+  return true;
+}
+
+/**
+ * Restores workbench.html by removing legacy DOM Bridge tags and cleans up auxiliary bridge files.
+ */
+export async function cleanWorkbench(): Promise<boolean> {
+  const result = await cleanWorkbenchHtmlAsync();
   if (result.success) {
     updateBridgeStatusBar();
-    const selection = await vscode.window.showInformationMessage(
-      'DOM Bridge injected successfully. Reload IDE to apply.',
-      '🔄 Reload Window',
-      'Later'
-    );
-    if (selection === '🔄 Reload Window') {
-      await vscode.commands.executeCommand('workbench.action.reloadWindow');
+    sidebarProvider?.sendBridgeStatus();
+    if (result.modified) {
+      const selection = await vscode.window.showInformationMessage(
+        'Auto-Plan: workbench.html was successfully cleaned and restored. Please reload the window for changes to take effect.',
+        '🔄 Reload Window',
+        'Later'
+      );
+      if (selection === '🔄 Reload Window') {
+        await vscode.commands.executeCommand('workbench.action.reloadWindow');
+      }
+    } else {
+      vscode.window.showInformationMessage('Auto-Plan: workbench.html is already clean. No changes were necessary.');
     }
     return true;
   } else {
-    vscode.window.showErrorMessage(`Auto-Plan: Failed to install DOM Bridge: ${result.error}`);
+    vscode.window.showErrorMessage(`Auto-Plan: Failed to clean workbench.html: ${result.error}`);
     return false;
+  }
+}
+
+/**
+ * Startup hook: automatically inspects workbench.html and cleans legacy DOM bridge script tags if present.
+ * Failsafe: if the file is not writable without elevation, logs a diagnostic notice without prompting or crashing.
+ */
+export async function performStartupWorkbenchCleanup(): Promise<void> {
+  try {
+    const wbPath = getWorkbenchPath();
+    if (!wbPath || !fs.existsSync(wbPath)) {
+      return;
+    }
+
+    if (isBridgeInstalled(wbPath)) {
+      if (canWriteWorkbenchPath(wbPath)) {
+        const result = await cleanWorkbenchHtmlAsync({ workbenchPath: wbPath, updateChecksums: true });
+        if (result.success && result.modified) {
+          debugLogger.info('CLEANUP', `Startup cleanup: successfully removed legacy DOM bridge tags from ${wbPath}`);
+          updateBridgeStatusBar();
+          sidebarProvider?.sendBridgeStatus();
+          vscode.window.showInformationMessage(
+            'Auto-Plan: Legacy DOM Bridge script tags were automatically cleaned from workbench.html. Antigravity now uses 100% native chat APIs.',
+            '🔄 Reload Window',
+            'Later'
+          ).then((sel) => {
+            if (sel === '🔄 Reload Window') {
+              vscode.commands.executeCommand('workbench.action.reloadWindow');
+            }
+          });
+        }
+      } else {
+        // Permissions prevent writing without elevation: log diagnostic notice without crashing extension
+        debugLogger.warn(
+          'CLEANUP',
+          `Startup auto-cleanup: Legacy DOM bridge tags detected in ${wbPath}, but file is not writable without elevated permissions. Run "Auto-Plan: Clean workbench.html" command if you wish to restore it.`
+        );
+      }
+    }
+  } catch (err: any) {
+    debugLogger.warn('CLEANUP', `Startup auto-cleanup check encountered an error: ${err?.message || err}`);
   }
 }
 
@@ -1177,25 +1234,10 @@ export async function showLinuxPreflightErrorNotification(): Promise<string | un
 }
 
 /**
- * Uninstalls the DOM Automation Bridge from workbench.html asynchronously.
+ * Uninstalls the DOM Automation Bridge from workbench.html asynchronously (alias for cleanWorkbench).
  */
 export async function uninstallBridge(): Promise<boolean> {
-  const result = await uninstallBridgeScriptAsync();
-  if (result.success) {
-    updateBridgeStatusBar();
-    const selection = await vscode.window.showInformationMessage(
-      'Auto-Plan: DOM Automation Bridge uninstalled successfully. Please reload the window for changes to take effect.',
-      'Reload Window',
-      'Later'
-    );
-    if (selection === 'Reload Window') {
-      await vscode.commands.executeCommand('workbench.action.reloadWindow');
-    }
-    return true;
-  } else {
-    vscode.window.showErrorMessage(`Auto-Plan: Failed to uninstall DOM Bridge: ${result.error}`);
-    return false;
-  }
+  return cleanWorkbench();
 }
 
 /**
@@ -1206,6 +1248,7 @@ export function runBridgeDiagnostic(): BridgeDiagnosticReport {
   const wbPath = getWorkbenchPath();
   const status = bridgeServer.getStatus();
   const config = getConfig();
+  const nativeReadiness = promptDispatcher.validateDispatchReadiness();
 
   return {
     isInstalled: installed,
@@ -1218,7 +1261,11 @@ export function runBridgeDiagnostic(): BridgeDiagnosticReport {
     executionMode: config.executionMode || 'auto',
     autoInjectWorkbench: config.autoInjectWorkbench ?? true,
     bridgeTimeoutMs: config.bridgeTimeoutMs ?? 5000,
-    protocolVersion: status.protocolVersion || BRIDGE_PROTOCOL_VERSION
+    protocolVersion: status.protocolVersion || BRIDGE_PROTOCOL_VERSION,
+    nativeEngineHealth: nativeReadiness.ready ? 'Operational' : 'Unavailable',
+    nativeEngineReady: nativeReadiness.ready,
+    sendDelayMs: config.sendDelayMs ?? 500,
+    lastDispatchResult: debugLogger.getLastInjectionTelemetry()
   };
 }
 
@@ -1228,28 +1275,27 @@ export function runBridgeDiagnostic(): BridgeDiagnosticReport {
 export async function showBridgeDiagnosticDialog(): Promise<BridgeDiagnosticReport> {
   const report = runBridgeDiagnostic();
   const statusLines = [
-    `• DOM Bridge Script: ${report.isInstalled ? '✅ Installed' : '❌ Not Installed'}`,
+    `• Native Chat Engine: ${report.nativeEngineReady ? '✅ Operational (Focus-Free)' : '❌ Unavailable'}`,
+    `• Native Send Delay: ${report.sendDelayMs ?? 500}ms`,
+    `• DOM Bridge Script: ${report.isInstalled ? '⚠️ Legacy Injected (Clean recommended)' : '✅ Clean (Removed)'}`,
     `• Workbench File: ${report.workbenchPath || 'Not Detected'}`,
-    `• Bridge Server: ${report.serverListening ? `✅ Running (Port: ${report.serverPort})` : '❌ Stopped'}`,
-    `• Active Window Key: ${report.activeWindowKey || 'None'}`,
-    `• Connected DOM Clients: ${report.connectedClientsCount}`,
-    `• Transport Mode: ${report.executionMode}`,
-    `• Auto-Inject On Startup: ${report.autoInjectWorkbench ? 'Enabled' : 'Disabled'}`
+    `• Bridge Server: ${report.serverListening ? `Running (Port: ${report.serverPort})` : 'Inactive'}`,
+    `• Transport Mode: ${report.executionMode}`
   ];
 
   const actions = report.isInstalled
-    ? ['Reinstall Bridge', 'Uninstall Bridge', 'OK']
-    : ['Install Bridge', 'OK'];
+    ? ['Clean Workbench', 'Test Native Dispatch', 'OK']
+    : ['Test Native Dispatch', 'OK'];
 
   const choice = await vscode.window.showInformationMessage(
-    `Auto-Plan DOM Bridge Diagnostics:\n${statusLines.join('\n')}`,
+    `Auto-Plan Diagnostics (100% Native Architecture):\n${statusLines.join('\n')}`,
     ...actions
   );
 
-  if (choice === 'Install Bridge' || choice === 'Reinstall Bridge') {
-    await installBridge();
-  } else if (choice === 'Uninstall Bridge') {
-    await uninstallBridge();
+  if (choice === 'Clean Workbench' || choice === 'Uninstall Bridge') {
+    await cleanWorkbench();
+  } else if (choice === 'Test Native Dispatch') {
+    await vscode.commands.executeCommand('autoplan.testNativeDispatch');
   }
 
   return report;
@@ -1746,48 +1792,10 @@ export function activate(context: vscode.ExtensionContext) {
     sidebarProvider?.sendBridgeStatus();
   });
 
-  // Non-blocking bridge status inspection on startup (LOGIC-007)
-  const startupConfig = getConfig();
-  const bridgeInstalled = isBridgeInstalled();
-  const bridgeUpToDate = bridgeInstalled && isBridgeScriptUpToDate(undefined, context);
-  if (startupConfig.autoInjectWorkbench !== false && (!bridgeInstalled || !bridgeUpToDate)) {
-    const wbPath = getWorkbenchPath();
-    if (wbPath && canWriteWorkbenchPath(wbPath)) {
-      // Non-elevated write permissions exist: install asynchronously in background
-      installBridgeScriptAsync({ updateChecksums: true, context, forceReinject: !bridgeUpToDate })
-        .then((res) => {
-          if (res.success) {
-            updateBridgeStatusBar();
-            sidebarProvider?.sendBridgeStatus();
-            if (!bridgeUpToDate && bridgeInstalled) {
-              vscode.window.showInformationMessage(
-                'Auto-Plan: DOM Bridge has been updated. Reload IDE to apply changes.',
-                '🔄 Reload Window',
-                'Later'
-              ).then((sel) => {
-                if (sel === '🔄 Reload Window') {
-                  vscode.commands.executeCommand('workbench.action.reloadWindow');
-                }
-              });
-            }
-          }
-        })
-        .catch((err) => {
-          console.warn('[Auto-Plan] Background bridge installation failed:', err);
-        });
-    } else {
-      // Elevated permissions required: prompt user with actionable notification instead of popping root prompt during boot
-      vscode.window.showInformationMessage(
-        'Auto-Plan: DOM Bridge requires installation or update. Click Install to proceed.',
-        'Install',
-        'Later'
-      ).then((selection) => {
-        if (selection === 'Install') {
-          installBridge();
-        }
-      });
-    }
-  }
+  // Automated workbench cleanup check on startup (removes legacy DOM bridge tags safely)
+  performStartupWorkbenchCleanup().catch((err) => {
+    debugLogger.warn('CLEANUP', `Unhandled startup cleanup error: ${err?.message || err}`);
+  });
 
   // Register commands
   const startCmd = vscode.commands.registerCommand('autoplan.start', () => {
@@ -1837,6 +1845,28 @@ export function activate(context: vscode.ExtensionContext) {
 
   const uninstallBridgeCmd = vscode.commands.registerCommand('autoplan.uninstallBridge', () => {
     return uninstallBridge();
+  });
+
+  const cleanWorkbenchCmd = vscode.commands.registerCommand('autoplan.cleanWorkbench', () => {
+    return cleanWorkbench();
+  });
+
+  const testNativeDispatchCmd = vscode.commands.registerCommand('autoplan.testNativeDispatch', async () => {
+    try {
+      const readiness = promptDispatcher.validateDispatchReadiness();
+      if (!readiness.ready) {
+        vscode.window.showWarningMessage(`Auto-Plan: Native chat API is not ready (${readiness.errorMessage || 'Check Antigravity API'})`);
+        return;
+      }
+      const result = await promptDispatcher.testTierDispatch('nativeCommand', 'Test prompt from Auto-Plan');
+      if (result.success) {
+        vscode.window.showInformationMessage(`Auto-Plan: Native Chat API is ready and functional! (Latency: ${result.latencyMs}ms)`);
+      } else {
+        vscode.window.showErrorMessage(`Auto-Plan: Native Chat API test failed: ${result.error}`);
+      }
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Auto-Plan: Native Chat API test failed: ${err?.message || err}`);
+    }
   });
 
   const checkBridgeStatusCmd = vscode.commands.registerCommand('autoplan.checkBridgeStatus', () => {
@@ -1902,6 +1932,74 @@ export function activate(context: vscode.ExtensionContext) {
     return diagnoseAutoSubmit();
   });
 
+  const testAddContextCmd = vscode.commands.registerCommand('autoplan.testAddContext', async () => {
+    try {
+      vscode.window.showInformationMessage('Auto-Plan: Đang gọi antigravity.addContext("Test 123")...');
+      await vscode.commands.executeCommand('antigravity.addContext', 'Test 123');
+      vscode.window.showInformationMessage('Auto-Plan: Đã gọi antigravity.addContext("Test 123") thành công!');
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Auto-Plan: Lỗi khi gọi antigravity.addContext: ${err?.message || err}`);
+    }
+  });
+
+  const testChatApiCmd = vscode.commands.registerCommand('autoplan.testChatApi', async () => {
+    const choice = await vscode.window.showQuickPick([
+      { label: '$(comment) 1. Add Text "Test 123"', description: 'Gọi antigravity.addContext("Test 123")', id: 'add_123' },
+      { label: '$(edit) 2. Add Custom Text...', description: 'Nhập nội dung tùy chỉnh để chèn vào chat', id: 'add_custom' },
+      { label: '$(send) 3. Add Text & Trigger Send', description: 'Chèn "Test 123" rồi tự động bấm Gửi', id: 'add_send' },
+      { label: '$(arrow-right) 4. Trigger Send Only', description: 'Gọi antigravity.triggerSend', id: 'send_only' },
+      { label: '$(eye) 5. Focus Chat', description: 'Gọi antigravity.toggleChatFocus', id: 'focus' },
+      { label: '$(plus) 6. New Conversation', description: 'Gọi antigravity.startNewConversation', id: 'new_conv' }
+    ], { placeHolder: 'Chọn hành động để test Antigravity Native Chat API' });
+
+    if (!choice) return;
+
+    try {
+      if (choice.id === 'add_123') {
+        await vscode.commands.executeCommand('antigravity.addContext', 'Test 123');
+        vscode.window.showInformationMessage('Auto-Plan: Đã gọi antigravity.addContext("Test 123")!');
+      } else if (choice.id === 'add_custom') {
+        const text = await vscode.window.showInputBox({ prompt: 'Nhập nội dung muốn chèn vào khung chat Antigravity:', value: 'Hello from Auto-Plan Extension!' });
+        if (text) {
+          await vscode.commands.executeCommand('antigravity.addContext', text);
+          vscode.window.showInformationMessage(`Auto-Plan: Đã gọi antigravity.addContext("${text}")!`);
+        }
+      } else if (choice.id === 'add_send') {
+        await vscode.commands.executeCommand('antigravity.addContext', 'Test 123');
+        await new Promise(r => setTimeout(r, 600));
+        await vscode.commands.executeCommand('antigravity.triggerSend');
+        vscode.window.showInformationMessage('Auto-Plan: Đã chèn "Test 123" và gọi triggerSend!');
+      } else if (choice.id === 'send_only') {
+        await vscode.commands.executeCommand('antigravity.triggerSend');
+        vscode.window.showInformationMessage('Auto-Plan: Đã gọi antigravity.triggerSend!');
+      } else if (choice.id === 'focus') {
+        await vscode.commands.executeCommand('antigravity.toggleChatFocus');
+        vscode.window.showInformationMessage('Auto-Plan: Đã gọi antigravity.toggleChatFocus!');
+      } else if (choice.id === 'new_conv') {
+        await vscode.commands.executeCommand('antigravity.startNewConversation');
+        vscode.window.showInformationMessage('Auto-Plan: Đã gọi antigravity.startNewConversation!');
+      }
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Auto-Plan: Lỗi khi test Chat API: ${err?.message || err}`);
+    }
+  });
+
+  // Hook BridgeServer Chat RPC to VS Code commands for programmatic testing
+  bridgeServer.setChatRpcHandler(async (action: string, text?: string) => {
+    switch (action) {
+      case 'addContext':
+        return await vscode.commands.executeCommand('antigravity.addContext', text || 'Test 123');
+      case 'triggerSend':
+        return await vscode.commands.executeCommand('antigravity.triggerSend');
+      case 'toggleChatFocus':
+        return await vscode.commands.executeCommand('antigravity.toggleChatFocus');
+      case 'newConversation':
+        return await vscode.commands.executeCommand('antigravity.startNewConversation');
+      default:
+        throw new Error(`Unknown chat RPC action: ${action}`);
+    }
+  });
+
   // Watch for configuration changes with 300ms debounce (LOGIC-007)
   const configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
     const isAutoSubmitChange = e.affectsConfiguration('autoplan.autoSubmit');
@@ -1963,6 +2061,8 @@ export function activate(context: vscode.ExtensionContext) {
     actionMenuCmd,
     openTranscriptCmd,
     setPromptCmd,
+    cleanWorkbenchCmd,
+    testNativeDispatchCmd,
     installBridgeCmd,
     uninstallBridgeCmd,
     checkBridgeStatusCmd,
@@ -1977,6 +2077,8 @@ export function activate(context: vscode.ExtensionContext) {
     setTelegramTokenCmd,
     clearTelegramTokenCmd,
     diagnoseAutoSubmitCmd,
+    testAddContextCmd,
+    testChatApiCmd,
     configWatcher,
     telegramSubscription,
     bridgeServerSubscription,

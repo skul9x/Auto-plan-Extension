@@ -19,6 +19,12 @@
   const CONTAINER_SELECTORS = [
     '#antigravity\\.agentSidePanelInputBox',
     'div[id*="agentSidePanelInputBox"]',
+    '#antigravity\\.agentViewContainerId',
+    'div[id*="agentViewContainerId"]',
+    '.surface-composer-card',
+    '.agy-composer-footer',
+    'iframe.webview',
+    '.webview',
     '.chat-widget',
     '.interactive-session',
     'div.chat-input',
@@ -193,17 +199,34 @@
                   }
                 }
 
+                if (container.tagName === 'IFRAME' || container.tagName === 'FRAME') {
+                  try {
+                    const frameDoc = container.contentDocument || (container.contentWindow && container.contentWindow.document);
+                    if (frameDoc && !visited.has(frameDoc)) {
+                      results = results.concat(queryDeep(selector, frameDoc, visited));
+                    }
+                  } catch (frameErr) {
+                    logBridge('DEBUG', `Iframe contentDocument access restricted on container iframe: ${frameErr?.message || frameErr}`, {
+                      iframeId: container.id,
+                      iframeSrc: container.src
+                    }, frameErr);
+                  }
+                }
+
                 if (typeof container.querySelectorAll === 'function') {
                   const frames = container.querySelectorAll('iframe, frame');
                   for (let i = 0; i < frames.length; i++) {
                     const el = frames[i];
                     try {
-                      const frameDoc = el.contentDocument || (el.contentWindow && el.contentWindow.document);
-                      if (frameDoc && !visited.has(frameDoc)) {
-                        results = results.concat(queryDeep(selector, frameDoc, visited));
+                      const src = el.src || el.getAttribute?.('src') || '';
+                      if (!src.startsWith('http:') && !src.startsWith('https:')) {
+                        const frameDoc = el.contentDocument || (el.contentWindow && el.contentWindow.document);
+                        if (frameDoc && !visited.has(frameDoc)) {
+                          results = results.concat(queryDeep(selector, frameDoc, visited));
+                        }
                       }
                     } catch (frameErr) {
-                      logBridge('WARN', `Cross-origin iframe access restricted in container query: ${frameErr?.message || frameErr}`, {
+                      logBridge('DEBUG', `Cross-origin iframe access restricted in container query: ${frameErr?.message || frameErr}`, {
                         iframeId: el.id,
                         iframeSrc: el.src
                       }, frameErr);
@@ -251,7 +274,7 @@
               const el = frames[i];
               try {
                 const src = el.src || el.getAttribute?.('src') || '';
-                if (!src.startsWith('vscode-webview:') && !src.startsWith('http:') && !src.startsWith('https:')) {
+                if (!src.startsWith('http:') && !src.startsWith('https:')) {
                   const frameDoc = el.contentDocument || (el.contentWindow && el.contentWindow.document);
                   if (frameDoc && !visited.has(frameDoc)) {
                     results = results.concat(queryDeep(selector, frameDoc, visited));
@@ -295,9 +318,10 @@
             return false;
           }
         }
-        if (typeof window !== 'undefined' && window.getComputedStyle) {
+        const compWin = (curr.ownerDocument && curr.ownerDocument.defaultView) || (typeof window !== 'undefined' ? window : null);
+        if (compWin && compWin.getComputedStyle) {
           try {
-            const cs = window.getComputedStyle(curr);
+            const cs = compWin.getComputedStyle(curr);
             if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) {
               return false;
             }
@@ -578,7 +602,7 @@
 
     try {
       if (typeof el.closest === 'function') {
-        const match = el.closest('#antigravity\\.agentSidePanelInputBox, [id*="agentSidePanelInputBox"], .chat-widget, .interactive-session, .interactive-input, .chat-input-container, .chat-input-part, div.chat-input, .composer-container, .composer-bar, .chat-editor-widget, [data-testid*="chat"], [data-testid*="composer"]');
+        const match = el.closest('#antigravity\\.agentSidePanelInputBox, [id*="agentSidePanelInputBox"], #antigravity\\.agentViewContainerId, [id*="agentViewContainerId"], .surface-composer-card, .agy-composer-footer, .webview, .chat-widget, .interactive-session, .interactive-input, .chat-input-container, .chat-input-part, div.chat-input, .composer-container, .composer-bar, .chat-editor-widget, [data-testid*="chat"], [data-testid*="composer"]');
         if (match) return true;
       }
     } catch (_) {}
@@ -586,9 +610,9 @@
     let curr = el;
     while (curr && curr.nodeType === 1) {
       const id = curr.id || (typeof curr.getAttribute === 'function' ? curr.getAttribute('id') : '');
-      if (id && id.includes('agentSidePanelInputBox')) return true;
+      if (id && (id.includes('agentSidePanelInputBox') || id.includes('agentViewContainerId'))) return true;
       const cls = typeof curr.className === 'string' ? curr.className : (curr.getAttribute ? curr.getAttribute('class') || '' : '');
-      if (/\b(chat-widget|interactive-session|interactive-input|chat-input|chat-input-container|chat-input-part|composer-container|composer-bar|chat-editor-widget)\b/.test(cls)) {
+      if (/\b(chat-widget|interactive-session|interactive-input|chat-input|chat-input-container|chat-input-part|composer-container|composer-bar|chat-editor-widget|surface-composer-card|agy-composer-footer|webview)\b/.test(cls)) {
         return true;
       }
       if (hasChatIdentifiers(curr)) {
@@ -703,6 +727,9 @@
       '#antigravity\\.agentSidePanelInputBox [contenteditable="true"]',
       '#antigravity\\.agentSidePanelInputBox [data-lexical-editor="true"]',
       '#antigravity\\.agentSidePanelInputBox textarea',
+      '.surface-composer-card [data-lexical-editor="true"]',
+      '.surface-composer-card [contenteditable="true"]',
+      '.surface-composer-card div[role="combobox"]',
       'div[data-lexical-editor="true"][aria-label="Message input"]',
       'div[data-lexical-editor="true"]',
       'div[aria-label="Message input"][contenteditable="true"]',
@@ -785,6 +812,10 @@
     const HIGH_PRIORITY_BUTTON_SELECTORS = [
       'button[data-testid="send-button"]',
       '[data-testid="send-button"]',
+      'button.agy-send-button',
+      '.agy-send-button',
+      '.surface-composer-card button[data-testid="send-button"]',
+      '.surface-composer-card button[aria-label="Send message"]',
       'button[aria-label="Send message"]',
       'button[aria-label*="Send message"]',
       'button[title*="Send message"]',
@@ -980,6 +1011,29 @@
   }
 
   /**
+   * Helper to identify context / attachment buttons that must not be confused with New Conversation
+   */
+  function isContextOrAttachmentElement(el) {
+    if (!el) return false;
+    try {
+      if (typeof el.closest === 'function') {
+        if (el.closest('.surface-composer-card, .agy-composer-footer, .chat-input-toolbar, .chat-input-actions')) {
+          return true;
+        }
+      }
+      const ariaLabel = (el.getAttribute && el.getAttribute('aria-label')) || '';
+      if (/add context|attach|mention/i.test(ariaLabel)) {
+        return true;
+      }
+      const tooltipId = (el.getAttribute && el.getAttribute('data-tooltip-id')) || '';
+      if (/add-context|context/i.test(tooltipId)) {
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /**
    * Locates the "New Conversation" / "New Chat" button
    */
   function findNewConversationButton(doc) {
@@ -989,14 +1043,33 @@
     const selectors = [
       'a[data-tooltip-id="new-conversation-tooltip"]',
       'a[data-tooltip-id*="new-conversation"]',
+      'button[data-tooltip-id="new-conversation-tooltip"]',
+      'button[data-tooltip-id*="new-conversation"]',
       '[data-tooltip-id="new-conversation-tooltip"]',
       '[data-tooltip-id*="new-conversation"]',
+      '[data-tooltip-id*="new-chat"]',
+      '[data-testid="new-conversation-button"]',
+      '[data-testid="new-chat-button"]',
+      '[data-testid*="new-conversation"]',
+      '[data-testid*="new-chat"]',
       'button[aria-label*="New Chat"]',
       'button[aria-label*="New Conversation"]',
+      'button[aria-label*="New chat"]',
+      'button[aria-label*="New conversation"]',
       'button[title*="New Chat"]',
       'button[title*="New Conversation"]',
+      'button[title*="New chat"]',
+      'button[title*="New conversation"]',
+      'a[aria-label*="New Chat"]',
+      'a[aria-label*="New Conversation"]',
+      'a[aria-label*="New chat"]',
+      'a[aria-label*="New conversation"]',
+      'a[title*="New Chat"]',
+      'a[title*="New Conversation"]',
+      'a[title*="New chat"]',
+      'a[title*="New conversation"]',
       'button[aria-label*="Clear Chat"]',
-      '[data-testid*="new-chat-button"]',
+      'button[aria-label*="Clear chat"]',
       '.codicon-plus',
       '.codicon-add',
       'button.codicon-plus',
@@ -1008,9 +1081,12 @@
       for (let j = 0; j < candidates.length; j++) {
         const el = candidates[j];
         if (el) {
+          if (isContextOrAttachmentElement(el)) {
+            continue;
+          }
           if (el.classList && (el.classList.contains('codicon-plus') || el.classList.contains('codicon-add')) && el.tagName !== 'BUTTON' && el.tagName !== 'A') {
             const parentBtn = el.closest ? el.closest('a, button, [role="button"]') : el.parentElement;
-            if (parentBtn && isElementVisible(parentBtn, { allowDisabled: true })) {
+            if (parentBtn && !isContextOrAttachmentElement(parentBtn) && isElementVisible(parentBtn, { allowDisabled: true })) {
               return parentBtn;
             }
           }
@@ -1029,7 +1105,7 @@
         const d = p?.getAttribute?.('d') || '';
         if (d.includes('M450-450H220') || d.includes('M450-450') || d.includes('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z')) {
           const anchorOrBtn = p.closest ? p.closest('a, button, [role="button"]') : p.parentElement;
-          if (anchorOrBtn && isElementVisible(anchorOrBtn, { allowDisabled: true })) {
+          if (anchorOrBtn && !isContextOrAttachmentElement(anchorOrBtn) && isElementVisible(anchorOrBtn, { allowDisabled: true })) {
             return anchorOrBtn;
           }
         }

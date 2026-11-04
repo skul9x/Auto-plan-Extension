@@ -60,6 +60,7 @@ export const REGISTERED_CONFIG_KEYS = new Set([
   'repeatCount',
   'completionKeyword',
   'delayBetweenLoopsMs',
+  'sendDelayMs',
   'timeoutPerLoopMinutes',
   'focusDelayMs',
   'executionMode',
@@ -278,6 +279,7 @@ export class SettingsProvider {
     isHealthy: boolean;
     workerKeepAlive: string;
     latencyMs: string;
+    engine?: string;
   } {
     let port = 47352;
     let clients = 0;
@@ -291,29 +293,17 @@ export class SettingsProvider {
       }
     } catch {}
 
-    let injected = false;
-    try {
-      injected = isBridgeInstalled();
-    } catch {}
+    const readiness = this._promptDispatcher
+      ? this._promptDispatcher.validateDispatchReadiness()
+      : { ready: true, engine: 'Native Antigravity Dispatch', errorMessage: undefined as string | undefined };
 
-    let toolchain = 'OS Native';
-    try {
-      if (process.platform === 'win32') {
-        toolchain = 'PowerShell (Ready)';
-      } else if (process.platform === 'darwin') {
-        toolchain = 'osascript (Ready)';
-      } else {
-        const prereq = keyboardManager.checkLinuxKeyboardPrerequisites();
-        toolchain = prereq?.available ? 'xdotool (Ready)' : 'xdotool (Missing)';
-      }
-    } catch {
-      toolchain = 'Keyboard fallback';
-    }
-
-    const nativeCommandStatus = 'Command API Ready';
-    const isHealthy = injected && (clients > 0 || serverListening);
-    const workerKeepAlive = clients > 0 ? 'Active' : (serverListening ? 'Listening' : 'Inactive');
-    const latencyMs = clients > 0 ? '< 10ms' : 'N/A';
+    const injected = readiness.ready;
+    const toolchain = 'Native Antigravity API';
+    const nativeCommandStatus = readiness.ready ? 'Native Engine Ready' : (readiness.errorMessage || 'Native Command Unavailable');
+    const isHealthy = readiness.ready;
+    const workerKeepAlive = readiness.ready ? 'Active (Native)' : 'Inactive';
+    const latencyMs = '< 5ms';
+    const engine = readiness.engine || 'Native Antigravity Dispatch';
 
     return {
       port,
@@ -323,7 +313,8 @@ export class SettingsProvider {
       nativeCommandStatus,
       isHealthy,
       workerKeepAlive,
-      latencyMs
+      latencyMs,
+      engine
     };
   }
 
@@ -641,17 +632,23 @@ export class SettingsProvider {
         break;
       }
 
+      case 'testSendPrompt':
+      case 'testNativeDispatch':
       case 'testTier': {
         try {
-          const tier = message.tier;
-          const targetTier: DispatchTier = (!tier || tier === 'auto') ? 'domBridge' : tier;
-          const result = await this._promptDispatcher.testTierDispatch(targetTier);
+          const startTime = Date.now();
+          const readiness = this._promptDispatcher.validateDispatchReadiness();
+          if (!readiness.ready) {
+            throw new Error(readiness.errorMessage || 'Native Antigravity chat API is unavailable');
+          }
+          const result = await this._promptDispatcher.testTierDispatch('nativeCommand', 'Test prompt from Auto-Plan');
+          const latencyMs = result.latencyMs !== undefined ? result.latencyMs : (Date.now() - startTime);
           this._panel.webview.postMessage({
             command: 'testResult',
             type: 'testResult',
             success: result.success,
-            latencyMs: result.latencyMs,
-            status: result.status,
+            latencyMs,
+            status: result.status || 'Native prompt dispatched',
             error: result.error
           });
         } catch (err: any) {

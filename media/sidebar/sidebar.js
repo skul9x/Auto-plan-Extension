@@ -79,13 +79,17 @@
     transcriptLog.textContent = 'Feed cleared.';
   });
 
-  btnActivateBridge.addEventListener('click', () => {
-    vscode.postMessage({ command: 'activateBridge' });
-  });
+  if (btnActivateBridge) {
+    btnActivateBridge.addEventListener('click', () => {
+      vscode.postMessage({ command: 'activateBridge' });
+    });
+  }
 
-  btnDiagnostics.addEventListener('click', () => {
-    vscode.postMessage({ command: 'diagnostics' });
-  });
+  if (btnDiagnostics) {
+    btnDiagnostics.addEventListener('click', () => {
+      vscode.postMessage({ command: 'diagnostics' });
+    });
+  }
 
   if (btnCopyBridgeLog) {
     btnCopyBridgeLog.addEventListener('click', () => {
@@ -359,18 +363,20 @@
     const status = (data.status || data).toString().toLowerCase();
     bridgeStatusBadge.className = 'status-pill ';
 
-    if (status.includes('connected') || status === 'focus-free') {
+    const isConnected = (status === 'connected' || status === 'focus-free' || status.includes('ready') || status.includes('native')) && !status.includes('dis') && !status.includes('unavail') && !status.includes('inact');
+
+    if (isConnected) {
       bridgeStatusBadge.classList.add('status-connected');
-      bridgeStatusText.textContent = '🟢 Focus-Free';
-      bridgeStatusBadge.title = 'Background Bridge: Active (Keep-Alive)';
+      bridgeStatusText.textContent = '🟢 Native Ready';
+      bridgeStatusBadge.title = 'Antigravity Native Engine: Ready (Focus-Free)';
     } else if (status.includes('keyboard') || status.includes('fallback')) {
       bridgeStatusBadge.classList.add('status-keyboard');
-      bridgeStatusText.textContent = '🟡 Keyboard Fallback';
-      bridgeStatusBadge.title = 'Keyboard Fallback Mode';
+      bridgeStatusText.textContent = '🟡 Fallback Mode';
+      bridgeStatusBadge.title = 'Fallback Mode Active';
     } else {
       bridgeStatusBadge.classList.add('status-inactive');
-      bridgeStatusText.textContent = '🔴 Disconnected';
-      bridgeStatusBadge.title = 'DOM Automation Bridge Disconnected';
+      bridgeStatusText.textContent = '🔴 Native Unavailable';
+      bridgeStatusBadge.title = 'Antigravity Native Engine Unavailable';
     }
   }
 

@@ -640,6 +640,11 @@ export class Orchestrator extends EventEmitter {
   }
 
   /**
+   * Alias for triggerPhaseNudge
+   */
+  public executeNudgeProcedure = this.triggerPhaseNudge;
+
+  /**
    * Diagnoses and logs cascade blockers for subsequent phases when an active phase errors.
    */
   private diagnoseSubsequentPhasesOnFailure(failedIndex: number, failedError?: string): void {
@@ -988,7 +993,7 @@ export class Orchestrator extends EventEmitter {
       config.executionMode,
       config.allowTierFallback
     );
-    if (!readiness.ready && (config.executionMode === 'auto' || config.executionMode === 'domBridge')) {
+    if (!readiness.ready) {
       readiness = await this.promptDispatcher.ensureBridgeReadinessWithWakeup(
         200,
         undefined,
@@ -998,12 +1003,10 @@ export class Orchestrator extends EventEmitter {
     }
     this.lastPreflightResult = readiness;
     if (!readiness.ready) {
-      const mode = config.executionMode || 'auto';
-      const detail = readiness.errorMessage || 'No usable prompt transport available.';
-      const errorMsg = `Pre-flight check failed for selected mode '${mode}'. ${detail}`;
+      const detail = readiness.errorMessage || 'Antigravity native chat commands unavailable.';
+      const errorMsg = `Pre-flight check failed: ${detail}`;
       this.debugLogger.warn('DISPATCHER', errorMsg, {
         stallCode: 'PREFLIGHT_TRANSPORT_FAILURE',
-        executionMode: mode,
         readiness
       });
       this.setState('error', errorMsg);
@@ -1257,7 +1260,7 @@ export class Orchestrator extends EventEmitter {
       config.executionMode,
       config.allowTierFallback
     );
-    if (!readiness.ready && (config.executionMode === 'auto' || config.executionMode === 'domBridge')) {
+    if (!readiness.ready) {
       readiness = await this.promptDispatcher.ensureBridgeReadinessWithWakeup(
         200,
         undefined,
@@ -1267,19 +1270,17 @@ export class Orchestrator extends EventEmitter {
     }
     this.lastPreflightResult = readiness;
     if (!readiness.ready) {
-      const mode = config.executionMode || 'auto';
-      const detail = readiness.errorMessage || 'No usable prompt transport available.';
-      const errorMsg = `Pre-flight check failed for selected mode '${mode}'. ${detail}`;
+      const detail = readiness.errorMessage || 'Antigravity native chat commands unavailable.';
+      const errorMsg = `Pre-flight check failed: ${detail}`;
       this.debugLogger.warn('DISPATCHER', errorMsg, {
         stallCode: 'PREFLIGHT_TRANSPORT_FAILURE',
-        executionMode: mode,
         readiness
       });
       if (this.phases.length > 0) {
         this.debugLogger.logPhaseStall(this.toPhaseDiagnosticInfo(this.phases[0]), {
           code: 'PREFLIGHT_TRANSPORT_FAILURE',
           description: errorMsg,
-          remediationAction: 'Run 1-Click DOM Bridge Setup or check transport settings'
+          remediationAction: 'Check Antigravity native chat command availability'
         });
       }
       this.setState('error', errorMsg);
@@ -1358,10 +1359,12 @@ export class Orchestrator extends EventEmitter {
         this.emit('phaseStart', phase, i, this.phases.length, phase.fileName, phase.filePath);
 
         const dispatchOptions: DispatchOptions = {
+          openNewConversation: true,
+          newConversation: true,
+          sendDelayMs: config.sendDelayMs,
           mode: config.executionMode,
           allowFallback: config.allowTierFallback,
           timeoutMs: config.bridgeTimeoutMs,
-          openNewConversation: true,
           keyboardOptions: {
             focusDelayMs: config.focusDelayMs
           }
@@ -1441,7 +1444,7 @@ export class Orchestrator extends EventEmitter {
               phase.error = errMsg;
               phase.dispatchResult = {
                 success: false,
-                tier: (config.executionMode === 'auto' ? 'domBridge' : config.executionMode) as any,
+                tier: 'nativeCommand',
                 durationMs: 0,
                 error: errMsg
               };
@@ -1898,7 +1901,7 @@ export class Orchestrator extends EventEmitter {
       config.executionMode,
       config.allowTierFallback
     );
-    if (!readiness.ready && (config.executionMode === 'auto' || config.executionMode === 'domBridge')) {
+    if (!readiness.ready) {
       readiness = await this.promptDispatcher.ensureBridgeReadinessWithWakeup(
         200,
         undefined,
@@ -1908,12 +1911,10 @@ export class Orchestrator extends EventEmitter {
     }
     this.lastPreflightResult = readiness;
     if (!readiness.ready) {
-      const mode = config.executionMode || 'auto';
-      const detail = readiness.errorMessage || 'No usable prompt transport available.';
-      const errorMsg = `Pre-flight check failed for selected mode '${mode}'. ${detail}`;
+      const detail = readiness.errorMessage || 'Antigravity native chat commands unavailable.';
+      const errorMsg = `Pre-flight check failed: ${detail}`;
       this.debugLogger.warn('DISPATCHER', errorMsg, {
         stallCode: 'PREFLIGHT_TRANSPORT_FAILURE',
-        executionMode: mode,
         readiness
       });
       this.setState('error', errorMsg);
@@ -1958,10 +1959,12 @@ export class Orchestrator extends EventEmitter {
         const timestampBeforeSend = Date.now();
 
         const dispatchOptions: DispatchOptions = {
+          openNewConversation: true,
+          newConversation: true,
+          sendDelayMs: config.sendDelayMs,
           mode: config.executionMode,
           allowFallback: config.allowTierFallback,
           timeoutMs: config.bridgeTimeoutMs,
-          openNewConversation: true,
           keyboardOptions: {
             focusDelayMs: config.focusDelayMs
           }
@@ -2170,6 +2173,13 @@ export class Orchestrator extends EventEmitter {
     }
 
     this.transcriptWatcher.stop();
+    if (this.promptDispatcher && typeof this.promptDispatcher.stopActiveGeneration === 'function') {
+      try {
+        this.promptDispatcher.stopActiveGeneration().catch((err: any) => {
+          this.debugLogger.debug('ORCHESTRATOR', `Native stopActiveGeneration error: ${err?.message || err}`);
+        });
+      } catch {}
+    }
     this.setState('stopped', 'Stopped by user');
     this.emit('stopped');
   }

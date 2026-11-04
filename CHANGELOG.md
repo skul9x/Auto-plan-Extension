@@ -2,6 +2,31 @@
 
 All notable changes to the **Antigravity Auto-Plan Runner** extension will be documented in this file.
 
+## [1.7.2] - 2026-11-04
+
+### 🚀 100% Native Antigravity Chat API Transition & Zero-DOM Clean Architecture
+- **Native Chat Commands Integration**:
+  - Replaced legacy 3-Tier prompt dispatch architecture (DOM Bridge injection into `workbench.html`, non-existent Tier 2 commands, and Tier 3 OS keyboard simulations) with 100% native Antigravity IDE commands.
+  - Implemented focus-free prompt injection via `antigravity.addContext` and prompt submission via `antigravity.triggerSend`.
+  - Added clean multi-phase conversation separation via `antigravity.startNewConversation` with 400ms UI stabilization delay.
+  - Implemented focus-free active generation interruption via `antigravity.prioritized.chat.stop` and `workbench.action.chat.stop`.
+- **Configuration & Settings Modernization**:
+  - Introduced configurable `sendDelayMs` (default: 500ms) with full schema declaration in `package.json`.
+  - Marked legacy DOM bridge and elevation settings as deprecated/obsolete.
+  - Modernized Settings Webview and Sidebar UI: simplified status badges to `$(zap) Native: Ready` and streamlined diagnostic controls.
+- **Automated Workbench Cleanup & Self-Healing**:
+  - Created `src/workbenchCleaner.ts` to automatically detect and safely remove legacy DOM bridge `<script>` injections from `workbench.html`.
+  - Restores clean original backups when available and removes orphaned bridge assets.
+  - Added manual restoration command `autoplan.cleanWorkbench`.
+- **Telegram Remote Bridge Synchronization**:
+  - Workflow slash commands (`/run`, `/plan`) and free chat prompts dispatch focus-free via native commands without window stealing.
+  - Remote `/stop` and `/plan_stop` commands halt orchestrator execution and trigger native active generation cancellation.
+- **Packaging & Distribution Hardening**:
+  - Lean `.vscodeignore` exclusions omitting test suites, source code, plans, and scratch scripts.
+  - Verified clean packaging via `vsce package` producing a ~798 KB release bundle and verified installation into Antigravity IDE.
+
+---
+
 ## [1.7.1] - 2026-11-01
 
 ### 🛡️ Hardened DOM Bridge Chat Injection & Two-Phase Verification

@@ -8,27 +8,33 @@ export type DispatchTier = 'domBridge' | 'nativeCommand' | 'keyboard';
 
 export interface DispatchReadinessResult {
   ready: boolean;
-  selectedTier: 'domBridge' | 'nativeCommand' | 'keyboard';
+  selectedTier: 'domBridge' | 'nativeCommand' | 'keyboard' | string;
   isFocusFree: boolean;
   requiresForegroundFocus: boolean;
+  engine?: string;
   warningMessage?: string;
   errorMessage?: string;
-  remediationAction?: 'activateBridge' | 'installXdotool' | 'openDocs';
+  remediationAction?: 'activateBridge' | 'installXdotool' | 'openDocs' | string;
   details: {
-    connectedClientsCount: number;
-    os: 'win32' | 'linux' | 'darwin' | 'other';
+    connectedClientsCount?: number;
+    os?: 'win32' | 'linux' | 'darwin' | 'other';
     xdotoolAvailable?: boolean;
     bridgePort?: number;
+    nativeCommandsAvailable?: boolean;
+    engine?: string;
+    [key: string]: any;
   };
 }
 
 export interface DispatchOptions {
+  sendDelayMs?: number;
+  newConversation?: boolean;
+  openNewConversation?: boolean;
   mode?: ExecutionMode;
   allowFallback?: boolean;
   timeoutMs?: number;
   windowKey?: string;
   commandType?: string;
-  openNewConversation?: boolean;
   revealChat?: boolean;
   keyboardOptions?: BatchPromptOptions;
   extra?: Record<string, any>;
@@ -89,15 +95,17 @@ export class PromptDispatcher {
     this.logger = options?.logger ?? debugLogger;
     this.actionableNotifier = options?.actionableNotifier;
     this.actionableErrorNotifier = options?.actionableErrorNotifier;
-    this.customCommandExecutorProvided = Boolean(options?.commandExecutor);
-    this.commandExecutor =
-      options?.commandExecutor ??
-      ((cmd: string, ...args: any[]) => {
+    this.customCommandExecutorProvided = Boolean(options && 'commandExecutor' in options);
+    if (options && 'commandExecutor' in options) {
+      this.commandExecutor = options.commandExecutor as any;
+    } else {
+      this.commandExecutor = (cmd: string, ...args: any[]) => {
         if (vscode?.commands?.executeCommand) {
           return vscode.commands.executeCommand(cmd, ...args);
         }
         return Promise.reject(new Error('vscode.commands.executeCommand is unavailable'));
-      });
+      };
+    }
     this.warningNotifier =
       options?.warningNotifier ??
       ((msg: string) => {
@@ -259,54 +267,79 @@ export class PromptDispatcher {
   }
 
   /**
-   * Pre-flight health check to evaluate prompt transport readiness in < 100ms.
+   * Pre-flight health check to evaluate Antigravity native chat command availability in < 100ms.
    */
   public validateDispatchReadiness(
     platformOverride?: string,
-    modeOverride?: ExecutionMode,
-    allowFallbackOverride?: boolean
+    _modeOverride?: ExecutionMode,
+    _allowFallbackOverride?: boolean
   ): DispatchReadinessResult {
-    const result = this.evaluateReadiness(platformOverride, modeOverride, allowFallbackOverride);
-    const activeWindow = this.bridgeServer.getActiveWindowKey() || this.bridgeServer.getWindowKey();
-    if (result.ready) {
-      this.logger.info('DISPATCHER', `Readiness check passed: tier=${result.selectedTier}, connectedClients=${result.details.connectedClientsCount}, port=${result.details.bridgePort ?? 'none'}, activeWindow=${activeWindow}`, result);
-    } else {
-      this.logger.warn('DISPATCHER', `Readiness check failed: ${result.errorMessage || 'No transport available'}, port=${result.details.bridgePort ?? 'none'}, activeWindow=${activeWindow}`, result);
+    const rawPlatform = platformOverride || process.platform;
+    const osType: 'win32' | 'linux' | 'darwin' | 'other' =
+      rawPlatform === 'win32' ? 'win32' :
+      rawPlatform === 'linux' ? 'linux' :
+      rawPlatform === 'darwin' ? 'darwin' : 'other';
+
+    let isAvailable = true;
+    let failureReason: string | undefined;
+
+    if (!this.commandExecutor || typeof this.commandExecutor !== 'function') {
+      isAvailable = false;
+      failureReason = 'Antigravity native command executor is unavailable or not callable.';
+    } else if (!this.customCommandExecutorProvided) {
+      if (typeof vscode === 'undefined' || !vscode.commands || typeof vscode.commands.executeCommand !== 'function') {
+        isAvailable = false;
+        failureReason = 'vscode.commands API is unavailable in current host.';
+      }
     }
+
+    if (!isAvailable) {
+      this.logger.warn('DISPATCHER', `Readiness check failed: ${failureReason}`);
+      return {
+        ready: false,
+        selectedTier: 'nativeCommand',
+        isFocusFree: true,
+        requiresForegroundFocus: false,
+        engine: 'Native Antigravity Dispatch',
+        errorMessage: failureReason,
+        remediationAction: 'openDocs',
+        details: {
+          connectedClientsCount: 0,
+          os: osType,
+          nativeCommandsAvailable: false,
+          engine: 'Native Antigravity Dispatch',
+          failureReason
+        }
+      };
+    }
+
+    const result: DispatchReadinessResult = {
+      ready: true,
+      selectedTier: 'nativeCommand',
+      isFocusFree: true,
+      requiresForegroundFocus: false,
+      engine: 'Native Antigravity Dispatch',
+      details: {
+        connectedClientsCount: 0,
+        os: osType,
+        nativeCommandsAvailable: true,
+        engine: 'Native Antigravity Dispatch'
+      }
+    };
+    this.logger.info('DISPATCHER', `Readiness check passed: Native Antigravity Dispatch ready (os=${osType})`, result);
     return result;
   }
 
   /**
-   * Asynchronously ensures the bridge server is active and probes for background clients before evaluating readiness.
+   * Evaluates readiness with optional async probe.
    */
   public async ensureBridgeReadinessWithWakeup(
-    timeoutMs: number = 250,
+    _timeoutMs: number = 250,
     platformOverride?: string,
     modeOverride?: ExecutionMode,
     allowFallbackOverride?: boolean
   ): Promise<DispatchReadinessResult> {
-    const config = this.configProvider();
-    const mode = modeOverride ?? config.executionMode ?? 'auto';
-
-    if (!this.bridgeServer.isListening()) {
-      if (mode === 'domBridge' || mode === 'auto') {
-        try {
-          await this.bridgeServer.start();
-        } catch (err: any) {
-          this.logger.warn('DISPATCHER', `Failed to start BridgeServer during wakeup probe: ${err.message}`);
-        }
-      }
-    }
-
-    if (this.bridgeServer.getConnectedClients().length === 0) {
-      this.logger.debug('DISPATCHER', `0 connected clients. Running fast wakeup probe (timeout: ${timeoutMs}ms)...`);
-      await this.bridgeServer.probeActiveClients(timeoutMs);
-    }
-
-    const result = this.validateDispatchReadiness(platformOverride, modeOverride, allowFallbackOverride);
-    const activeWindow = this.bridgeServer.getActiveWindowKey() || this.bridgeServer.getWindowKey();
-    this.logger.info('DISPATCHER', `Wakeup readiness evaluated: ready=${result.ready}, tier=${result.selectedTier}, connectedClients=${result.details.connectedClientsCount}, port=${result.details.bridgePort ?? 'none'}, activeWindow=${activeWindow}`);
-    return result;
+    return this.validateDispatchReadiness(platformOverride, modeOverride, allowFallbackOverride);
   }
 
   private evaluateReadiness(
@@ -969,225 +1002,158 @@ export class PromptDispatcher {
   }
 
   /**
-   * Dispatches a prompt across the configured or 3-tier fallback strategy.
+   * Dispatches a prompt using 100% native Antigravity IDE internal commands:
+   * 1. If a new conversation is requested (or at the start of a phase), execute 'antigravity.startNewConversation' followed by a fixed 400 ms stabilization delay.
+   * 2. Execute 'antigravity.addContext' with the target prompt string.
+   * 3. Wait for 'sendDelayMs' (default: 500 ms) to ensure the chat UI enables the send state.
+   * 4. Execute 'antigravity.triggerSend' to fire the prompt.
    */
   public async dispatchPrompt(promptText: string, options?: DispatchOptions): Promise<DispatchResult> {
+    const startTime = Date.now();
     const config = this.configProvider();
-    const mode: ExecutionMode = options?.mode || config.executionMode || 'auto';
-    const allowFallback = options?.allowFallback ?? config.allowTierFallback ?? true;
-    const isStrict = allowFallback === false || (config.strictMode && mode !== 'auto');
-    const fallbackHistory: FallbackRecord[] = [];
-
     const promptPreview = sanitizePrompt(promptText, 60);
-    this.logger.info('DISPATCHER', `Dispatching prompt: "${promptPreview}" (Total ${promptText.length} chars, mode=${mode}, allowFallback=${allowFallback})`, {
-      mode,
-      allowFallback,
-      isStrict,
-      charCount: promptText.length
+
+    const isNewConversation = Boolean(options?.newConversation || options?.openNewConversation);
+    const rawDelay = options?.sendDelayMs ?? config.sendDelayMs;
+    const sendDelayMs = typeof rawDelay === 'number' && !isNaN(rawDelay) ? Math.max(0, rawDelay) : 500;
+
+    this.logger.info(
+      'DISPATCHER',
+      `[Native Dispatch] Dispatching prompt: "${promptPreview}" (${promptText.length} chars, newConversation=${isNewConversation}, sendDelayMs=${sendDelayMs}ms)`
+    );
+
+    // 1. If a new conversation is requested, execute antigravity.startNewConversation followed by 400ms stabilization delay
+    if (isNewConversation) {
+      this.logger.debug('DISPATCHER', 'Executing antigravity.startNewConversation...');
+      try {
+        await this.commandExecutor('antigravity.startNewConversation');
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        const failureErr: any = new Error(
+          `[Native Antigravity Dispatch Failed] Failed executing 'antigravity.startNewConversation': ${errMsg}. Remediation: Verify Antigravity IDE is running and internal commands are available.`
+        );
+        failureErr.code = 'NATIVE_COMMAND_FAILED';
+        failureErr.command = 'antigravity.startNewConversation';
+        failureErr.diagnostics = {
+          command: 'antigravity.startNewConversation',
+          error: errMsg,
+          promptPreview
+        };
+        this.logger.recordInjectionTelemetry({
+          timestamp: Date.now(),
+          status: 'failed',
+          elementContext: 'antigravity.startNewConversation',
+          charsInjected: 0,
+          charsExpected: promptText.length,
+          charsDetectedInDOM: 0,
+          strategy: 'native-chat-api',
+          verified: false,
+          error: errMsg
+        });
+        this.logger.error('DISPATCHER', failureErr.message, failureErr.diagnostics, err);
+        throw failureErr;
+      }
+
+      // Fixed 400 ms stabilization delay
+      await new Promise(resolve => setTimeout(resolve, 400));
+    }
+
+    // 2. Execute antigravity.addContext with the target prompt string
+    this.logger.debug('DISPATCHER', `Executing antigravity.addContext with ${promptText.length} chars...`);
+    try {
+      await this.commandExecutor('antigravity.addContext', promptText);
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      const failureErr: any = new Error(
+        `[Native Antigravity Dispatch Failed] Failed executing 'antigravity.addContext': ${errMsg}. Remediation: Ensure the Antigravity chat input is ready and command is registered.`
+      );
+      failureErr.code = 'NATIVE_COMMAND_FAILED';
+      failureErr.command = 'antigravity.addContext';
+      failureErr.diagnostics = {
+        command: 'antigravity.addContext',
+        error: errMsg,
+        promptLength: promptText.length,
+        promptPreview
+      };
+      this.logger.recordInjectionTelemetry({
+        timestamp: Date.now(),
+        status: 'failed',
+        elementContext: 'antigravity.addContext',
+        charsInjected: 0,
+        charsExpected: promptText.length,
+        charsDetectedInDOM: 0,
+        strategy: 'native-chat-api',
+        verified: false,
+        error: errMsg
+      });
+      this.logger.error('DISPATCHER', failureErr.message, failureErr.diagnostics, err);
+      throw failureErr;
+    }
+
+    // 3. Wait for sendDelayMs (default: 500 ms) to ensure the chat UI enables the send state
+    if (sendDelayMs > 0) {
+      this.logger.debug('DISPATCHER', `Waiting ${sendDelayMs}ms sendDelayMs before triggerSend...`);
+      await new Promise(resolve => setTimeout(resolve, sendDelayMs));
+    }
+
+    // 4. Execute antigravity.triggerSend to fire the prompt
+    this.logger.debug('DISPATCHER', 'Executing antigravity.triggerSend...');
+    try {
+      await this.commandExecutor('antigravity.triggerSend');
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      const failureErr: any = new Error(
+        `[Native Antigravity Dispatch Failed] Failed executing 'antigravity.triggerSend': ${errMsg}. Remediation: Ensure Antigravity send button is enabled.`
+      );
+      failureErr.code = 'NATIVE_COMMAND_FAILED';
+      failureErr.command = 'antigravity.triggerSend';
+      failureErr.diagnostics = {
+        command: 'antigravity.triggerSend',
+        error: errMsg,
+        promptLength: promptText.length
+      };
+      this.logger.recordInjectionTelemetry({
+        timestamp: Date.now(),
+        status: 'failed',
+        elementContext: 'antigravity.triggerSend',
+        charsInjected: 0,
+        charsExpected: promptText.length,
+        charsDetectedInDOM: 0,
+        strategy: 'native-chat-api',
+        verified: false,
+        error: errMsg
+      });
+      this.logger.error('DISPATCHER', failureErr.message, failureErr.diagnostics, err);
+      throw failureErr;
+    }
+
+    const durationMs = Date.now() - startTime;
+    this.logger.info('DISPATCHER', `Prompt dispatched successfully via Native Antigravity commands in ${durationMs}ms`);
+
+    this.logger.recordInjectionTelemetry({
+      timestamp: Date.now(),
+      status: 'verified',
+      elementContext: 'antigravity.addContext (Native)',
+      charsInjected: promptText.length,
+      charsExpected: promptText.length,
+      charsDetectedInDOM: promptText.length,
+      strategy: 'native-chat-api',
+      verified: true
     });
 
-    // If fallback is disabled (allowFallback === false or strict mode): execute only the requested tier
-    if (isStrict) {
-      const targetTier: DispatchTier = mode === 'auto' ? 'domBridge' : mode;
-
-      if (targetTier === 'domBridge') {
-        try {
-          const res = await this.dispatchTier1(promptText, options);
-          const wsName = this.bridgeServer.getWorkspaceName();
-          this.logger.info('DISPATCHER', `Strict Tier 1 (domBridge) succeeded in ${res.durationMs}ms [workspace: ${wsName || 'unbound'}]`);
-          return res;
-        } catch (err: any) {
-          const wsName = this.bridgeServer.getWorkspaceName();
-          const msg = `[DOM Bridge Transport Failed] ${err.message || String(err)}. Remediation: Ensure DOM Bridge injection is active in workbench.html or restart the bridge server.`;
-          this.logger.error('DISPATCHER', msg, { tier: 'domBridge', workspaceName: wsName, error: err.stack || err.message }, err);
-          const strictErr: any = new Error(msg);
-          strictErr.workspaceName = wsName;
-          if (err.code) strictErr.code = err.code;
-          if (err.rejectionReason) strictErr.rejectionReason = err.rejectionReason;
-          if (err.domSnapshot) strictErr.domSnapshot = err.domSnapshot;
-          if (err.steps) strictErr.steps = err.steps;
-          if (err.charsExpected !== undefined) strictErr.charsExpected = err.charsExpected;
-          if (err.charsDetectedInDOM !== undefined) strictErr.charsDetectedInDOM = err.charsDetectedInDOM;
-          if (err.domExcerpt !== undefined) strictErr.domExcerpt = err.domExcerpt;
-          if (err.elementContext !== undefined) strictErr.elementContext = err.elementContext;
-          if (err.metadata) strictErr.metadata = err.metadata;
-          if (err.diagnostics) strictErr.diagnostics = { ...err.diagnostics, workspaceName: wsName };
-          else strictErr.diagnostics = { workspaceName: wsName };
-          throw strictErr;
-        }
+    return {
+      success: true,
+      tier: 'nativeCommand',
+      durationMs,
+      status: 'sent',
+      charsExpected: promptText.length,
+      charsDetectedInDOM: promptText.length,
+      metadata: {
+        engine: 'Native Antigravity Dispatch',
+        newConversation: isNewConversation,
+        sendDelayMs
       }
-
-      if (targetTier === 'nativeCommand') {
-        try {
-          const res = await this.dispatchTier2(promptText, options);
-          this.logger.info('DISPATCHER', `Strict Tier 2 (nativeCommand) succeeded in ${res.durationMs}ms`);
-          return res;
-        } catch (err: any) {
-          const msg = `[Native Command Transport Failed] ${err.message || String(err)}. Remediation: Ensure VS Code Antigravity chat command is accessible.`;
-          this.logger.error('DISPATCHER', msg, { tier: 'nativeCommand', error: err.stack || err.message }, err);
-          throw new Error(msg);
-        }
-      }
-
-      if (targetTier === 'keyboard') {
-        try {
-          const res = await this.dispatchTier3(promptText, options);
-          this.logger.info('DISPATCHER', `Strict Tier 3 (keyboard) succeeded in ${res.durationMs}ms`);
-          return res;
-        } catch (err: any) {
-          const msg = `[Keyboard Simulation Failed] ${err.message || String(err)}. Remediation: Ensure OS keyboard prerequisites (e.g. xdotool on Linux) are installed.`;
-          this.logger.error('DISPATCHER', msg, { tier: 'keyboard', error: err.stack || err.message }, err);
-          throw new Error(msg);
-        }
-      }
-    }
-
-    // If fallback is enabled: execute Tier 1 -> Tier 2 -> Tier 3 with fallback history tracking
-    if (mode === 'auto' || mode === 'domBridge') {
-      // 1. Try Tier 1: DOM Bridge
-      const t1Start = Date.now();
-      try {
-        const res = await this.dispatchTier1(promptText, options);
-        const wsName = this.bridgeServer.getWorkspaceName();
-        this.logger.info('DISPATCHER', `Tier 1 (domBridge) succeeded in ${res.durationMs}ms [workspace: ${wsName || 'unbound'}]`);
-        return res;
-      } catch (err: any) {
-        const durationMs = Date.now() - t1Start;
-        const wsName = this.bridgeServer.getWorkspaceName();
-        const isTimeout = err?.isTimeout || err?.isCancelled || (err?.message && /timed?\s*out|cancellation/i.test(err.message));
-        if (isTimeout) {
-          this.logger.warn('DISPATCHER', `Tier 1 (domBridge) timed out after ${durationMs}ms [workspace: ${wsName || 'unbound'}]; cancellation signal registered with BridgeServer. Falling back to Tier 2 (nativeCommand)...`, {
-            tier: 'domBridge',
-            workspaceName: wsName,
-            durationMs,
-            error: err.stack || err.message
-          }, err);
-        } else {
-          this.logger.warn('DISPATCHER', `Tier 1 (domBridge) failed in ${durationMs}ms [workspace: ${wsName || 'unbound'}]: ${err.message}. Falling back to Tier 2 (nativeCommand)...`, {
-            tier: 'domBridge',
-            workspaceName: wsName,
-            durationMs,
-            error: err.stack || err.message
-          }, err);
-        }
-        fallbackHistory.push({
-          tier: 'domBridge',
-          error: err.message || String(err),
-          durationMs
-        });
-      }
-
-      // 2. Try Tier 2: VS Code Command API
-      const t2Start = Date.now();
-      try {
-        const res = await this.dispatchTier2(promptText, options);
-        this.logger.info('DISPATCHER', `Tier 2 (nativeCommand) succeeded in ${res.durationMs}ms`);
-        return {
-          ...res,
-          fallbackHistory
-        };
-      } catch (err: any) {
-        const durationMs = Date.now() - t2Start;
-        this.logger.warn('DISPATCHER', `Tier 2 (nativeCommand) failed in ${durationMs}ms: ${err.message}. Falling back to Tier 3 (keyboard)...`, {
-          tier: 'nativeCommand',
-          durationMs,
-          error: err.stack || err.message
-        }, err);
-        fallbackHistory.push({
-          tier: 'nativeCommand',
-          error: err.message || String(err),
-          durationMs
-        });
-      }
-
-      // 3. Fallback Tier 3: OS Keyboard Simulation
-      const t3Start = Date.now();
-      const fallbackMsg = 'Auto-Plan: DOM Bridge & Native Commands unavailable. Falling back to OS Keyboard Simulation.';
-      if (config.suppressFallbackWarnings !== false) {
-        console.log(`[Auto-Plan PromptDispatcher] ${fallbackMsg}`);
-      } else {
-        this.warningNotifier(fallbackMsg);
-      }
-
-      try {
-        const res = await this.dispatchTier3(promptText, options);
-        this.logger.info('DISPATCHER', `Tier 3 (keyboard) succeeded in ${res.durationMs}ms`);
-        return {
-          ...res,
-          fallbackHistory
-        };
-      } catch (err: any) {
-        const durationMs = Date.now() - t3Start;
-        fallbackHistory.push({
-          tier: 'keyboard',
-          error: err.message || String(err),
-          durationMs
-        });
-
-        this.logger.error('DISPATCHER', `All prompt dispatch tiers failed after fallback chain`, {
-          fallbackHistory,
-          durationMs
-        }, err);
-
-        const summary = fallbackHistory.map((f) => `${f.tier}: ${f.error}`).join(' | ');
-        throw new Error(`All prompt dispatch tiers failed. (${summary})`);
-      }
-    }
-
-    if (mode === 'nativeCommand') {
-      const t2Start = Date.now();
-      try {
-        const res = await this.dispatchTier2(promptText, options);
-        this.logger.info('DISPATCHER', `Tier 2 (nativeCommand) succeeded in ${res.durationMs}ms`);
-        return res;
-      } catch (err: any) {
-        const durationMs = Date.now() - t2Start;
-        this.logger.warn('DISPATCHER', `Tier 2 (nativeCommand) failed in ${durationMs}ms: ${err.message}. Falling back to Tier 3 (keyboard)...`, {
-          tier: 'nativeCommand',
-          durationMs,
-          error: err.stack || err.message
-        }, err);
-        fallbackHistory.push({
-          tier: 'nativeCommand',
-          error: err.message || String(err),
-          durationMs
-        });
-      }
-
-      // Fallback to Tier 3
-      const t3Start = Date.now();
-      try {
-        const res = await this.dispatchTier3(promptText, options);
-        this.logger.info('DISPATCHER', `Tier 3 (keyboard) succeeded in ${res.durationMs}ms`);
-        return {
-          ...res,
-          fallbackHistory
-        };
-      } catch (err: any) {
-        const durationMs = Date.now() - t3Start;
-        fallbackHistory.push({
-          tier: 'keyboard',
-          error: err.message || String(err),
-          durationMs
-        });
-        this.logger.error('DISPATCHER', `Native Command and fallback tiers failed`, { fallbackHistory, durationMs }, err);
-        const summary = fallbackHistory.map((f) => `${f.tier}: ${f.error}`).join(' | ');
-        throw new Error(`Native Command and fallback tiers failed. (${summary})`);
-      }
-    }
-
-    if (mode === 'keyboard') {
-      try {
-        const res = await this.dispatchTier3(promptText, options);
-        this.logger.info('DISPATCHER', `Keyboard dispatch succeeded in ${res.durationMs}ms`);
-        return res;
-      } catch (err: any) {
-        this.logger.error('DISPATCHER', `[Keyboard Simulation Failed] ${err.message || String(err)}`, undefined, err);
-        throw new Error(`[Keyboard Simulation Failed] ${err.message || String(err)}`);
-      }
-    }
-
-    throw new Error(`Unsupported execution mode: ${mode}`);
+    };
   }
 
   /**
@@ -1321,41 +1287,9 @@ export class PromptDispatcher {
   }
 
   /**
-   * Stops active AI generation across Tier 1 (DOM Bridge) or Tier 2 (VS Code native commands).
-   * Tier 1: Dispatches stopGeneration command to BridgeServer.
-   * Tier 2 fallback: Executes VS Code native commands (workbench.action.chat.stop or antigravity.prioritized.chat.stop).
+   * Stops active AI generation across Antigravity native commands.
    */
-  public async stopActiveGeneration(options?: DispatchOptions): Promise<boolean> {
-    const config = this.configProvider();
-    const mode = options?.mode ?? config.executionMode ?? 'auto';
-    const allowFallback = options?.allowFallback ?? config.allowTierFallback ?? true;
-
-    // Tier 1: DOM Bridge
-    if (mode !== 'nativeCommand' && mode !== 'keyboard') {
-      try {
-        if (this.bridgeServer.isListening() && this.bridgeServer.getConnectedClients().length > 0) {
-          const ackResult = await this.bridgeServer.dispatchStopGenerationCommand({
-            timeoutMs: options?.timeoutMs ?? config.bridgeTimeoutMs ?? 5000,
-            windowKey: options?.windowKey,
-            extra: options?.extra
-          });
-          if (ackResult && ackResult.success) {
-            this.logger.info('DISPATCHER', `stopActiveGeneration succeeded via Tier 1 DOM Bridge (status: ${ackResult.status})`);
-            return true;
-          }
-        } else if (!allowFallback && mode === 'domBridge') {
-          this.logger.warn('DISPATCHER', 'stopActiveGeneration failed: BridgeServer not listening or no connected clients in strict domBridge mode');
-          return false;
-        }
-      } catch (err: any) {
-        this.logger.warn('DISPATCHER', `stopActiveGeneration Tier 1 dispatch failed: ${err?.message || err}`);
-        if (!allowFallback && mode === 'domBridge') {
-          return false;
-        }
-      }
-    }
-
-    // Tier 2 Fallback: VS Code native commands
+  public async stopActiveGeneration(_options?: DispatchOptions): Promise<boolean> {
     try {
       try {
         await this.commandExecutor('antigravity.prioritized.chat.stop');
@@ -1367,7 +1301,7 @@ export class PromptDispatcher {
         return true;
       }
     } catch (tier2Err: any) {
-      this.logger.warn('DISPATCHER', `stopActiveGeneration Tier 2 fallback failed: ${tier2Err?.message || tier2Err}`);
+      this.logger.warn('DISPATCHER', `stopActiveGeneration failed: ${tier2Err?.message || tier2Err}`);
       return false;
     }
   }

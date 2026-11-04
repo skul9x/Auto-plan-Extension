@@ -44,7 +44,7 @@
   <!-- Modern Category Tab Navigation Bar -->
   <nav class="settings-nav-bar" role="tablist" aria-label="Settings Categories">
     <button class="nav-tab active" data-tab="tab-dispatch" role="tab" aria-selected="true" aria-controls="tab-dispatch" id="nav-btn-dispatch">
-      <span class="tab-icon">🔀</span> Dispatch & Tiers
+      <span class="tab-icon">⚡</span> Native Dispatch
     </button>
     <button class="nav-tab" data-tab="tab-telegram" role="tab" aria-selected="false" aria-controls="tab-telegram" id="nav-btn-telegram">
       <span class="tab-icon">🤖</span> Telegram & Remote
@@ -58,157 +58,64 @@
   </nav>
 
   <main class="main-container">
-    <!-- Category 1: Dispatch & Tiers -->
+    <!-- Category 1: Native Dispatch -->
     <div class="tab-pane active" id="tab-dispatch" role="tabpanel" aria-labelledby="nav-btn-dispatch">
-      <div class="tab-content-grid">
-        <!-- Section: Execution Mode & Dispatch Tiers -->
-        <section class="glass-card" id="sectionDispatchTiers">
+      <div class="tab-content-grid single-column">
+        <!-- Section: Antigravity Native Engine Configuration -->
+        <section class="glass-card" id="sectionNativeDispatch">
           <div class="card-header">
             <div class="header-icon-title">
-              <span class="section-icon">🔀</span>
+              <span class="section-icon">⚡</span>
               <div>
-                <h2 class="card-title">Prompt Dispatch Tiers</h2>
-                <p class="card-subtitle">Choose the execution transport tier for sending prompts to Antigravity chat.</p>
+                <h2 class="card-title">Antigravity Native Dispatch</h2>
+                <p class="card-subtitle">Direct, focus-free background chat automation executing natively via Antigravity IDE commands.</p>
               </div>
+            </div>
+            <div class="header-status-badge">
+              <span id="nativeEngineBadge" class="status-badge badge-success">🟢 Antigravity Native Engine: Ready</span>
             </div>
           </div>
 
-          <div class="tier-cards-container">
-            <!-- Auto Mode -->
-            <label class="tier-card active" for="optTierAuto" data-tier="auto">
-              <div class="tier-card-radio">
-                <input type="radio" id="optTierAuto" name="executionMode" value="auto" checked>
+          <!-- Configuration Form: Send Delay -->
+          <div class="form-grid-2">
+            <div class="form-group" id="groupSendDelayMs">
+              <div class="slider-header-row">
+                <label for="txtSendDelayMs" class="form-label">Send Delay (ms)</label>
+                <span id="lblSendDelayVal" class="slider-val-badge">500ms</span>
               </div>
-              <div class="tier-card-body">
-                <div class="tier-card-title-row">
-                  <span class="tier-name">Auto Mode (Smart Cascade)</span>
-                  <span class="tier-badge badge-recommended">🛡️ Recommended</span>
-                </div>
-                <p class="tier-desc">Primary DOM Bridge with automated fallback to VS Code Command API and OS Keyboard Simulation.</p>
-                <div class="tier-meta-row">
-                  <span class="tier-meta-item">Cascade: Tier 1 ➔ Tier 2 ➔ Tier 3</span>
-                </div>
-              </div>
-            </label>
-
-            <!-- Tier 1: DOM Bridge -->
-            <label class="tier-card" for="optTier1" data-tier="domBridge">
-              <div class="tier-card-radio">
-                <input type="radio" id="optTier1" name="executionMode" value="domBridge">
-              </div>
-              <div class="tier-card-body">
-                <div class="tier-card-title-row">
-                  <span class="tier-name">Tier 1: DOM Bridge</span>
-                  <span class="tier-badge badge-speed">⚡ Focus-Free & High Speed</span>
-                </div>
-                <p class="tier-desc">Direct WebSocket bridge into Antigravity IDE DOM. Executes in background without window stealing or focus disruption.</p>
-                <div class="tier-meta-row">
-                  <span id="tier1StatusIndicator" class="tier-meta-item">Port: 49152</span>
-                  <span id="tier1ClientsIndicator" class="tier-meta-item">Clients: 0</span>
-                  <span id="tier1KeepAliveIndicator" class="tier-meta-item">Worker Keep-Alive: Inactive</span>
-                  <span id="tier1LatencyIndicator" class="tier-meta-item">Latency: N/A</span>
-                </div>
-              </div>
-            </label>
-
-            <!-- Tier 2: VS Code Commands -->
-            <label class="tier-card" for="optTier2" data-tier="nativeCommand">
-              <div class="tier-card-radio">
-                <input type="radio" id="optTier2" name="executionMode" value="nativeCommand">
-              </div>
-              <div class="tier-card-body">
-                <div class="tier-card-title-row">
-                  <span class="tier-name">Tier 2: Native Commands</span>
-                  <span class="tier-badge badge-api">🔌 Command API</span>
-                </div>
-                <p class="tier-desc">Native VS Code workbench command dispatching and internal chat actions. Zero external dependencies.</p>
-                <div class="tier-meta-row">
-                  <span id="tier2StatusIndicator" class="tier-meta-item">Command: autoplan.sendPrompt</span>
-                </div>
-              </div>
-            </label>
-
-            <!-- Tier 3: OS Keyboard Simulation -->
-            <label class="tier-card" for="optTier3" data-tier="keyboard">
-              <div class="tier-card-radio">
-                <input type="radio" id="optTier3" name="executionMode" value="keyboard">
-              </div>
-              <div class="tier-card-body">
-                <div class="tier-card-title-row">
-                  <span class="tier-name">Tier 3: OS Keyboard</span>
-                  <span class="tier-badge badge-fallback">⌨️ Universal Fallback</span>
-                </div>
-                <p class="tier-desc">Simulates physical keyboard keystrokes via native system toolchains (xdotool on Linux / PowerShell on Windows).</p>
-                <div class="tier-meta-row">
-                  <span id="tier3StatusIndicator" class="tier-meta-item">Toolchain: Ready</span>
-                </div>
-              </div>
-            </label>
-          </div>
-
-          <!-- Fallback Policy Switch -->
-          <div class="fallback-policy-box">
-            <div class="switch-container">
-              <label class="toggle-switch">
-                <input type="checkbox" id="chkAllowFallback" checked>
-                <span class="toggle-slider"></span>
-              </label>
-              <div class="toggle-details">
-                <span class="toggle-title">Allow Tier Fallback</span>
-                <span class="toggle-description">When disabled, Auto-Plan will stop immediately if your selected Tier fails (Strict Mode).</span>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- Section: Live Transport Diagnostics -->
-        <section class="glass-card" id="sectionTransportDiagnostics">
-          <div class="card-header">
-            <div class="header-icon-title">
-              <span class="section-icon">🩺</span>
-              <div>
-                <h2 class="card-title">Transport Diagnostics & Actions</h2>
-                <p class="card-subtitle">Real-time telemetry and 1-click transport dispatch testing.</p>
-              </div>
+              <input type="number" id="txtSendDelayMs" class="form-input" min="0" max="60000" step="50" value="500">
+              <span class="input-hint">Wait duration prior to triggering send to ensure chat UI readiness (default: 500ms).</span>
             </div>
           </div>
 
-          <!-- Live Status Pills -->
+          <!-- Native Health Telemetry Pills -->
           <div class="health-pills-row">
             <div class="health-pill-card">
-              <span class="pill-label">Bridge Port</span>
-              <span id="healthPort" class="health-pill-val">49152</span>
+              <span class="pill-label">Dispatch Engine</span>
+              <span id="healthEngine" class="health-pill-val">Native Antigravity</span>
             </div>
             <div class="health-pill-card">
-              <span class="pill-label">DOM Injected</span>
-              <span id="healthInjected" class="health-pill-val">Ready</span>
+              <span class="pill-label">Runtime Status</span>
+              <span id="healthStatus" class="health-pill-val">Ready</span>
             </div>
             <div class="health-pill-card">
-              <span class="pill-label">Connected</span>
-              <span id="healthClients" class="health-pill-val">0 clients</span>
+              <span class="pill-label">Execution Mode</span>
+              <span id="healthMode" class="health-pill-val">Focus-Free</span>
             </div>
             <div class="health-pill-card">
-              <span class="pill-label">OS Toolchain</span>
-              <span id="healthToolchain" class="health-pill-val">Available</span>
+              <span class="pill-label">Active Delay</span>
+              <span id="healthDelay" class="health-pill-val">500ms</span>
             </div>
           </div>
 
-          <!-- Diagnostic Actions -->
+          <!-- Diagnostic Action: Test Send Prompt -->
           <div class="diagnostic-actions-row">
-            <div class="test-tier-wrapper">
-              <button id="btnTestTier" class="btn btn-secondary">
-                <span id="testTierSpinner" class="spinner hidden"></span>
-                <span>🧪 Test Selected Tier</span>
+            <div class="test-native-wrapper">
+              <button id="btnTestSendPrompt" class="btn btn-secondary">
+                <span id="testPromptSpinner" class="spinner hidden"></span>
+                <span>🧪 Test Send Prompt</span>
               </button>
-              <span id="testTierBadge" class="test-result-badge badge-idle">Ready to test</span>
-            </div>
-            <div class="bridge-mgmt-buttons">
-              <button id="btnSetupBridge" class="btn btn-outline" title="Inject or update DOM Automation Bridge script">
-                ⚡ 1-Click DOM Bridge Setup
-              </button>
-              <button id="btnUninstallBridge" class="btn btn-outline btn-danger-outline" title="Remove DOM Bridge injection from workbench">
-                🗑️ Uninstall Bridge
-              </button>
+              <span id="testPromptBadge" class="test-result-badge badge-idle">Ready to test</span>
             </div>
           </div>
         </section>
@@ -411,12 +318,6 @@
               <input type="number" id="txtFocusDelayMs" class="form-input" min="100" max="5000" step="50" value="800">
               <span class="input-hint">Delay after keyboard focus shortcut.</span>
             </div>
-
-            <div class="form-group full-width">
-              <label for="txtBridgeTimeoutMs" class="form-label">Bridge Acknowledgment Timeout (ms)</label>
-              <input type="number" id="txtBridgeTimeoutMs" class="form-input" min="1000" max="30000" step="500" value="5000">
-              <span class="input-hint">Time to wait for DOM Bridge acknowledgment before triggering fallback.</span>
-            </div>
           </div>
         </section>
 
@@ -427,7 +328,7 @@
               <span class="section-icon">📁</span>
               <div>
                 <h2 class="card-title">Plan & System Automation</h2>
-                <p class="card-subtitle">Automate permissions, workbench injection, and plan discovery.</p>
+                <p class="card-subtitle">Configure default plan discovery and workspace folders.</p>
               </div>
             </div>
           </div>
@@ -441,30 +342,6 @@
               </button>
             </div>
             <span class="input-hint">Workspace-relative or absolute path to active phase plan directory.</span>
-          </div>
-
-          <div class="toggles-list">
-            <div class="switch-container">
-              <label class="toggle-switch">
-                <input type="checkbox" id="chkAutoInjectWorkbench" checked>
-                <span class="toggle-slider"></span>
-              </label>
-              <div class="toggle-details">
-                <span class="toggle-title">Auto-Inject Workbench on Startup</span>
-                <span class="toggle-description">Verify and inject DOM Bridge script into workbench.html upon extension activation.</span>
-              </div>
-            </div>
-
-            <div class="switch-container">
-              <label class="toggle-switch">
-                <input type="checkbox" id="chkSuppressFallbackWarnings" checked>
-                <span class="toggle-slider"></span>
-              </label>
-              <div class="toggle-details">
-                <span class="toggle-title">Suppress Fallback Toast Notifications</span>
-                <span class="toggle-description">Prevent popup notification toasts when seamlessly falling back between tiers.</span>
-              </div>
-            </div>
           </div>
         </section>
 

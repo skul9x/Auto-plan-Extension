@@ -36,6 +36,7 @@ export const INTERNAL_BOT_COMMANDS = new Set<string>([
   'plan_status',
   'plan_skip',
   'plan_stop',
+  'stop',
   'screen',
   'new_chat',
   'newchat',
@@ -2281,9 +2282,9 @@ export class TelegramBridge {
       }
     });
 
-    bot.command('plan_stop', async (ctx: Context) => {
+    bot.command(['plan_stop', 'stop'], async (ctx: Context) => {
       try {
-        this.logger.info('TELEGRAM', `Received /plan_stop command from user ${ctx.from?.id}`);
+        this.logger.info('TELEGRAM', `Received stop command from user ${ctx.from?.id}`);
         const vs = getVscodeSafe();
         let triggered = false;
         if (vs?.commands?.executeCommand) {
@@ -2302,9 +2303,16 @@ export class TelegramBridge {
             this.logger.warn('TELEGRAM', `orchestrator.stop failed: ${orchErr?.message || orchErr}`);
           }
         }
+        if (this.promptDispatcher && typeof this.promptDispatcher.stopActiveGeneration === 'function') {
+          try {
+            await this.promptDispatcher.stopActiveGeneration();
+          } catch (stopErr: any) {
+            this.logger.warn('TELEGRAM', `promptDispatcher.stopActiveGeneration failed: ${stopErr?.message || stopErr}`);
+          }
+        }
         await ctx.reply('🛑 Plan execution stopped.');
       } catch (err: any) {
-        this.logger.error('TELEGRAM', `Failed to execute /plan_stop: ${err?.message || err}`, err);
+        this.logger.error('TELEGRAM', `Failed to execute stop command: ${err?.message || err}`, err);
         await ctx.reply(`❌ Failed to stop plan: ${err?.message || err}`);
       }
     });

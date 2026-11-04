@@ -202,6 +202,11 @@ export class BridgeServer {
   private requireAuth: boolean = true;
   private executing: boolean = false;
   private activeTask?: string;
+  private chatRpcHandler?: (action: string, text?: string) => Promise<any>;
+
+  public setChatRpcHandler(handler: (action: string, text?: string) => Promise<any>): void {
+    this.chatRpcHandler = handler;
+  }
 
   private pruneCancelledCommands(): void {
     const now = Date.now();
@@ -779,6 +784,8 @@ export class BridgeServer {
       this.handlePostAck(req, res);
     } else if (req.method === 'POST' && pathname === '/autoplan-command') {
       this.handlePostCommand(req, res);
+    } else if (req.method === 'POST' && pathname === '/autoplan-chat-rpc') {
+      this.handlePostChatRpc(req, res);
     } else if (req.method === 'GET' && pathname === '/autoplan-heartbeat') {
       this.handleGetHeartbeat(reqWindowKey, res);
     } else {
@@ -1338,6 +1345,29 @@ export class BridgeServer {
           res.end(JSON.stringify({ error: dispatchErr.message || String(dispatchErr) }));
         }
       });
+    });
+  }
+
+  private handlePostChatRpc(req: http.IncomingMessage, res: http.ServerResponse): void {
+    this.readJsonBody<{ action?: string; text?: string }>(req, async (err, body) => {
+      if (err || !body || !body.action) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required field: action' }));
+        return;
+      }
+      if (!this.chatRpcHandler) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Chat RPC handler not registered' }));
+        return;
+      }
+      try {
+        const result = await this.chatRpcHandler(body.action, body.text);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, result }));
+      } catch (handlerErr: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: handlerErr?.message || String(handlerErr) }));
+      }
     });
   }
 

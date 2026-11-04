@@ -14,14 +14,20 @@ export interface AutoPlanConfig {
   completionKeyword: string;
   delayBetweenLoopsMs: number;
   timeoutPerLoopMinutes: number;
+  sendDelayMs?: number;
   focusDelayMs?: number;
   defaultPlanFolder?: string;
+  /** @deprecated Deprecated in Native Chat API transition. Provided for backward compatibility. */
   executionMode?: ExecutionMode;
+  /** @deprecated Deprecated in Native Chat API transition. Provided for backward compatibility. */
   allowTierFallback?: boolean;
+  /** @deprecated Deprecated in Native Chat API transition. Provided for backward compatibility. */
   strictMode?: boolean;
+  /** @deprecated Deprecated in Native Chat API transition. Provided for backward compatibility. */
   bridgeTimeoutMs?: number;
   newConversationTimeoutMs?: number;
   staleClientMs?: number;
+  /** @deprecated Deprecated in Native Chat API transition. DOM bridge injection is obsolete. */
   autoInjectWorkbench?: boolean;
   suppressFallbackWarnings?: boolean;
   enableVerboseBridgeLogs?: boolean;
@@ -69,6 +75,7 @@ export const DEFAULT_CONFIG: AutoPlanConfig = {
   completionKeyword: DEFAULT_COMPLETION_KEYWORD,
   delayBetweenLoopsMs: 2000,
   timeoutPerLoopMinutes: 0,
+  sendDelayMs: 500,
   focusDelayMs: 800,
   defaultPlanFolder: '',
   executionMode: 'auto',
@@ -77,7 +84,7 @@ export const DEFAULT_CONFIG: AutoPlanConfig = {
   bridgeTimeoutMs: 5000,
   newConversationTimeoutMs: 8000,
   staleClientMs: 120000,
-  autoInjectWorkbench: true,
+  autoInjectWorkbench: false,
   suppressFallbackWarnings: true,
   enableVerboseBridgeLogs: false,
   enablePhaseAuditLogging: true,
@@ -125,6 +132,10 @@ export function getConfig(): AutoPlanConfig {
   const strictMode = explicitStrictMode !== undefined
     ? explicitStrictMode
     : (executionMode !== 'auto' && !allowTierFallback);
+  const rawSendDelay = config.get<number>('sendDelayMs');
+  const sendDelayMs = typeof rawSendDelay === 'number' && !isNaN(rawSendDelay)
+    ? Math.max(0, rawSendDelay)
+    : (DEFAULT_CONFIG.sendDelayMs ?? 500);
 
   return {
     promptText,
@@ -134,6 +145,7 @@ export function getConfig(): AutoPlanConfig {
     completionKeyword: config.get<string>('completionKeyword', DEFAULT_CONFIG.completionKeyword),
     delayBetweenLoopsMs: config.get<number>('delayBetweenLoopsMs', DEFAULT_CONFIG.delayBetweenLoopsMs),
     timeoutPerLoopMinutes: config.get<number>('timeoutPerLoopMinutes', DEFAULT_CONFIG.timeoutPerLoopMinutes),
+    sendDelayMs,
     focusDelayMs: config.get<number>('focusDelayMs', DEFAULT_CONFIG.focusDelayMs ?? 800),
     defaultPlanFolder: config.get<string>('defaultPlanFolder', DEFAULT_CONFIG.defaultPlanFolder || ''),
     executionMode,
@@ -417,6 +429,7 @@ export function writeSidecarConfig(
 
   const currentConfig: AutoPlanConfig = {
     ...baseConfig,
+    sendDelayMs: baseConfig.sendDelayMs ?? 500,
     executionMode,
     allowTierFallback,
     strictMode

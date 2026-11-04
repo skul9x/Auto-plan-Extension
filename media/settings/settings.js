@@ -36,13 +36,25 @@
   const navTabs = document.querySelectorAll('.nav-tab');
   const tabPanes = document.querySelectorAll('.tab-pane');
 
-  // DOM Elements - Selection & Tiers
+  // DOM Elements - Selection & Tiers (Legacy Fallback Safe)
   const optTierAuto = document.getElementById('optTierAuto');
   const optTier1 = document.getElementById('optTier1');
   const optTier2 = document.getElementById('optTier2');
   const optTier3 = document.getElementById('optTier3');
   const tierCards = document.querySelectorAll('.tier-card');
   const chkAllowFallback = document.getElementById('chkAllowFallback');
+
+  // DOM Elements - Native Dispatch & Engine
+  const txtSendDelayMs = document.getElementById('txtSendDelayMs');
+  const lblSendDelayVal = document.getElementById('lblSendDelayVal');
+  const btnTestSendPrompt = document.getElementById('btnTestSendPrompt');
+  const testPromptSpinner = document.getElementById('testPromptSpinner');
+  const testPromptBadge = document.getElementById('testPromptBadge');
+  const nativeEngineBadge = document.getElementById('nativeEngineBadge');
+  const healthEngine = document.getElementById('healthEngine');
+  const healthStatus = document.getElementById('healthStatus');
+  const healthMode = document.getElementById('healthMode');
+  const healthDelay = document.getElementById('healthDelay');
 
   // DOM Elements - Telegram & Remote
   const chkTelegramEnabled = document.getElementById('chkTelegramEnabled');
@@ -288,7 +300,8 @@
 
     const settings = {
       executionMode: executionMode,
-      allowTierFallback: chkAllowFallback ? chkAllowFallback.checked : true,
+      allowTierFallback: chkAllowFallback ? chkAllowFallback.checked : false,
+      sendDelayMs: txtSendDelayMs ? (parseInt(txtSendDelayMs.value, 10) >= 0 ? parseInt(txtSendDelayMs.value, 10) : 500) : 500,
       delayBetweenLoopsMs: txtDelayMs ? (parseInt(txtDelayMs.value, 10) || 2000) : 2000,
       timeoutPerLoopMinutes: txtTimeoutMinutes ? (parseInt(txtTimeoutMinutes.value, 10) >= 0 ? parseInt(txtTimeoutMinutes.value, 10) : 0) : 0,
       repeatCount: txtRepeatCount ? (parseInt(txtRepeatCount.value, 10) || 5) : 5,
@@ -358,6 +371,16 @@
 
     if (chkAllowFallback) {
       chkAllowFallback.checked = config.allowTierFallback !== false;
+    }
+    if (txtSendDelayMs) {
+      const delay = config.sendDelayMs !== undefined ? config.sendDelayMs : 500;
+      txtSendDelayMs.value = delay;
+      if (lblSendDelayVal) {
+        lblSendDelayVal.textContent = `${delay}ms`;
+      }
+      if (healthDelay) {
+        healthDelay.textContent = `${delay}ms`;
+      }
     }
     if (txtDelayMs) {
       txtDelayMs.value = config.delayBetweenLoopsMs !== undefined ? config.delayBetweenLoopsMs : 2000;
@@ -699,7 +722,7 @@
 
   // Track inputs dirty state and auto-save
   const formInputs = [
-    optTierAuto, optTier1, optTier2, optTier3, chkAllowFallback,
+    optTierAuto, optTier1, optTier2, optTier3, chkAllowFallback, txtSendDelayMs,
     txtDelayMs, txtTimeoutMinutes, txtRepeatCount, txtFocusDelayMs, txtBridgeTimeoutMs,
     txtDefaultPlanFolder, chkAutoInjectWorkbench, chkSuppressFallbackWarnings,
     txtPromptTemplate, txtCompletionKeyword,
@@ -715,6 +738,18 @@
       input.addEventListener('change', handleInputModification);
     }
   });
+
+  // Send Delay input update
+  if (txtSendDelayMs) {
+    const updateDelayDisplay = () => {
+      const val = parseInt(txtSendDelayMs.value, 10);
+      const text = !isNaN(val) && val >= 0 ? `${val}ms` : '500ms';
+      if (lblSendDelayVal) lblSendDelayVal.textContent = text;
+      if (healthDelay) healthDelay.textContent = text;
+    };
+    txtSendDelayMs.addEventListener('input', updateDelayDisplay);
+    txtSendDelayMs.addEventListener('change', updateDelayDisplay);
+  }
 
   // Auto-Submit Poll Interval slider label update
   if (rngAutoSubmitIntervalMs && lblAutoSubmitIntervalVal) {
@@ -815,7 +850,25 @@
     });
   }
 
-  // Test Tier button
+  // Test Send Prompt button (Native Dispatch)
+  if (btnTestSendPrompt) {
+    btnTestSendPrompt.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (testPromptSpinner) {
+        testPromptSpinner.classList.remove('hidden');
+      }
+      if (testPromptBadge) {
+        testPromptBadge.className = 'test-result-badge badge-testing';
+        testPromptBadge.textContent = 'Testing native dispatch...';
+      }
+
+      vscode.postMessage({
+        command: 'testSendPrompt'
+      });
+    });
+  }
+
+  // Test Tier button (legacy fallback compatibility)
   if (btnTestTier) {
     btnTestTier.addEventListener('click', (e) => {
       e.preventDefault();
@@ -826,11 +879,11 @@
       }
       if (testTierBadge) {
         testTierBadge.className = 'test-result-badge badge-testing';
-        testTierBadge.textContent = 'Testing tier dispatch...';
+        testTierBadge.textContent = 'Testing native dispatch...';
       }
 
       vscode.postMessage({
-        command: 'testTier',
+        command: 'testSendPrompt',
         tier: currentTier
       });
     });
@@ -1209,6 +1262,24 @@
       }
 
       case 'healthUpdate': {
+        if (nativeEngineBadge) {
+          const isHealthy = message.isHealthy !== false;
+          nativeEngineBadge.className = isHealthy ? 'status-badge badge-success' : 'status-badge badge-warning';
+          nativeEngineBadge.textContent = isHealthy ? '🟢 Antigravity Native Engine: Ready' : '🟡 Antigravity Native Engine: Degraded';
+        }
+        if (healthEngine && message.engine) {
+          healthEngine.textContent = message.engine;
+        }
+        if (healthStatus) {
+          healthStatus.textContent = message.isHealthy !== false ? 'Ready' : 'Degraded';
+        }
+        if (healthMode) {
+          healthMode.textContent = 'Focus-Free';
+        }
+        if (healthDelay && txtSendDelayMs) {
+          healthDelay.textContent = `${txtSendDelayMs.value || 500}ms`;
+        }
+
         if (message.port !== undefined && healthPort) {
           healthPort.textContent = String(message.port);
         }
@@ -1257,7 +1328,21 @@
         if (testTierSpinner) {
           testTierSpinner.classList.add('hidden');
         }
-        if (testTierBadge) {
+        if (testPromptSpinner) {
+          testPromptSpinner.classList.add('hidden');
+        }
+        const activeBadge = testPromptBadge || testTierBadge;
+        if (activeBadge) {
+          if (message.success) {
+            const latency = message.latencyMs ? ` (${message.latencyMs}ms)` : '';
+            activeBadge.className = 'test-result-badge badge-success';
+            activeBadge.textContent = `✓ Passed${latency}`;
+          } else {
+            activeBadge.className = 'test-result-badge badge-danger';
+            activeBadge.textContent = `✗ Failed: ${message.error || 'Check status'}`;
+          }
+        }
+        if (testTierBadge && testPromptBadge && testTierBadge !== testPromptBadge) {
           if (message.success) {
             const latency = message.latencyMs ? ` (${message.latencyMs}ms)` : '';
             testTierBadge.className = 'test-result-badge badge-success';

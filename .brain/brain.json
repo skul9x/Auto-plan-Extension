@@ -2,18 +2,20 @@
   "meta": {
     "schema_version": "1.1.0",
     "awf_version": "4.0.2",
-    "updated_at": "2026-10-18T19:09:00+07:00"
+    "updated_at": "2026-11-04T22:17:00+07:00"
   },
   "project": {
     "name": "Auto-Plan_Extension",
-    "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan, inject prompt focus-free qua DOM Renderer Bridge hoặc OS Keyboard Simulation, theo dõi log transcript AI sinh code, tự động chuyển tiếp phase, kèm hệ thống Full-Screen Settings Panel hiện đại 4-Tab với Instant Search Filter, Debounced Auto-Save và Optimistic Rollback, DOM Bridge Diagnostic Logger, hỗ trợ toàn diện Single-Folder, Multi-Root Workspace & Untitled Workspaces, cầu nối điều khiển từ xa qua Telegram Remote Control Bot (4-Screen Interactive Flow, Live Control Dashboard, Free-Text Silent Drop Gating), hệ thống Telegram Clean Q&A Sync (Two-Way Live Question & Answer Mirror), Long-Running Phase Nudge Watchdog & Mid-Flight Steering tự động nhắc nhở AI khi phase chạy > 3 phút, và hệ thống tối ưu hóa hiệu năng & tài nguyên toàn diện.",
-    "version": "1.7.0",
+    "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan với 100% Native Antigravity Chat API Architecture (antigravity.addContext, antigravity.triggerSend, antigravity.startNewConversation, antigravity.prioritized.chat.stop), hoàn toàn focus-free, loại bỏ 100% DOM Bridge injection vào workbench.html và OS keyboard simulations. Theo dõi log transcript AI sinh code, tự động chuyển tiếp phase, tự phục hồi file gốc qua Workbench Cleaner, kèm hệ thống Full-Screen Settings Panel hiện đại, Telegram Remote Control Bot và Two-Way Live Q&A Mirroring.",
+    "version": "1.7.2",
     "created_at": "2026-08-27T23:51:00+07:00",
-    "active_plan": "plans/261031-1933-native-rpc-auto-submit/plan.md"
+    "active_plan": "plans/261104-1952-native-chat-api-transition/plan.md"
   },
   "tech_stack": {
     "language": "TypeScript 5.3 / JavaScript (Node.js 20+)",
     "framework": "VS Code Extension API / Electron Sandbox",
+    "native_chat_api": "100% Native Antigravity IDE Internal Command Architecture (antigravity.addContext, antigravity.triggerSend, antigravity.startNewConversation with 400ms stabilization delay, antigravity.prioritized.chat.stop). Focus-free background execution, zero DOM injection, immune to CSP Trusted Types restrictions.",
+    "workbench_cleaner": "Automated self-healing cleanup engine (workbenchCleaner.ts) restoring original workbench.html, backup preservation, and orphan bridge file removal.",
     "credential_security": "VS Code SecretStorage API (context.secrets) lưu trữ token Telegram trong OS Keychains, fallback cấu hình an toàn, loại bỏ 100% hardcoded secrets",
     "dom_bridge": "HTTP Bridge Server (Node.js http), Renderer DOM Injection (workbench.html), Shadow DOM Traversal, Multi-Window Workspace Isolation & Discovery, Multi-Root & Untitled Workspace Dynamic Resolution, Adaptive Dynamic Polling (Active 400ms / Idle 2000ms, Instant Wakeup)",
     "bridge_security": "Cryptographic Session Token 32-byte (crypto.randomBytes), X-Bridge-Auth / Authorization: Bearer middleware, strict loopback CORS origin validation (vscode-file://, vscode-webview://)",
@@ -159,7 +161,12 @@
       "Khi BridgeServer bật requireAuth: true, nếu DOM Bridge Client không gửi X-Bridge-Auth header, polling sẽ nhận 401 và không thể lấy command dẫn đến timeout 15000ms và fallback không mong muốn.",
       "Telegram sendChatAction: typing chỉ có hiệu lực tối đa 5s; nếu chu kỳ quá nhanh sẽ bị HTTP 429, nếu quá chậm (>5s) typing indicator sẽ bị tắt giữa chừng. Chu kỳ tối ưu là 4000ms.",
       "Khi cắt Markdown theo giới hạn ký tự của Telegram, nếu cắt giữa code fence mà không đóng ``` và mở lại ```lang ở chunk tiếp theo, Telegram sẽ ném lỗi 400 Bad Request: can't parse entities và vỡ định dạng code.",
-      "Khi đóng gói VSIX bằng vsce, KHÔNG dùng cờ --no-dependencies nếu có dependency runtime (grammy) không được bundle, nếu không VSIX sẽ thiếu node_modules và extension fail khi activate."
+      "Khi đóng gói VSIX bằng vsce, KHÔNG dùng cờ --no-dependencies nếu có dependency runtime (grammy) không được bundle, nếu không VSIX sẽ thiếu node_modules và extension fail khi activate.",
+      "Lệnh nội bộ antigravity.addContext đẩy text vào khung chat qua Protobuf RPC d.api.addContext({ items: [...] }), chấp nhận trực tiếp tham số dạng string hoặc item object.",
+      "Lệnh nội bộ antigravity.triggerSend gọi h.api.triggerSend({}) để kích hoạt hành động gửi tin nhắn trong chat webview.",
+      "Cần một khoảng trễ nhỏ (sendDelayMs, mặc định 500ms) giữa addContext và triggerSend để webview chuyển trạng thái kích hoạt nút gửi.",
+      "Lệnh antigravity.startNewConversation cần khoảng 400ms stabilization delay trước khi gọi addContext để tránh webview chưa sẵn sàng.",
+      "Đối tượng vscode và vscode.commands chỉ tồn tại trong Extension Host process, không truy cập được trực tiếp từ DevTools Renderer console."
     ]
   }
 }

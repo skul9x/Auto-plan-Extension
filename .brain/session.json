@@ -1,183 +1,114 @@
 {
-  "updated_at": "2026-10-31T22:25:00+07:00",
-  "active_plan": "plans/261031-1933-native-rpc-auto-submit/plan.md",
+  "updated_at": "2026-11-04T22:17:00+07:00",
+  "active_plan": "plans/261104-1952-native-chat-api-transition/plan.md",
   "working_on": {
-    "feature": "Native RPC Auto-Submit & Permission Approval Engine (v1.7.0)",
-    "task": "Completed Phase 05: Modern Settings Webview Card, End-to-End Regression & Release Packaging (v1.7.0).",
+    "feature": "100% Native Antigravity Chat API Transition & Zero-DOM Clean Architecture",
+    "task": "Hoàn tất trọn vẹn 4 Phases kế hoạch chuyển đổi Native Chat API, đóng gói VSIX và cài đặt vào Antigravity IDE.",
     "status": "completed",
     "files": [
-      "plans/261031-1933-native-rpc-auto-submit/plan.md",
-      "plans/261031-1933-native-rpc-auto-submit/phase-01-rpc-discovery-and-candidate-filtering.md",
-      "plans/261031-1933-native-rpc-auto-submit/phase-02-permission-submission-and-deduplication.md",
-      "plans/261031-1933-native-rpc-auto-submit/phase-03-extension-lifecycle-configuration-and-diagnostics.md",
-      "plans/261031-1933-native-rpc-auto-submit/phase-04-telegram-event-mirroring-and-alerting.md",
-      "plans/261031-1933-native-rpc-auto-submit/phase-05-settings-ui-regression-and-release.md"
+      "src/promptDispatcher.ts",
+      "src/config.ts",
+      "src/orchestrator.ts",
+      "src/extension.ts",
+      "src/workbenchCleaner.ts",
+      "src/telegramBridge.ts",
+      "src/debugLogger.ts",
+      "package.json",
+      ".vscodeignore",
+      "antigravity-auto-plan-1.7.1.vsix"
     ],
     "blockers": [],
-    "notes": "Plan structured with exactly one test per phase and clean English phase documentation."
+    "notes": "Hệ thống đã loại bỏ 100% sự phụ thuộc vào DOM Bridge injection (workbench.html) và OS Keyboard simulation. Chuyển đổi hoàn toàn sang các lệnh nội bộ của Antigravity IDE: antigravity.addContext, antigravity.triggerSend, antigravity.startNewConversation, antigravity.prioritized.chat.stop. Đã đóng gói file VSIX (~798 KB) và cài đặt thành công vào Antigravity IDE."
   },
-  "pending_tasks": [],
+  "pending_tasks": [
+    {
+      "task": "Chạy thử nghiệm một plan thực tế từ thư mục plans/ bằng lệnh /run hoặc qua Dashboard",
+      "priority": "low",
+      "notes": "Kiểm tra trải nghiệm người dùng thực tế với kế hoạch code tự động"
+    }
+  ],
   "recent_changes": [
     {
-      "timestamp": "2026-10-31T22:25:00+07:00",
-      "type": "release",
-      "description": "Release v1.7.0 - Native RPC Auto-Submit & Permission Approval Engine with Settings Webview Card and Telegram event mirroring.",
+      "timestamp": "2026-11-04T21:55:00+07:00",
+      "type": "packaging_and_install",
+      "description": "Đóng gói extension thành file VSIX antigravity-auto-plan-1.7.1.vsix và cài đặt thành công vào Antigravity IDE (skul9x.antigravity-auto-plan@1.7.1).",
       "files": [
-        "antigravity-auto-plan-1.7.0.vsix",
+        "antigravity-auto-plan-1.7.1.vsix"
+      ]
+    },
+    {
+      "timestamp": "2026-11-04T21:50:00+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 04: Full System Regression & Extension Packaging. Viết và pass 8/8 tests trong phase04_native_chat_regression_and_packaging.test.ts.",
+      "files": [
+        "src/test/phase04_native_chat_regression_and_packaging.test.ts",
+        "plans/261104-1952-native-chat-api-transition/phase-04-full-system-regression-and-extension-packaging.md",
+        "plans/261104-1952-native-chat-api-transition/plan.md"
+      ]
+    },
+    {
+      "timestamp": "2026-11-04T21:26:00+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 03: Workbench Cleanup & Package Manifest Modernization. Tạo workbenchCleaner.ts tự động gỡ thẻ DOM bridge trong workbench.html, thêm lệnh autoplan.cleanWorkbench.",
+      "files": [
+        "src/workbenchCleaner.ts",
+        "src/extension.ts",
         "package.json",
-        "CHANGELOG.md",
-        "README.md"
+        "plans/261104-1952-native-chat-api-transition/phase-03-workbench-cleanup-and-manifest-modernization.md"
       ]
     },
     {
-      "timestamp": "2026-10-18T19:00:00+07:00",
-      "type": "installation",
-      "description": "Đóng gói production VSIX bundle antigravity-auto-plan-1.6.7.vsix (913.58 KB) và cài đặt thành công vào Antigravity IDE (skul9x.antigravity-auto-plan@1.6.7).",
+      "timestamp": "2026-11-04T21:05:00+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 02: Settings Webview & Sidebar UI Simplification. Tinh gọn giao diện sang Native Antigravity Dispatch, hiển thị badge $(zap) Native: Ready.",
       "files": [
-        "antigravity-auto-plan-1.6.7.vsix"
+        "media/settings/settings.html",
+        "media/settings/settings.js",
+        "media/sidebar/sidebar.html",
+        "media/sidebar/sidebar.js",
+        "plans/261104-1952-native-chat-api-transition/phase-02-settings-and-sidebar-ui-simplification.md"
       ]
     },
     {
-      "timestamp": "2026-10-14T06:33:00+07:00",
-      "type": "release",
-      "description": "Completed Phase 05: Release v1.6.7 with Telegram Chat Gating & Modern Tabbed Settings UI (Free-text silent drop gating, 4-category tabbed settings dashboard with real-time search, SecretStorage token management with optimistic rollback, debounced auto-save, and production VSIX packaging).",
+      "timestamp": "2026-11-04T20:14:00+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 01: Core Dispatcher & Configuration Refactoring. Thêm sendDelayMs, thực thi native antigravity.startNewConversation (400ms delay), addContext và triggerSend.",
       "files": [
         "src/config.ts",
-        "src/telegramBridge.ts",
-        "src/settingsProvider.ts",
-        "media/settings/settings.html",
-        "media/settings/settings.css",
-        "media/settings/settings.js",
-        "package.json",
-        "CHANGELOG.md",
-        "README.md",
-        "antigravity-auto-plan-1.6.7.vsix",
-        "src/test/phase05_telegram_chat_toggle_release.test.ts"
-      ]
-    },
-    {
-      "timestamp": "2026-10-12T06:45:00+07:00",
-      "type": "release",
-      "description": "Completed Phase 04: Release v1.6.6 with Performance & Resource Remediation (Event-driven tailing >90% I/O reduction, Async Telegram fallback zero event loop blocking, Adaptive DOM bridge polling >75% HTTP reduction, Fast-path prompt extraction, and production VSIX packaging).",
-      "files": [
-        "src/transcriptTailEngine.ts",
-        "src/telegramBridge.ts",
-        "media/autoplan-dom-bridge.js",
-        "package.json",
-        "CHANGELOG.md",
-        "README.md",
-        "antigravity-auto-plan-1.6.6.vsix",
-        "src/test/phase04_performance_remediation_release.test.ts"
-      ]
-    },
-    {
-      "timestamp": "2026-10-11T23:55:00+07:00",
-      "type": "release",
-      "description": "Completed Phase 05: Release v1.6.5 with Long-Running Phase Nudge Watchdog (Orchestrator mid-flight watchdog, DOM Bridge stopGeneration execution, SYSTEM_NUDGE origin tracking, Telegram alert hooks, and production VSIX packaging).",
-      "files": [
-        "src/orchestrator.ts",
         "src/promptDispatcher.ts",
-        "src/promptOriginTracker.ts",
-        "src/bridgeServer.ts",
-        "media/autoplan-dom-bridge.js",
-        "src/telegramNotifier.ts",
-        "src/telegramBridge.ts",
-        "package.json",
-        "CHANGELOG.md",
-        "README.md",
-        "antigravity-auto-plan-1.6.5.vsix",
-        "src/test/phase05_nudge_watchdog_release_packaging.test.ts"
-      ]
-    },
-    {
-      "timestamp": "2026-10-11T21:30:00+07:00",
-      "type": "release",
-      "description": "Completed Phase 05: Release v1.6.4 with Telegram Clean Q&A Sync (Continuous Byte-Offset Tail Engine, 60s TTL Deduplication Ring Buffer, Typing Indicators, Smart Code-Fence Aware Markdown Chunker, and production VSIX packaging).",
-      "files": [
-        "src/transcriptTailEngine.ts",
-        "src/promptOriginTracker.ts",
-        "src/smartMarkdownChunker.ts",
-        "src/typingActionManager.ts",
-        "src/telegramChatMirror.ts",
-        "src/telegramBridge.ts",
-        "package.json",
-        "CHANGELOG.md",
-        "README.md",
-        "antigravity-auto-plan-1.6.4.vsix",
-        "src/test/phase05_clean_qa_release_packaging.test.ts"
-      ]
-    },
-    {
-      "timestamp": "2026-10-11T12:05:00+07:00",
-      "type": "release",
-      "description": "Completed Phase 05: Release v1.6.3 with Markdown-to-Plain-Text engine, Telegram parse_mode: undefined delivery, workflow setMyCommands integration, and trailing argument dispatch.",
-      "files": [
-        "src/telegramUtils.ts",
-        "src/telegramNotifier.ts",
-        "src/telegramBridge.ts",
-        "package.json",
-        "CHANGELOG.md",
-        "README.md",
-        "antigravity-auto-plan-1.6.3.vsix",
-        "src/test/phase05_plain_text_and_workflow_e2e_release.test.ts"
-      ]
-    },
-    {
-      "timestamp": "2026-10-11T11:55:00+07:00",
-      "type": "fix",
-      "description": "Fix DOM Bridge 401 Unauthorized timeout & keyboard fallback: trả về authToken trong autoplan-status handshake cho approved origins/probe, tự động lưu token trên client, hỗ trợ XHR fallback và tự phục hồi khi gặp 401.",
-      "files": [
-        "src/bridgeServer.ts",
-        "media/autoplan-dom-bridge.js",
-        "src/test/phase05_e2e_cross_platform_release.test.ts"
-      ]
-    },
-    {
-      "timestamp": "2026-10-11T07:30:00+07:00",
-      "type": "release",
-      "description": "Completed Security Audit Remediation (v1.6.2): SecretStorage integration, 0o600 permissions, loopback crypto token auth, elevation command hardening, and config hot-reload.",
-      "files": [
-        "package.json",
-        "CHANGELOG.md",
-        "README.md",
-        "src/test/phase05_audit_remediation_e2e_release.test.js",
-        "antigravity-auto-plan-1.6.2.vsix"
+        "src/orchestrator.ts",
+        "plans/261104-1952-native-chat-api-transition/phase-01-core-dispatcher-and-configuration-refactoring.md"
       ]
     }
   ],
   "errors_encountered": [
     {
-      "error": "Telegram 400 Bad Request: can't parse entities do Markdown phức tạp hoặc unescaped characters từ AI transcript",
-      "solution": "Triển khai stripMarkdownToPlainText loại bỏ 100% cú pháp Markdown, chuyển bảng GFM thành bảng phẳng văn bản, và thiết lập parse_mode: undefined.",
+      "error": "Renderer DevTools console báo 'TypeError: Cannot read properties of undefined (reading executeCommand)' khi thử gọi vscode.commands",
+      "solution": "Namespace vscode chỉ tồn tại trong Extension Host Node.js process, không tồn tại trong Electron Renderer. Đã chuyển toàn bộ điều phối vào Extension Host.",
       "resolved": true
     },
     {
-      "error": "Lệnh /new_chat trên Telegram bot không tạo chat mới trong Antigravity IDE",
-      "solution": "Đảo ngược kiến trúc ưu tiên: gọi Tier 1 DOM Bridge (focus-free click New Conversation) trước, fallback sang Tier 2 (VS Code API), rồi mới tới Tier 3 (Keyboard simulation với xdotool trên Linux). Hỗ trợ thêm alias /newchat và /new-chat.",
+      "error": "Web Worker timer initialization failed: This document requires 'TrustedScriptURL' assignment",
+      "solution": "Antigravity bật Trusted Types CSP chặn blob workers khi sửa workbench.html. Giải pháp dứt điểm là chuyển 100% sang Native Chat API, dọn sạch workbench.html.",
       "resolved": true
-    },
-    {
-      "error": "DOM Bridge Client in sandboxed renderer failed with 401 Unauthorized causing 15000ms timeout & keyboard fallback",
-      "solution": "BridgeServer delivers authToken in autoplan-status handshake for approved origins/probe; DomBridgeClient saves token, supports XHR fallback, and resets on 401 to re-authenticate.",
-      "resolved": true
-    },
-    {
-      "error": "Không vào được Auto-Plan Control Center: Plan Execution Dashboard trong Antigravity IDE (Activating extension failed: Cannot find module 'grammy')",
-      "solution": "Đóng gói lại VSIX đầy đủ node_modules production dependencies (loại bỏ cờ --no-dependencies dẫn đến thiếu thư viện grammy), cập nhật test assertion phase 03, và cài đặt lại VSIX 1.6.3 vào Antigravity IDE.",
-      "resolved": true,
-      "file": "package.json"
     }
   ],
   "decisions_made": [
-    "Dùng parse_mode: undefined tuyệt đối trên Telegram cho các tin nhắn transcript/thông báo nhằm triệt tiêu lỗi cú pháp định dạng.",
-    "Đăng ký đầy đủ danh mục AWF command qua setMyCommands trên Telegram Bot API, chuẩn hóa snake_case sang kebab-case khi forward vào IDE.",
-    "Cho phép chuyển tiếp tham số phía sau lệnh workflow (e.g. /code <task>) vào prompt dispatcher.",
-    "SecretStorage tiếp tục là nguồn ưu tiên cao nhất cho bot token."
-  ],
-  "last_audit": {
-    "scope": "PERFORMANCE",
-    "timestamp": "2026-10-12T06:10:00+07:00",
-    "status": "audited_v1.6.5",
-    "report": "docs/reports/audit_20261012_0610_performance.md"
-  }
+    {
+      "decision": "Chuyển 100% sang Native Chat API (antigravity.addContext, antigravity.triggerSend, antigravity.startNewConversation, antigravity.prioritized.chat.stop)",
+      "reason": "Hoàn toàn focus-free, không can thiệp file hệ thống workbench.html, không phụ thuộc OS keyboard simulation, miễn nhiễm với thay đổi DOM/CSP."
+    },
+    {
+      "decision": "Thêm cấu hình autoplan.sendDelayMs (mặc định 500ms)",
+      "reason": "Tạo khoảng nghỉ an toàn để Antigravity chat input render text và kích hoạt trạng thái nút Send trước khi gọi triggerSend."
+    },
+    {
+      "decision": "Tự động dọn dẹp workbench.html khi khởi động và cung cấp lệnh autoplan.cleanWorkbench",
+      "reason": "Tự phục hồi file nguyên bản sạch cho IDE, tránh lỗi corrupted checksum hay cảnh báo Trusted Types từ phiên bản trước."
+    },
+    {
+      "decision": "Đồng bộ Telegram Remote Control (/run, /plan, /stop) với Native Chat API",
+      "reason": "Người dùng điều khiển từ xa qua Telegram được kích hoạt trực tiếp vào IDE không bị giật focus hay lỗi gõ phím mù."
+    }
+  ]
 }

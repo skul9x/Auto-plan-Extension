@@ -8,4 +8,11 @@ docs/**
 tsconfig.json
 **/*.map
 out/test/**
-scripts/.bin/**
+scripts/**
+*.py
+*.txt
+body1.html
+*.vsix_FILES/**
+*.vsix
+
+

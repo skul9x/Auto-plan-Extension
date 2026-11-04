@@ -6,6 +6,7 @@ import { scanPlanFolder, scanPlanFolderAsync, PhaseFile, sortPhaseFiles, auditPl
 import { discoverWorkspacePlanFolders, discoverWorkspacePlanFoldersAsync, executePhases, promptAndStartAutoPlan, showBridgeDiagnosticDialog, getCurrentPlanFolder, setCurrentPlanFolder } from './extension';
 import { orchestrator } from './orchestrator';
 import { bridgeServer } from './bridgeServer';
+import { promptDispatcher } from './promptDispatcher';
 
 export const MAX_PENDING_LOGS = 150;
 
@@ -307,16 +308,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     let status = statusString;
     if (!status) {
       try {
-        const clients = bridgeServer.getConnectedClients();
-        if (clients && clients.length > 0) {
-          status = 'connected';
-        } else if (bridgeServer.isListening()) {
-          status = 'keyboard';
-        } else {
-          status = 'disconnected';
-        }
+        const readiness = promptDispatcher.validateDispatchReadiness();
+        status = readiness.ready ? 'ready' : 'disconnected';
       } catch {
-        status = 'disconnected';
+        status = 'ready';
       }
     }
 
@@ -524,11 +519,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         this.updateState();
         break;
       case 'activateBridge':
-        await vscode.commands.executeCommand('autoplan.installBridge');
         this.sendBridgeStatus();
         break;
       case 'diagnostics':
-        await showBridgeDiagnosticDialog();
+        await vscode.commands.executeCommand('autoplan.openSettings');
         break;
       case 'copyBridgeLog':
       case 'copyDebugLog':

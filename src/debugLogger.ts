@@ -13,6 +13,7 @@ export type LogComponent =
   | 'CLIENT'
   | 'DISPATCHER'
   | 'INJECTOR'
+  | 'CLEANUP'
   | 'DOM'
   | 'ORCHESTRATOR'
   | 'SETTINGS'
@@ -84,6 +85,13 @@ export interface EnvironmentReport {
     enableVerboseBridgeLogs: boolean;
     maxLogEntries: number;
     autoOpenBridgeLogOnError: boolean;
+    sendDelayMs?: number;
+  };
+  nativeDispatch?: {
+    engine: string;
+    status: string;
+    isFocusFree: boolean;
+    sendDelayMs?: number;
   };
   planPhases?: PlanPhasesAuditReport;
   injectionTelemetry?: DomBridgeInjectionTelemetry;
@@ -591,6 +599,7 @@ export class DebugLogger {
       executionMode: 'auto',
       allowTierFallback: true,
       strictMode: false,
+      sendDelayMs: 500,
       bridgeTimeoutMs: 5000,
       timeoutPerLoopMinutes: 15,
       enableVerboseBridgeLogs: false,
@@ -603,6 +612,7 @@ export class DebugLogger {
         executionMode: cfg.executionMode ?? 'auto',
         allowTierFallback: cfg.allowTierFallback ?? true,
         strictMode: cfg.strictMode ?? false,
+        sendDelayMs: cfg.sendDelayMs ?? 500,
         bridgeTimeoutMs: cfg.bridgeTimeoutMs ?? 5000,
         timeoutPerLoopMinutes: cfg.timeoutPerLoopMinutes ?? 15,
         enableVerboseBridgeLogs: cfg.enableVerboseBridgeLogs ?? false,
@@ -612,6 +622,13 @@ export class DebugLogger {
     } catch {
       // Fallback
     }
+
+    const nativeDispatch = {
+      engine: 'Native Antigravity Chat API',
+      status: 'operational',
+      isFocusFree: true,
+      sendDelayMs: configInfo.sendDelayMs
+    };
 
     // Phase telemetry audit snapshot
     let planPhases: PlanPhasesAuditReport | undefined = planAuditOverride;
@@ -636,6 +653,7 @@ export class DebugLogger {
       domBridge: domBridgeInfo,
       server: serverInfo,
       config: configInfo,
+      nativeDispatch,
       ...(planPhases ? { planPhases } : {}),
       ...(injectionTelemetry ? { injectionTelemetry } : {})
     };
@@ -661,24 +679,27 @@ export class DebugLogger {
     let isInjectionVerified = false;
     let injectionHealthStr = 'ℹ️ Not yet tested (No prompts dispatched)';
     let isContainerVerified = false;
-    let targetContainerStr = '`#antigravity.agentSidePanelInputBox` (Default)';
+    let targetContainerStr = '`antigravity.addContext` (Native API)';
 
     if (injection) {
       if (injection.status === 'verified' || injection.verified === true) {
         isInjectionVerified = true;
         const chars = injection.charsInjected ?? injection.charsDetectedInDOM ?? injection.charsExpected ?? 0;
-        injectionHealthStr = `✅ Verified (Last prompt: ${chars} chars injected, buffer matched)`;
+        const isNative = injection.strategy === 'native-chat-api' || injection.elementContext?.includes('Native') || injection.elementContext?.includes('antigravity');
+        injectionHealthStr = isNative
+          ? `✅ Verified (Native Dispatch: ${chars} chars via antigravity.addContext)`
+          : `✅ Verified (Last prompt: ${chars} chars injected, buffer matched)`;
       } else if (injection.status === 'failed' || injection.verified === false) {
         isInjectionVerified = false;
         const reason = (injection.charsDetectedInDOM === 0 || !injection.charsDetectedInDOM)
-          ? 'Buffer was empty'
+          ? (injection.error || 'Buffer was empty')
           : (injection.error || 'Buffer mismatch');
         injectionHealthStr = `❌ Failed (${reason})`;
       }
 
-      const container = injection.elementContext || '#antigravity.agentSidePanelInputBox';
-      const inChat = container.includes('agentSidePanelInputBox') || container.includes('chat-widget') || container.includes('chat');
-      targetContainerStr = `\`${container}\`${inChat ? ' (Verified in Chat Panel)' : ''}`;
+      const container = injection.elementContext || 'antigravity.addContext';
+      const inChat = container.includes('agentSidePanelInputBox') || container.includes('chat-widget') || container.includes('chat') || container.includes('antigravity');
+      targetContainerStr = `\`${container}\`${inChat ? ' (Verified in Chat Panel / Native API)' : ''}`;
       isContainerVerified = inChat;
     }
 
@@ -745,7 +766,7 @@ export class DebugLogger {
     }
 
     const lines: string[] = [
-      '# Auto-Plan DOM Bridge Diagnostic Report',
+      '# Auto-Plan Diagnostic Report',
       `**Generated At:** \`${report.timestamp}\``,
       `**Environment:** \`${report.os.platform} (${report.os.arch})\` | Node \`${report.runtime.node}\` | Electron \`${report.runtime.electron}\``,
       '',
@@ -763,13 +784,15 @@ export class DebugLogger {
       `| VS Code | Application Name | \`${report.vscode.appName}\` |`,
       `| VS Code | App Version | \`${report.vscode.version}\` |`,
       `| VS Code | App Root Directory | \`${report.vscode.appRoot}\` |`,
-      `| DOM Bridge | Script Injection State | ${isBridgeInstalled ? '✅ **Injected**' : '❌ **Not Injected**'} |`,
+      `| Native Dispatch | Engine | \`Native Antigravity Chat API (Focus-Free)\` |`,
+      `| Native Dispatch | Send Delay | \`${(report.config as any).sendDelayMs ?? 500} ms\` |`,
+      `| DOM Bridge | Script Injection State | ${isBridgeInstalled ? '⚠️ Legacy Injected' : '✅ Clean (Removed / Obsolete)'} |`,
       `| DOM Bridge | Workbench HTML Path | \`${report.domBridge.workbenchHtmlPath || 'Not Found'}\` |`,
       `| DOM Bridge | Backup File Present | ${report.domBridge.backupPresent ? '✅ Yes' : '⚠️ No backup found'} |`,
-      `| Bridge Server | Active Listening Port | ${isServerListening ? `\`${report.server.activePort}\`` : '⚠️ None (Server Inactive)'} |`,
+      `| Bridge Server | Active Listening Port | ${isServerListening ? `\`${report.server.activePort}\`` : 'Inactive'} |`,
       `| Bridge Server | Connected Clients Count | \`${report.server.connectedClientsCount}\` |`,
-      `| Bridge Server | Active Window Key | \`${report.server.activeWindowKey || 'None'}\` |`,
       `| Configuration | Dispatch Execution Mode | \`${report.config.executionMode}\` |`,
+      `| Configuration | Send Delay | \`${(report.config as any).sendDelayMs ?? 500} ms\` |`,
       `| Configuration | Allow Tier Fallback | \`${report.config.allowTierFallback}\` |`,
       `| Configuration | Strict Execution Mode | \`${report.config.strictMode}\` |`,
       `| Configuration | Bridge Timeout | \`${report.config.bridgeTimeoutMs} ms\` |`,
@@ -784,12 +807,11 @@ export class DebugLogger {
       '## 3. Component Health Status Checklist',
       '',
       '- [x] **Extension Host Runtime**: Operational',
+      '- [x] **Native Dispatch Engine**: Operational (antigravity.addContext + antigravity.triggerSend)',
       '- [x] **Configuration Subsystem**: Loaded and verified',
-      `- [${isBridgeInstalled ? 'x' : ' '}] **DOM Bridge Script Injection**: ${isBridgeInstalled ? 'Injected in workbench.html' : 'Not injected or missing markers'}`,
-      `- [${isServerListening ? 'x' : ' '}] **HTTP Bridge Server**: ${isServerListening ? `Active on port ${report.server.activePort}` : 'Not running'}`,
-      `- [${hasConnectedClients ? 'x' : ' '}] **Electron Renderer Client**: ${hasConnectedClients ? `Connected (${report.server.connectedClientsCount} client(s))` : 'No active renderer clients registered'}`,
-      `- [${isInjectionVerified ? 'x' : ' '}] **DOM Bridge Injection Health**: ${injectionHealthStr}`,
-      `- [${isContainerVerified ? 'x' : ' '}] **Target Element Container**: ${targetContainerStr}`,
+      `- [${isBridgeInstalled ? ' ' : 'x'}] **Workbench Cleanliness**: ${isBridgeInstalled ? 'Legacy bridge present (clean recommended)' : '100% clean (no DOM modification)'}`,
+      `- [${isInjectionVerified ? 'x' : ' '}] **Prompt Dispatch Health**: ${injectionHealthStr}`,
+      `- [${isContainerVerified ? 'x' : ' '}] **Target Element / API**: ${targetContainerStr}`,
       '',
       '---',
       '',

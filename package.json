@@ -24,11 +24,11 @@
     "onCommand:autoplan.actionMenu",
     "onCommand:autoplan.openTranscript",
     "onCommand:autoplan.setPrompt",
-    "onCommand:autoplan.installBridge",
+    "onCommand:autoplan.cleanWorkbench",
+    "onCommand:autoplan.testNativeDispatch",
     "onCommand:autoplan.uninstallBridge",
     "onCommand:autoplan.checkBridgeStatus",
     "onCommand:autoplan.openSidebar",
-    "onCommand:autoplan.oneClickSetup",
     "onCommand:autoplan.checkStatus",
     "onCommand:autoplan.openSettings",
     "onCommand:autoplan.copyDebugLog",
@@ -37,7 +37,9 @@
     "onCommand:autoplan.showOutputChannel",
     "onCommand:autoplan.setTelegramToken",
     "onCommand:autoplan.clearTelegramToken",
-    "onCommand:autoplan.diagnoseAutoSubmit"
+    "onCommand:autoplan.diagnoseAutoSubmit",
+    "onCommand:autoplan.testAddContext",
+    "onCommand:autoplan.testChatApi"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -91,28 +93,28 @@
         "category": "Auto-Plan"
       },
       {
-        "command": "autoplan.installBridge",
-        "title": "Install / Update DOM Automation Bridge",
+        "command": "autoplan.cleanWorkbench",
+        "title": "Clean workbench.html (Remove Legacy DOM Bridge)",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.testNativeDispatch",
+        "title": "Test Native Chat Dispatch",
         "category": "Auto-Plan"
       },
       {
         "command": "autoplan.uninstallBridge",
-        "title": "Uninstall DOM Automation Bridge",
+        "title": "Uninstall Legacy DOM Bridge",
         "category": "Auto-Plan"
       },
       {
         "command": "autoplan.checkBridgeStatus",
-        "title": "Check Bridge Status & Run Diagnostic",
+        "title": "Check Status & Run Diagnostics",
         "category": "Auto-Plan"
       },
       {
         "command": "autoplan.openSidebar",
         "title": "Open Auto-Plan Control Center",
-        "category": "Auto-Plan"
-      },
-      {
-        "command": "autoplan.oneClickSetup",
-        "title": "1-Click DOM Bridge Setup",
         "category": "Auto-Plan"
       },
       {
@@ -127,25 +129,25 @@
       },
       {
         "command": "autoplan.copyDebugLog",
-        "title": "Copy DOM Bridge Debug Log to Clipboard",
+        "title": "Copy Auto-Plan Debug Log to Clipboard",
         "category": "Auto-Plan",
         "icon": "$(clippy)"
       },
       {
         "command": "autoplan.exportDebugLog",
-        "title": "Export DOM Bridge Diagnostic Log to File",
+        "title": "Export Auto-Plan Diagnostic Log to File",
         "category": "Auto-Plan",
         "icon": "$(save)"
       },
       {
         "command": "autoplan.clearDebugLog",
-        "title": "Clear DOM Bridge Log Buffer",
+        "title": "Clear Auto-Plan Log Buffer",
         "category": "Auto-Plan",
         "icon": "$(clear-all)"
       },
       {
         "command": "autoplan.showOutputChannel",
-        "title": "Show DOM Bridge Output Channel",
+        "title": "Show Auto-Plan Output Channel",
         "category": "Auto-Plan",
         "icon": "$(output)"
       },
@@ -162,6 +164,16 @@
       {
         "command": "autoplan.diagnoseAutoSubmit",
         "title": "Diagnose RPC Auto-Submit Status",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.testAddContext",
+        "title": "Test Paste 'Test 123' to Chat (antigravity.addContext)",
+        "category": "Auto-Plan"
+      },
+      {
+        "command": "autoplan.testChatApi",
+        "title": "Test Antigravity Chat API (Interactive Menu)",
         "category": "Auto-Plan"
       }
     ],
@@ -214,6 +226,12 @@
           "default": 800,
           "description": "Thời gian chờ sau phím tắt mở chat để focus khung chat (mili-giây)"
         },
+        "autoplan.sendDelayMs": {
+          "type": "integer",
+          "default": 500,
+          "minimum": 0,
+          "description": "Delay in milliseconds before triggering chat send via native Antigravity triggerSend"
+        },
         "autoplan.executionMode": {
           "type": "string",
           "enum": [
@@ -223,23 +241,32 @@
             "keyboard"
           ],
           "enumDescriptions": [
-            "Auto (Tier 1 -> Tier 2 -> Tier 3)",
-            "Strict Tier 1 (DOM Bridge Focus-Free)",
-            "Strict Tier 2 (VS Code Native Commands)",
-            "Strict Tier 3 (OS Keyboard Simulation)"
+            "Auto (Native Antigravity Chat API)",
+            "Legacy Tier 1 (DOM Bridge - Deprecated)",
+            "Native Commands (antigravity.addContext + triggerSend)",
+            "Legacy Tier 3 (Keyboard Simulation - Deprecated)"
           ],
-          "default": "auto",
-          "description": "Prompt dispatch transport mode (auto, domBridge, nativeCommand, or keyboard)"
+          "default": "nativeCommand",
+          "markdownDeprecationMessage": "Deprecated: Auto-Plan now uses 100% Native Antigravity Chat API commands.",
+          "description": "Deprecated: Prompt dispatch transport mode (auto, domBridge, nativeCommand, or keyboard)"
         },
         "autoplan.allowTierFallback": {
           "type": "boolean",
-          "default": true,
-          "description": "Allow automated fallback to secondary tiers if the chosen execution tier fails"
+          "default": false,
+          "markdownDeprecationMessage": "Deprecated: Auto-Plan now uses 100% Native Antigravity Chat API commands.",
+          "description": "Deprecated: Allow automated fallback to secondary tiers if the chosen execution tier fails"
+        },
+        "autoplan.strictMode": {
+          "type": "boolean",
+          "default": false,
+          "markdownDeprecationMessage": "Deprecated: Auto-Plan now uses 100% Native Antigravity Chat API commands.",
+          "description": "Deprecated: Strict execution mode without tier fallbacks"
         },
         "autoplan.bridgeTimeoutMs": {
           "type": "number",
           "default": 5000,
-          "description": "Timeout in milliseconds for DOM Bridge command acknowledgment"
+          "markdownDeprecationMessage": "Deprecated: Auto-Plan now uses 100% Native Antigravity Chat API commands.",
+          "description": "Deprecated: Timeout in milliseconds for DOM Bridge command acknowledgment"
         },
         "autoplan.newConversationTimeoutMs": {
           "type": "number",
@@ -255,13 +282,15 @@
         },
         "autoplan.autoInjectWorkbench": {
           "type": "boolean",
-          "default": true,
-          "description": "Automatically ensure workbench is injected with DOM bridge script on startup"
+          "default": false,
+          "markdownDeprecationMessage": "Deprecated: DOM bridge injection into workbench.html is obsolete and no longer used. Auto-Plan uses 100% native chat APIs.",
+          "description": "Deprecated: Automatically ensure workbench is injected with DOM bridge script on startup"
         },
         "autoplan.suppressFallbackWarnings": {
           "type": "boolean",
           "default": true,
-          "description": "Suppress warning toast popups when falling back between prompt dispatch tiers"
+          "markdownDeprecationMessage": "Deprecated: Tier fallback logic is obsolete. Auto-Plan uses 100% native chat APIs.",
+          "description": "Deprecated: Suppress warning toast popups when falling back between prompt dispatch tiers"
         },
         "autoplan.enableDomSnapshots": {
           "type": "boolean",
@@ -450,6 +479,10 @@
     "watch": "node ./node_modules/typescript/bin/tsc -watch -p ./",
     "package": "node scripts/package.js package --allow-missing-repository --no-git-tag-version",
     "test": "node out/test/phase05_e2e_cross_platform_release.test.js",
+    "test:phase01-native": "node out/test/phase01_native_dispatcher_and_config.test.js",
+    "test:phase02-native": "node out/test/phase02_native_ui_and_settings_simplification.test.js",
+    "test:phase03-native": "node out/test/phase03_workbench_cleanup_and_package_manifest.test.js",
+    "test:phase04-native": "node out/test/phase04_native_chat_regression_and_packaging.test.js",
     "test:phase05-dom-bridge": "node out/test/phase05_dom_bridge_full_regression_release.test.js",
     "test:phase01-rpc": "node out/test/phase01_rpc_discovery_candidate_filtering.test.js",
     "test:phase02-rpc": "node out/test/phase02_rpc_auto_submit_execution_dedup.test.js",

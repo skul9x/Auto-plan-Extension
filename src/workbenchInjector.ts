@@ -10,6 +10,8 @@ import { exec, execSync } from 'child_process';
 export const TAG_START = '<!-- AUTO-PLAN-BRIDGE-START -->';
 export const TAG_END = '<!-- AUTO-PLAN-BRIDGE-END -->';
 export const BACKUP_SUFFIX = '.autoplan.bak';
+export const LEGACY_BACKUP_SUFFIX = '.autoplan.backup';
+export const KNOWN_BACKUP_SUFFIXES = [BACKUP_SUFFIX, LEGACY_BACKUP_SUFFIX];
 export const DEFAULT_BRIDGE_SCRIPT_NAME = 'autoplan-dom-bridge.js';
 
 export interface InjectorOptions {
@@ -20,7 +22,15 @@ export interface InjectorOptions {
   forceBackup?: boolean;
   forceReinject?: boolean;
   updateChecksums?: boolean;
+  preserveBackup?: boolean;
   context?: any;
+}
+
+export interface WorkbenchCleanupResult {
+  success: boolean;
+  path?: string;
+  modified?: boolean;
+  error?: string;
 }
 
 export interface InjectionStatus {
@@ -420,20 +430,20 @@ export function isBridgeInstalled(htmlContentOrFilePath?: string): boolean {
         return false;
       }
       const content = fs.readFileSync(wbPath, 'utf8');
-      return content.includes(TAG_START) && content.includes(TAG_END);
+      return content.includes(TAG_START) || content.includes(TAG_END) || content.includes(DEFAULT_BRIDGE_SCRIPT_NAME);
     } catch {
       return false;
     }
   }
 
-  if (htmlContentOrFilePath.includes(TAG_START) && htmlContentOrFilePath.includes(TAG_END)) {
+  if (htmlContentOrFilePath.includes(TAG_START) || htmlContentOrFilePath.includes(TAG_END) || htmlContentOrFilePath.includes(DEFAULT_BRIDGE_SCRIPT_NAME)) {
     return true;
   }
 
   try {
     if (fs.existsSync(htmlContentOrFilePath)) {
       const content = fs.readFileSync(htmlContentOrFilePath, 'utf8');
-      return content.includes(TAG_START) && content.includes(TAG_END);
+      return content.includes(TAG_START) || content.includes(TAG_END) || content.includes(DEFAULT_BRIDGE_SCRIPT_NAME);
     }
   } catch {
     return false;
@@ -673,7 +683,16 @@ export async function updateProductChecksumsAsync(workbenchPath?: string): Promi
  */
 export function removeBridgeTagsFromHtml(html: string): string {
   const tagRegex = new RegExp(`\\s*${escapeRegex(TAG_START)}[\\s\\S]*?${escapeRegex(TAG_END)}\\s*`, 'g');
-  return html.replace(tagRegex, '\n');
+  let cleaned = html.replace(tagRegex, '\n');
+  if (cleaned.includes(TAG_START)) {
+    cleaned = cleaned.replace(new RegExp(`\\s*${escapeRegex(TAG_START)}\\s*`, 'g'), '\n');
+  }
+  if (cleaned.includes(TAG_END)) {
+    cleaned = cleaned.replace(new RegExp(`\\s*${escapeRegex(TAG_END)}\\s*`, 'g'), '\n');
+  }
+  const strayScriptRegex = /\s*<script\s+src="[^"]*autoplan-dom-bridge\.js[^"]*"><\/script>\s*/gi;
+  cleaned = cleaned.replace(strayScriptRegex, '\n');
+  return cleaned;
 }
 
 /**
@@ -976,10 +995,11 @@ export function getInjectionStatus(options: InjectorOptions = {}): InjectionStat
 }
 
 /**
- * Uninstalls the DOM bridge script tag from workbench.html.
- * Restores original content and cleans up tag markers, backup file, and sidecar script file if present.
+ * Synchronously cleans and restores workbench.html by removing legacy DOM Bridge script tags.
+ * Strictly idempotent: if workbench.html is already clean, no disk writes or modifications occur.
+ * Safely reconciles any existing backup file (.autoplan.backup / .autoplan.bak) without corrupting active workbench.
  */
-export function uninstallBridgeScript(options: InjectorOptions = {}): UninstallationResult {
+export function cleanWorkbenchHtml(options: InjectorOptions = {}): WorkbenchCleanupResult {
   const wbPath = options.workbenchPath || getWorkbenchPath(options.customAppRoot);
   if (!wbPath || !fs.existsSync(wbPath)) {
     return {
@@ -990,15 +1010,41 @@ export function uninstallBridgeScript(options: InjectorOptions = {}): Uninstalla
 
   try {
     const currentRaw = fs.readFileSync(wbPath, 'utf8');
-    const restoredContent = removeBridgeTagsFromHtml(currentRaw);
-    writeFileElevated(wbPath, restoredContent);
+    const hasBridgeTags = currentRaw.includes(TAG_START) ||
+      currentRaw.includes(TAG_END) ||
+      currentRaw.includes(options.scriptFileName || DEFAULT_BRIDGE_SCRIPT_NAME);
 
-    const backupPath = `${wbPath}${BACKUP_SUFFIX}`;
-    if (fs.existsSync(backupPath)) {
-      try {
-        fs.unlinkSync(backupPath);
-      } catch {
-        // Ignore unlink error
+    let modified = false;
+
+    if (hasBridgeTags) {
+      const restoredContent = removeBridgeTagsFromHtml(currentRaw);
+      if (restoredContent !== currentRaw) {
+        writeFileElevated(wbPath, restoredContent);
+        modified = true;
+      }
+    }
+
+    // Safely reconcile or preserve backup files (.autoplan.bak, .autoplan.backup)
+    const backupCandidates = KNOWN_BACKUP_SUFFIXES.map(suffix => `${wbPath}${suffix}`);
+    for (const backupPath of backupCandidates) {
+      if (fs.existsSync(backupPath)) {
+        if (options.preserveBackup) {
+          try {
+            const backupRaw = fs.readFileSync(backupPath, 'utf8');
+            if (backupRaw.includes(TAG_START) || backupRaw.includes(TAG_END) || backupRaw.includes(options.scriptFileName || DEFAULT_BRIDGE_SCRIPT_NAME)) {
+              const cleanBackup = removeBridgeTagsFromHtml(backupRaw);
+              writeFileElevated(backupPath, cleanBackup);
+            }
+          } catch {
+            // Ignore backup clean error
+          }
+        } else {
+          try {
+            fs.unlinkSync(backupPath);
+          } catch {
+            // Ignore unlink error
+          }
+        }
       }
     }
 
@@ -1013,13 +1059,14 @@ export function uninstallBridgeScript(options: InjectorOptions = {}): Uninstalla
       }
     }
 
-    if (options.updateChecksums !== false) {
+    if (options.updateChecksums !== false && modified) {
       updateProductChecksums(wbPath);
     }
 
     return {
       success: true,
-      path: wbPath
+      path: wbPath,
+      modified
     };
   } catch (err: any) {
     return {
@@ -1030,10 +1077,11 @@ export function uninstallBridgeScript(options: InjectorOptions = {}): Uninstalla
 }
 
 /**
- * Asynchronously uninstalls the DOM bridge script tag from workbench.html.
- * Restores original content, unlinks temporary and sidecar files, and updates checksums asynchronously.
+ * Asynchronously cleans and restores workbench.html by removing legacy DOM Bridge script tags.
+ * Strictly idempotent: if workbench.html is already clean, no disk writes or modifications occur.
+ * Safely reconciles any existing backup file (.autoplan.backup / .autoplan.bak) without corrupting active workbench.
  */
-export async function uninstallBridgeScriptAsync(options: InjectorOptions = {}): Promise<UninstallationResult> {
+export async function cleanWorkbenchHtmlAsync(options: InjectorOptions = {}): Promise<WorkbenchCleanupResult> {
   const wbPath = options.workbenchPath || getWorkbenchPath(options.customAppRoot);
   if (!wbPath || !fs.existsSync(wbPath)) {
     return {
@@ -1044,15 +1092,41 @@ export async function uninstallBridgeScriptAsync(options: InjectorOptions = {}):
 
   try {
     const currentRaw = await fs.promises.readFile(wbPath, 'utf8');
-    const restoredContent = removeBridgeTagsFromHtml(currentRaw);
-    await writeFileElevatedAsync(wbPath, restoredContent);
+    const hasBridgeTags = currentRaw.includes(TAG_START) ||
+      currentRaw.includes(TAG_END) ||
+      currentRaw.includes(options.scriptFileName || DEFAULT_BRIDGE_SCRIPT_NAME);
 
-    const backupPath = `${wbPath}${BACKUP_SUFFIX}`;
-    if (fs.existsSync(backupPath)) {
-      try {
-        await fs.promises.unlink(backupPath);
-      } catch {
-        // Ignore unlink error
+    let modified = false;
+
+    if (hasBridgeTags) {
+      const restoredContent = removeBridgeTagsFromHtml(currentRaw);
+      if (restoredContent !== currentRaw) {
+        await writeFileElevatedAsync(wbPath, restoredContent);
+        modified = true;
+      }
+    }
+
+    // Safely reconcile or preserve backup files (.autoplan.bak, .autoplan.backup)
+    const backupCandidates = KNOWN_BACKUP_SUFFIXES.map(suffix => `${wbPath}${suffix}`);
+    for (const backupPath of backupCandidates) {
+      if (fs.existsSync(backupPath)) {
+        if (options.preserveBackup) {
+          try {
+            const backupRaw = await fs.promises.readFile(backupPath, 'utf8');
+            if (backupRaw.includes(TAG_START) || backupRaw.includes(TAG_END) || backupRaw.includes(options.scriptFileName || DEFAULT_BRIDGE_SCRIPT_NAME)) {
+              const cleanBackup = removeBridgeTagsFromHtml(backupRaw);
+              await writeFileElevatedAsync(backupPath, cleanBackup);
+            }
+          } catch {
+            // Ignore backup clean error
+          }
+        } else {
+          try {
+            await fs.promises.unlink(backupPath);
+          } catch {
+            // Ignore unlink error
+          }
+        }
       }
     }
 
@@ -1067,13 +1141,14 @@ export async function uninstallBridgeScriptAsync(options: InjectorOptions = {}):
       }
     }
 
-    if (options.updateChecksums !== false) {
+    if (options.updateChecksums !== false && modified) {
       await updateProductChecksumsAsync(wbPath);
     }
 
     return {
       success: true,
-      path: wbPath
+      path: wbPath,
+      modified
     };
   } catch (err: any) {
     return {
@@ -1081,4 +1156,21 @@ export async function uninstallBridgeScriptAsync(options: InjectorOptions = {}):
       error: err.message || String(err)
     };
   }
+}
+
+export const cleanWorkbench = cleanWorkbenchHtml;
+export const cleanWorkbenchAsync = cleanWorkbenchHtmlAsync;
+
+/**
+ * Uninstalls the DOM bridge script tag from workbench.html (alias for cleanWorkbenchHtml).
+ */
+export function uninstallBridgeScript(options: InjectorOptions = {}): UninstallationResult {
+  return cleanWorkbenchHtml(options);
+}
+
+/**
+ * Asynchronously uninstalls the DOM bridge script tag from workbench.html (alias for cleanWorkbenchHtmlAsync).
+ */
+export async function uninstallBridgeScriptAsync(options: InjectorOptions = {}): Promise<UninstallationResult> {
+  return cleanWorkbenchHtmlAsync(options);
 }

@@ -68,4 +68,8 @@ audit-per.md
 body1.txt
 newprompt.txt
 *.vsix_FILES/
+*.py
+*.txt
+body1.html
+
 

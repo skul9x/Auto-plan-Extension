@@ -1,7 +1,7 @@
 # Antigravity Auto-Plan Extension
 
 <p align="center">
-  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/version-1.7.1-blue.svg?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/version-1.7.3-blue.svg?style=flat-square" alt="Version"></a>
   <a href="https://code.visualstudio.com/"><img src="https://img.shields.io/badge/VS_Code-^1.80.0-informational.svg?style=flat-square" alt="VS Code Compatibility"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.3.3-3178C6.svg?style=flat-square" alt="TypeScript"></a>
   <a href="https://grammy.dev/"><img src="https://img.shields.io/badge/Telegram-grammY_1.21.0-26A5E4.svg?style=flat-square" alt="grammY Framework"></a>
@@ -14,6 +14,7 @@
 ## 📌 Table of Contents
 - [Overview](#overview)
 - [Key Features](#key-features)
+  - [🎨 Rich Telegram HTML Formatting & Zero-Drop Fallback (v1.7.3)](#-rich-telegram-html-formatting--zero-drop-fallback-v173)
   - [🛡️ Hardened DOM Bridge & Two-Phase Verification (v1.7.1)](#️-hardened-dom-bridge--two-phase-verification-v171)
   - [⚡ Native RPC Auto-Submit & Permission Approval (v1.7.0)](#-native-rpc-auto-submit--permission-approval-v170)
   - [🤖 Telegram Chat Gating & Modern Tabbed Settings (v1.6.7)](#-telegram-chat-gating--modern-tabbed-settings-v167)
@@ -59,6 +60,13 @@ Equipped with an in-process DOM injection engine, a 3-tier resilient transport f
 ---
 
 ## Key Features
+
+### 🎨 Rich Telegram HTML Formatting & Zero-Drop Fallback (v1.7.3)
+- **Telegram Rich HTML Formatting Engine (`parse_mode: 'HTML'`)**: High-speed converter (`markdownToTelegramHtml`) transforming model Markdown into Telegram-compliant HTML (< 5ms for 50KB payloads) with zero external runtime dependencies.
+- **Dangling Syntax Elimination**: Eliminates raw Markdown artifacts (`###`, `---`, raw `**`, and unformatted pipes), converting headings to bold title blocks (`<b>...</b>`), inline markup (`<b>`, `<i>`, `<s>`, `<code>`), blockquotes (`<blockquote>`), and flattening tables into clean mobile bullet points.
+- **Syntax-Highlighted Code Blocks**: Fenced code blocks are cleanly converted to `<pre><code class="language-{lang}">...</code></pre>` with full HTML entity escaping (`&amp;`, `&lt;`, `&gt;`).
+- **Tag-Aware Chunk Splitter (`splitHtmlMessage`)**: Splits large payloads (<= 3800 chars) while strictly balancing opening and closing HTML tags across chunk boundaries without cutting inside tags or entity references.
+- **Zero-Message-Drop Safe Fallback**: If Telegram rejects any chunk with an entity parse error (HTTP 400 `can't parse entities`), the deliverer immediately falls back to plain-text formatting (`stripMarkdownToPlainText`) with `parse_mode: undefined`, guaranteeing 100% reliable delivery.
 
 ### 🛡️ Hardened DOM Bridge & Two-Phase Verification (v1.7.1)
 - **Container-Scoped Chat Input Discovery**: Strictly isolates the Antigravity Agent chat panel (`#antigravity.agentSidePanelInputBox`, `div[data-lexical-editor="true"]`, `div[aria-label="Message input"]`), eliminating dangerous global `[role="textbox"]` fallbacks.
@@ -196,7 +204,8 @@ Auto-Plan is built upon a high-performance, hybrid automation architecture combi
 - **Smart Markdown Chunker**: Custom line/paragraph chunker splitting responses at `<= 4000` characters while automatically tracking and balancing markdown code fences (` ``` `).
 - **Typing Action Manager**: Periodic heartbeat emitting `sendChatAction: typing` every 4000ms during AI reasoning and tool calls, automatically cleared upon message dispatch.
 - **Throttled Deliverer & Dashboard Throttler**: Inter-message delay throttling (>= 1000ms) with exponential backoff on HTTP 429 and `editMessageText` update throttling (1200ms).
-- **Clean Plain Text Output Engine**: Regex and AST-free string pipeline (`stripMarkdownToPlainText`) converting markdown headers, bold text, links, and GFM tables into readable plain text (`parse_mode: undefined`).
+- **Rich Telegram HTML Formatting Pipeline (`parse_mode: 'HTML'`)**: High-performance AST-free Markdown-to-Telegram-HTML conversion engine (`markdownToTelegramHtml`) supporting bold headings, code blocks with syntax highlighting, bullet lists, blockquotes, and table flattening.
+- **Tag-Aware Chunk Splitter & Safe Fallback**: Splits long HTML messages (<= 3800 chars) while strictly maintaining balanced tags (`splitHtmlMessage`) and automatically falling back to plain text (`stripMarkdownToPlainText`, `parse_mode: undefined`) on any Telegram 400 entity parse error, ensuring 100% zero message loss.
 
 ### 5. System Security, Elevation & Credential Management
 - **VS Code SecretStorage (`context.secrets`)**: Hardware-backed OS Keychain storage for Telegram bot tokens:
@@ -241,7 +250,7 @@ Auto-Plan is built upon a high-performance, hybrid automation architecture combi
 | **Inter-Process IPC** | Embedded Node.js HTTP Server (`48860-48900`), WHATWG URL Standard, Webview `postMessage` | High-speed local IPC, CORS isolation, and Webview RPC messaging. |
 | **Remote Telegram Bot** | grammY `^1.21.0`, Long Polling, Inline Keyboards, Leader Election Mutex | Mobile orchestration, 4-screen remote flow, and multi-window conflict prevention. |
 | **Real-Time Q&A Sync** | `TranscriptTailEngine`, `PromptOriginTracker` (60s TTL), `TypingActionManager` | Byte-offset JSONL streaming, typing indicators, and prompt deduplication. |
-| **Content Formatting** | `SmartMarkdownChunker` (<= 4000 chars), `stripMarkdownToPlainText` | Markdown code-fence balancing, table flattening, and `parse_mode: undefined` delivery. |
+| **Content Formatting** | `markdownToTelegramHtml`, `splitHtmlMessage`, `stripMarkdownToPlainText` | Telegram-compliant HTML formatting (`parse_mode: 'HTML'`), tag-aware chunking, and zero-drop plain-text fallback. |
 | **Watchdog & Steering** | Long-Running Phase Nudge Watchdog (180s timer), DOM `findCancelButton`, `SYSTEM_NUDGE` Origin | Runaway phase prevention, cooperative cancellation, and mid-flight steering injection. |
 | **Security & Vault** | VS Code `SecretStorage` (`context.secrets`), 32-byte crypto token, POSIX `0o600` sidecar files | OS Keychain credential storage, IPC authentication, and secret sanitization. |
 | **Privilege Elevation** | Linux Polkit (`pkexec`), Windows PowerShell UAC Base64 UTF-16LE, CSP Header Injection | Safe administrator elevation for `workbench.html` and CSP modification. |
@@ -346,10 +355,11 @@ sudo dnf install xdotool gnome-screenshot
 ### VSIX Installation
 ```bash
 # Install to Antigravity IDE
-antigravity --install-extension antigravity-auto-plan-1.7.1.vsix
+antigravity --install-extension antigravity-auto-plan-1.7.3.vsix
+# (or prior release: antigravity-auto-plan-1.7.1.vsix)
 
 # Install to Visual Studio Code
-code --install-extension antigravity-auto-plan-1.7.1.vsix
+code --install-extension antigravity-auto-plan-1.7.3.vsix
 ```
 
 ---

@@ -1,24 +1,26 @@
 {
-  "updated_at": "2026-11-04T22:17:00+07:00",
-  "active_plan": "plans/261104-1952-native-chat-api-transition/plan.md",
+  "updated_at": "2026-11-05T18:15:00+07:00",
+  "active_plan": "plans/261104-2301-telegram-rich-html-formatting/plan.md",
   "working_on": {
-    "feature": "100% Native Antigravity Chat API Transition & Zero-DOM Clean Architecture",
-    "task": "Hoàn tất trọn vẹn 4 Phases kế hoạch chuyển đổi Native Chat API, đóng gói VSIX và cài đặt vào Antigravity IDE.",
+    "feature": "Telegram Rich HTML Formatting & Tag-Aware Chunking Pipeline (v1.7.3)",
+    "task": "Hoàn tất trọn vẹn 4 Phases nâng cấp định dạng Rich HTML cho Telegram Bot, đóng gói VSIX v1.7.3 và cài đặt vào Antigravity IDE.",
     "status": "completed",
     "files": [
-      "src/promptDispatcher.ts",
-      "src/config.ts",
-      "src/orchestrator.ts",
-      "src/extension.ts",
-      "src/workbenchCleaner.ts",
+      "src/telegramUtils.ts",
+      "src/telegramChatMirror.ts",
       "src/telegramBridge.ts",
-      "src/debugLogger.ts",
+      "src/telegramNotifier.ts",
+      "src/test/phase01_markdown_to_telegram_html.test.ts",
+      "src/test/phase02_html_tag_aware_chunk_splitter.test.ts",
+      "src/test/phase03_telegram_html_delivery_and_fallback.test.ts",
+      "src/test/phase04_telegram_rich_formatting_regression.test.ts",
       "package.json",
-      ".vscodeignore",
-      "antigravity-auto-plan-1.7.1.vsix"
+      "README.md",
+      "CHANGELOG.md",
+      "antigravity-auto-plan-1.7.3.vsix"
     ],
     "blockers": [],
-    "notes": "Hệ thống đã loại bỏ 100% sự phụ thuộc vào DOM Bridge injection (workbench.html) và OS Keyboard simulation. Chuyển đổi hoàn toàn sang các lệnh nội bộ của Antigravity IDE: antigravity.addContext, antigravity.triggerSend, antigravity.startNewConversation, antigravity.prioritized.chat.stop. Đã đóng gói file VSIX (~798 KB) và cài đặt thành công vào Antigravity IDE."
+    "notes": "Toàn bộ pipeline phân phối tin nhắn Telegram đã chuyển sang parse_mode: 'HTML'. Ký tự cú pháp Markdown rác (###, ---, raw **) được loại bỏ sạch sẽ, code blocks hiển thị đẹp với syntax highlighting class và escape entity an toàn (&amp;, &lt;, &gt;). Tag-aware splitter giữ nguyên tính toàn vẹn của cặp thẻ mở/đóng qua các chunk <= 3800 ký tự. Safe Fallback cơ chế zero-drop tự động bóc tách plain-text khi gặp Telegram HTTP 400. Đã đóng gói antigravity-auto-plan-1.7.3.vsix (807 KB) và cài đặt thành công vào Antigravity IDE."
   },
   "pending_tasks": [
     {
@@ -28,6 +30,59 @@
     }
   ],
   "recent_changes": [
+    {
+      "timestamp": "2026-11-05T00:21:00+07:00",
+      "type": "packaging_and_install",
+      "description": "Đóng gói extension thành file VSIX antigravity-auto-plan-1.7.3.vsix (807 KB) và cài đặt thành công vào Antigravity IDE (skul9x.antigravity-auto-plan@1.7.3).",
+      "files": [
+        "antigravity-auto-plan-1.7.3.vsix"
+      ]
+    },
+    {
+      "timestamp": "2026-11-05T00:17:00+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 04: End-to-End Formatting Regression, Verification & Packaging. Pass 11/11 tests toàn diện trong phase04_telegram_rich_formatting_regression.test.ts, cập nhật README.md, CHANGELOG.md, package.json lên v1.7.3.",
+      "files": [
+        "src/test/phase04_telegram_rich_formatting_regression.test.ts",
+        "README.md",
+        "CHANGELOG.md",
+        "package.json",
+        "plans/261104-2301-telegram-rich-html-formatting/phase-04-end-to-end-formatting-regression.md",
+        "plans/261104-2301-telegram-rich-html-formatting/plan.md"
+      ]
+    },
+    {
+      "timestamp": "2026-11-05T00:05:00+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 03: Delivery Pipelines Integration & Safe Plain-Text Fallback. Tích hợp parse_mode: 'HTML' vào TelegramChatMirror, TelegramBridge, TelegramNotifier và cơ chế zero-drop fallback plain-text trên HTTP 400.",
+      "files": [
+        "src/telegramChatMirror.ts",
+        "src/telegramBridge.ts",
+        "src/telegramNotifier.ts",
+        "src/test/phase03_telegram_html_delivery_and_fallback.test.ts",
+        "plans/261104-2301-telegram-rich-html-formatting/phase-03-delivery-pipelines-and-safe-fallback.md"
+      ]
+    },
+    {
+      "timestamp": "2026-11-04T23:31:00+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 02: HTML Tag-Aware Chunk Splitter. Viết splitHtmlMessage bảo đảm đóng/mở thẻ LIFO qua từng chunk <= 3800 ký tự và validateBalancedTelegramHtml.",
+      "files": [
+        "src/telegramUtils.ts",
+        "src/test/phase02_html_tag_aware_chunk_splitter.test.ts",
+        "plans/261104-2301-telegram-rich-html-formatting/phase-02-html-tag-aware-chunk-splitter.md"
+      ]
+    },
+    {
+      "timestamp": "2026-11-04T23:19:00+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 01: Markdown to Telegram HTML Converter Engine. Xây dựng markdownToTelegramHtml tốc độ < 5ms cho 50KB với zero dependencies.",
+      "files": [
+        "src/telegramUtils.ts",
+        "src/test/phase01_markdown_to_telegram_html.test.ts",
+        "plans/261104-2301-telegram-rich-html-formatting/phase-01-markdown-to-telegram-html-converter.md"
+      ]
+    },
     {
       "timestamp": "2026-11-04T22:48:00+07:00",
       "type": "bug_fix",
@@ -107,6 +162,18 @@
     }
   ],
   "decisions_made": [
+    {
+      "decision": "Nâng cấp Telegram delivery pipeline sang parse_mode: 'HTML' với markdownToTelegramHtml",
+      "reason": "Loại bỏ hoàn toàn ký tự cú pháp rác (###, ---, raw **), hỗ trợ syntax highlighting code blocks và format mobile bảng GFM đẹp mắt."
+    },
+    {
+      "decision": "Triển khai Tag-Aware HTML Splitter (splitHtmlMessage) theo cấu trúc LIFO",
+      "reason": "Bảo đảm các chunk tin nhắn (<= 3800 ký tự) luôn khép kín và mở lại đúng các thẻ HTML, triệt tiêu lỗi cú pháp entity khi chia nhỏ tin nhắn dài."
+    },
+    {
+      "decision": "Cơ chế Safe Fallback 100% zero-drop: bắt lỗi HTTP 400 và fallback tức thì sang plain-text",
+      "reason": "Bảo đảm không bao giờ làm mất tin nhắn của AI gửi đến người dùng kể cả khi Telegram API từ chối entity format."
+    },
     {
       "decision": "Chuyển 100% sang Native Chat API (antigravity.addContext, antigravity.triggerSend, antigravity.startNewConversation, antigravity.prioritized.chat.stop)",
       "reason": "Hoàn toàn focus-free, không can thiệp file hệ thống workbench.html, không phụ thuộc OS keyboard simulation, miễn nhiễm với thay đổi DOM/CSP."

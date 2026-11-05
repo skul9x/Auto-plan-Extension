@@ -2,7 +2,7 @@ import { Bot, GrammyError, HttpError } from 'grammy';
 import * as path from 'path';
 import { debugLogger, DebugLogger } from './debugLogger';
 import { getConfig, getTelegramConfig } from './config';
-import { splitMessage, stripMarkdownToPlainText } from './telegramUtils';
+import { splitMessage, stripMarkdownToPlainText, splitHtmlMessage, isEntityParseError } from './telegramUtils';
 
 /**
  * Checks whether an error represents a Telegram 429 Too Many Requests response.
@@ -696,11 +696,12 @@ export class ThrottledNotifier {
    * Broadcasts a new message to all active / authorized chats.
    */
   public async broadcastMessage(text: string, options?: any): Promise<any[]> {
-    const cleanText = stripMarkdownToPlainText(text);
+    const isHtml = options?.parse_mode === 'HTML';
+    const messageText = isHtml ? text : stripMarkdownToPlainText(text);
     const chatIds = this.getEffectiveChatIds();
     const results: any[] = [];
-    if (cleanText.length > 3800) {
-      const chunks = splitMessage(cleanText, 3800);
+    if (messageText.length > 3800) {
+      const chunks = isHtml ? splitHtmlMessage(messageText, 3800) : splitMessage(messageText, 3800);
       for (const chatId of chatIds) {
         for (const chunk of chunks) {
           const res = await this.safeSendMessage(chatId, chunk, options);
@@ -711,7 +712,7 @@ export class ThrottledNotifier {
       }
     } else {
       for (const chatId of chatIds) {
-        const res = await this.safeSendMessage(chatId, cleanText, options);
+        const res = await this.safeSendMessage(chatId, messageText, options);
         if (res) {
           results.push(res);
         }
@@ -881,32 +882,57 @@ export class ThrottledNotifier {
     );
   }
 
-  private async safeSendMessage(chatId: number | string, text: string, other?: any): Promise<any> {
+  public async safeSendMessage(chatId: number | string, text: string, other?: any): Promise<any> {
     if (!this.bot) {
       return null;
     }
-    const cleanText = stripMarkdownToPlainText(text);
-    const options = { ...other, parse_mode: undefined };
+    const isHtml = other?.parse_mode === 'HTML';
+    const messageText = isHtml ? text : stripMarkdownToPlainText(text);
+    const options = isHtml ? { ...other, parse_mode: 'HTML' } : { ...other, parse_mode: undefined };
+
     try {
-      return await this.bot.api.sendMessage(chatId, cleanText, options);
+      return await this.bot.api.sendMessage(chatId, messageText, options);
     } catch (err: any) {
       if (isRateLimitError(err)) {
         this.handleRateLimit(err);
-      } else {
-        this.logger.warn('TELEGRAM', `safeSendMessage failed for chat ${chatId}: ${err?.message || err}`);
+        return null;
       }
+      if (isHtml && isEntityParseError(err)) {
+        this.logger.warn(
+          'TELEGRAM',
+          `Entity parse error in safeSendMessage for chat ${chatId}: ${err?.message || err?.description || err}. Falling back to plain text.`
+        );
+        try {
+          const plainText = stripMarkdownToPlainText(text);
+          const fallbackOptions = { ...other, parse_mode: undefined };
+          return await this.bot.api.sendMessage(chatId, plainText, fallbackOptions);
+        } catch (fallbackErr: any) {
+          if (isRateLimitError(fallbackErr)) {
+            this.handleRateLimit(fallbackErr);
+          } else {
+            this.logger.warn(
+              'TELEGRAM',
+              `safeSendMessage plain text fallback failed for chat ${chatId}: ${fallbackErr?.message || fallbackErr}`
+            );
+          }
+          return null;
+        }
+      }
+      this.logger.warn('TELEGRAM', `safeSendMessage failed for chat ${chatId}: ${err?.message || err}`);
       return null;
     }
   }
 
-  private async safeEditMessage(chatId: number | string, messageId: number, text: string, other?: any): Promise<any> {
+  public async safeEditMessage(chatId: number | string, messageId: number, text: string, other?: any): Promise<any> {
     if (!this.bot) {
       return null;
     }
-    const cleanText = stripMarkdownToPlainText(text);
-    const options = { ...other, parse_mode: undefined };
+    const isHtml = other?.parse_mode === 'HTML';
+    const messageText = isHtml ? text : stripMarkdownToPlainText(text);
+    const options = isHtml ? { ...other, parse_mode: 'HTML' } : { ...other, parse_mode: undefined };
+
     try {
-      return await this.bot.api.editMessageText(chatId, messageId, cleanText, options);
+      return await this.bot.api.editMessageText(chatId, messageId, messageText, options);
     } catch (err: any) {
       if (
         err?.description?.includes('message is not modified') ||
@@ -924,6 +950,27 @@ export class ThrottledNotifier {
       if (isRateLimitError(err)) {
         this.handleRateLimit(err);
         return null;
+      }
+      if (isHtml && isEntityParseError(err)) {
+        this.logger.warn(
+          'TELEGRAM',
+          `Entity parse error in safeEditMessage for chat ${chatId}: ${err?.message || err?.description || err}. Falling back to plain text.`
+        );
+        try {
+          const plainText = stripMarkdownToPlainText(text);
+          const fallbackOptions = { ...other, parse_mode: undefined };
+          return await this.bot.api.editMessageText(chatId, messageId, plainText, fallbackOptions);
+        } catch (fallbackErr: any) {
+          if (isRateLimitError(fallbackErr)) {
+            this.handleRateLimit(fallbackErr);
+          } else {
+            this.logger.warn(
+              'TELEGRAM',
+              `safeEditMessage plain text fallback failed for chat ${chatId}: ${fallbackErr?.message || fallbackErr}`
+            );
+          }
+          return null;
+        }
       }
       this.logger.warn('TELEGRAM', `safeEditMessage failed for chat ${chatId}: ${err?.message || err}`);
       return null;

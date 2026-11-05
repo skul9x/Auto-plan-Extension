@@ -8,6 +8,12 @@
 
 import * as fs from 'fs';
 import { splitMarkdownSafely, DEFAULT_MAX_CHUNK_LENGTH } from './smartMarkdownChunker';
+import {
+  markdownToTelegramHtml,
+  splitHtmlMessage,
+  stripMarkdownToPlainText,
+  isEntityParseError
+} from './telegramUtils';
 import { TypingActionManager, typingActionManager as defaultTypingManager } from './typingActionManager';
 import {
   PromptOriginTracker,
@@ -66,19 +72,9 @@ export function extractRetryAfterMs(err: any): number {
 }
 
 /**
- * Checks whether an error is a Telegram Markdown entity parse failure (400 Bad Request).
+ * Re-export isEntityParseError from telegramUtils for backwards compatibility.
  */
-export function isEntityParseError(err: any): boolean {
-  if (!err) {
-    return false;
-  }
-  const desc = String(err.description || err.message || '').toLowerCase();
-  return (
-    desc.includes("can't parse entities") ||
-    desc.includes('entity') ||
-    desc.includes('bad request: can\'t parse')
-  );
-}
+export { isEntityParseError } from './telegramUtils';
 
 export interface ThrottledDelivererOptions {
   minChunkDelayMs?: number;
@@ -124,21 +120,28 @@ export class ThrottledResponseDeliverer {
     options?: {
       parse_mode?: string;
       onChunkSent?: (chunk: string, index: number, total: number) => void;
+      sleepFn?: (ms: number) => Promise<void>;
+      nowFn?: () => number;
+      minChunkDelayMs?: number;
     }
   ): Promise<any[]> {
     const results: any[] = [];
     const total = chunks.length;
+    const sleepFunc = options?.sleepFn ?? this.sleepFn;
+    const minDelay = options?.minChunkDelayMs ?? this.minChunkDelayMs;
+    const parseMode = options && 'parse_mode' in options ? options.parse_mode : 'HTML';
 
     for (let i = 0; i < total; i++) {
       const chunk = chunks[i];
 
       // Throttle: Enforce minChunkDelayMs between chunks for the same chat
-      if (i > 0) {
-        const lastSent = this.lastDeliveryPerChat.get(chatId) ?? 0;
-        const elapsed = Date.now() - lastSent;
-        const waitMs = this.minChunkDelayMs - elapsed;
+      const lastSent = this.lastDeliveryPerChat.get(chatId) ?? 0;
+      const now = options?.nowFn ? options.nowFn() : Date.now();
+      if (lastSent > 0) {
+        const elapsed = now - lastSent;
+        const waitMs = minDelay - elapsed;
         if (waitMs > 0) {
-          await this.sleepFn(waitMs);
+          await sleepFunc(waitMs);
         }
       }
 
@@ -146,9 +149,10 @@ export class ThrottledResponseDeliverer {
         bot,
         chatId,
         chunk,
-        options?.parse_mode ?? 'Markdown'
+        parseMode
       );
-      this.lastDeliveryPerChat.set(chatId, Date.now());
+      const sentTime = options?.nowFn ? options.nowFn() : Date.now();
+      this.lastDeliveryPerChat.set(chatId, sentTime);
       results.push(res);
 
       if (options?.onChunkSent) {
@@ -163,9 +167,10 @@ export class ThrottledResponseDeliverer {
     bot: any,
     chatId: string | number,
     chunk: string,
-    initialParseMode?: string
+    initialParseMode: string | undefined = 'HTML'
   ): Promise<any> {
     let parseMode: string | undefined = initialParseMode;
+    let currentChunk = chunk;
     let attempts = 0;
 
     while (attempts < this.maxRetries) {
@@ -176,9 +181,9 @@ export class ThrottledResponseDeliverer {
         }
 
         if (bot?.api && typeof bot.api.sendMessage === 'function') {
-          return await bot.api.sendMessage(chatId, chunk, sendOpts);
+          return await bot.api.sendMessage(chatId, currentChunk, sendOpts);
         } else if (typeof bot?.sendMessage === 'function') {
-          return await bot.sendMessage(chatId, chunk, sendOpts);
+          return await bot.sendMessage(chatId, currentChunk, sendOpts);
         } else {
           throw new Error('Bot does not expose sendMessage or bot.api.sendMessage');
         }
@@ -188,9 +193,12 @@ export class ThrottledResponseDeliverer {
         // 1. Rate Limit handling (HTTP 429)
         if (isRateLimitError(err)) {
           const retryAfterMs = extractRetryAfterMs(err);
-          this.logger?.warn?.(
-            `Telegram 429 Too Many Requests for chat ${chatId}. Waiting ${retryAfterMs}ms before retry (${attempts}/${this.maxRetries})`
-          );
+          const warnMsg = `Telegram 429 Too Many Requests for chat ${chatId}. Waiting ${retryAfterMs}ms before retry (${attempts}/${this.maxRetries})`;
+          if (this.logger?.warn) {
+            this.logger.warn(warnMsg);
+          } else {
+            console.warn(warnMsg);
+          }
           if (attempts >= this.maxRetries) {
             throw err;
           }
@@ -200,10 +208,14 @@ export class ThrottledResponseDeliverer {
 
         // 2. Entity Parse Error handling: retry once as plain text
         if (isEntityParseError(err) && parseMode) {
-          this.logger?.warn?.(
-            `Telegram entity parse error. Falling back to plain text delivery: ${err?.message || err}`
-          );
+          const warnMsg = `Telegram entity parse error for chat ${chatId}: ${err?.message || err?.description || err}. Falling back to plain text delivery.`;
+          if (this.logger?.warn) {
+            this.logger.warn(warnMsg);
+          } else {
+            console.warn(warnMsg);
+          }
           parseMode = undefined;
+          currentChunk = stripMarkdownToPlainText(currentChunk);
           continue;
         }
 
@@ -217,6 +229,11 @@ export class ThrottledResponseDeliverer {
   }
 }
 
+export let defaultResponseDeliverer = new ThrottledResponseDeliverer();
+export function resetDefaultResponseDeliverer(): void {
+  defaultResponseDeliverer = new ThrottledResponseDeliverer();
+}
+
 export interface DeliverChunkedResponseOptions {
   header?: string;
   prefix?: string;
@@ -224,13 +241,15 @@ export interface DeliverChunkedResponseOptions {
   minChunkDelayMs?: number;
   parse_mode?: string;
   sleepFn?: (ms: number) => Promise<void>;
+  nowFn?: () => number;
   logger?: any;
   onChunkSent?: (chunk: string, index: number, total: number) => void;
+  deliverer?: ThrottledResponseDeliverer;
 }
 
 /**
- * Formats, chunks, and delivers an assistant response to Telegram with code fence preservation
- * and rate-limited throttling.
+ * Formats, chunks, and delivers an assistant response to Telegram with rich HTML formatting
+ * (or specified parse_mode) and rate-limited throttling.
  *
  * @param bot The Telegram bot instance (Bot or mock).
  * @param chatId Target chat ID.
@@ -255,6 +274,7 @@ export async function deliverChunkedResponse(
       : DEFAULT_AI_RESPONSE_HEADER;
 
   const maxChunkLength = options?.maxChunkLength ?? DEFAULT_MAX_CHUNK_LENGTH;
+  const parseMode = options && 'parse_mode' in options ? options.parse_mode : 'HTML';
 
   let fullText = text.trim();
   if (prefix && prefix.length > 0) {
@@ -263,20 +283,35 @@ export async function deliverChunkedResponse(
     }
   }
 
-  const chunks = splitMarkdownSafely(fullText, maxChunkLength);
+  let chunks: string[];
+  if (parseMode === 'HTML') {
+    const htmlContent = markdownToTelegramHtml(fullText);
+    chunks = splitHtmlMessage(htmlContent, maxChunkLength);
+  } else {
+    chunks = splitMarkdownSafely(fullText, maxChunkLength);
+  }
+
   if (chunks.length === 0) {
     return;
   }
 
-  const deliverer = new ThrottledResponseDeliverer({
-    minChunkDelayMs: options?.minChunkDelayMs ?? DEFAULT_MIN_CHUNK_DELAY_MS,
-    sleepFn: options?.sleepFn,
-    logger: options?.logger
-  });
+  const deliverer = options?.deliverer ?? defaultResponseDeliverer;
+  if (options?.sleepFn) {
+    (deliverer as any).sleepFn = options.sleepFn;
+  }
+  if (options?.logger) {
+    (deliverer as any).logger = options.logger;
+  }
+  if (options?.minChunkDelayMs !== undefined) {
+    deliverer.setMinChunkDelayMs(options.minChunkDelayMs);
+  }
 
   await deliverer.deliverChunks(bot, chatId, chunks, {
-    parse_mode: options?.parse_mode ?? 'Markdown',
-    onChunkSent: options?.onChunkSent
+    parse_mode: parseMode,
+    onChunkSent: options?.onChunkSent,
+    sleepFn: options?.sleepFn,
+    nowFn: options?.nowFn,
+    minChunkDelayMs: options?.minChunkDelayMs
   });
 }
 
@@ -628,6 +663,8 @@ export class TelegramChatMirror {
         await deliverChunkedResponse(this.bot, chatId, responseText, {
           prefix: effectivePrefix,
           minChunkDelayMs: this.deliverer.getMinChunkDelayMs(),
+          deliverer: this.deliverer,
+          logger: this.logger,
           ...options
         });
       } catch (err: any) {

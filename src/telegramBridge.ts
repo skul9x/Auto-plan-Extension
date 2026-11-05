@@ -11,7 +11,14 @@ import { getWorkbenchPath } from './workbenchInjector';
 import { TelegramPlanManager, telegramPlanManager } from './telegramPlanManager';
 import { PromptDispatcher, promptDispatcher as defaultPromptDispatcher } from './promptDispatcher';
 import { KeyboardManager, keyboardManager as defaultKeyboardManager } from './keyboardManager';
-import { splitMessage, sanitizeTelegramInput, stripMarkdownToPlainText } from './telegramUtils';
+import {
+  splitMessage,
+  sanitizeTelegramInput,
+  stripMarkdownToPlainText,
+  markdownToTelegramHtml,
+  splitHtmlMessage,
+  isEntityParseError
+} from './telegramUtils';
 import { ThrottledNotifier, ThrottledNotifierOptions } from './telegramNotifier';
 import { getDefaultBrainDir, getTranscriptPath, findLatestConversation, findLatestConversationAsync } from './transcriptWatcher';
 import {
@@ -2137,14 +2144,39 @@ export class TelegramBridge {
         cleanupResources();
 
         if (contentToSend && contentToSend.trim()) {
-          const plainText = stripMarkdownToPlainText(contentToSend);
-          if (plainText && plainText.trim()) {
-            const chunks = splitMessage(plainText, 3800);
+          const html = markdownToTelegramHtml(contentToSend);
+          const chunks = html && html.trim() ? splitHtmlMessage(html, 3800) : [];
+          if (chunks.length > 0) {
             for (const chunk of chunks) {
               try {
-                await ctx.reply(chunk);
+                await ctx.reply(chunk, { parse_mode: 'HTML' });
               } catch (replyErr: any) {
-                this.logger.warn('TELEGRAM', `Failed to send response chunk: ${replyErr?.message || replyErr}`);
+                if (isEntityParseError(replyErr)) {
+                  this.logger.warn(
+                    'TELEGRAM',
+                    `Entity parse error when replying to chat ${ctx.chat?.id}: ${replyErr?.message || replyErr?.description || replyErr}. Falling back to plain text.`
+                  );
+                  try {
+                    const fallbackPlain = stripMarkdownToPlainText(chunk);
+                    await ctx.reply(fallbackPlain || chunk);
+                  } catch (fallbackErr: any) {
+                    this.logger.warn('TELEGRAM', `Failed to send fallback plain text chunk: ${fallbackErr?.message || fallbackErr}`);
+                  }
+                } else {
+                  this.logger.warn('TELEGRAM', `Failed to send response chunk: ${replyErr?.message || replyErr}`);
+                }
+              }
+            }
+          } else {
+            const fallbackPlain = stripMarkdownToPlainText(contentToSend);
+            if (fallbackPlain && fallbackPlain.trim()) {
+              const plainChunks = splitMessage(fallbackPlain, 3800);
+              for (const c of plainChunks) {
+                try {
+                  await ctx.reply(c);
+                } catch (replyErr: any) {
+                  this.logger.warn('TELEGRAM', `Failed to send response chunk: ${replyErr?.message || replyErr}`);
+                }
               }
             }
           }

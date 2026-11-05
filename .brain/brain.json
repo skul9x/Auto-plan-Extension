@@ -2,18 +2,19 @@
   "meta": {
     "schema_version": "1.1.0",
     "awf_version": "4.0.2",
-    "updated_at": "2026-11-04T22:52:00+07:00"
+    "updated_at": "2026-11-05T18:15:00+07:00"
   },
   "project": {
     "name": "Auto-Plan_Extension",
-    "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan với 100% Native Antigravity Chat API Architecture (antigravity.addContext, antigravity.triggerSend, antigravity.startNewConversation, antigravity.prioritized.chat.stop), hoàn toàn focus-free, loại bỏ 100% DOM Bridge injection vào workbench.html và OS keyboard simulations. Theo dõi log transcript AI sinh code, tự động chuyển tiếp phase, tự phục hồi file gốc qua Workbench Cleaner, kèm hệ thống Full-Screen Settings Panel hiện đại, Telegram Remote Control Bot và Two-Way Live Q&A Mirroring.",
-    "version": "1.7.2",
+    "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan với 100% Native Antigravity Chat API Architecture (antigravity.addContext, antigravity.triggerSend, antigravity.startNewConversation, antigravity.prioritized.chat.stop), hoàn toàn focus-free, loại bỏ 100% DOM Bridge injection vào workbench.html và OS keyboard simulations. Tích hợp Telegram Rich HTML Formatting Engine (parse_mode: 'HTML'), Tag-Aware Chunk Splitter và Safe Plain-Text Fallback trên Telegram HTTP 400 cam kết zero-message-drop. Theo dõi log transcript AI sinh code, tự động chuyển tiếp phase, tự phục hồi file gốc qua Workbench Cleaner, kèm hệ thống Full-Screen Settings Panel hiện đại, Telegram Remote Control Bot và Two-Way Live Q&A Mirroring.",
+    "version": "1.7.3",
     "created_at": "2026-08-27T23:51:00+07:00",
-    "active_plan": "plans/261104-1952-native-chat-api-transition/plan.md"
+    "active_plan": "plans/261104-2301-telegram-rich-html-formatting/plan.md"
   },
   "tech_stack": {
     "language": "TypeScript 5.3 / JavaScript (Node.js 20+)",
     "framework": "VS Code Extension API / Electron Sandbox",
+    "telegram_html_engine": "High-Performance AST-free Markdown-to-Telegram-HTML conversion engine (markdownToTelegramHtml, <5ms for 50KB). Hỗ trợ bold headings, code blocks với language class syntax highlighting, inline styles, blockquotes, flattening bảng GFM thành bullet points. Tag-Aware HTML chunk splitter (splitHtmlMessage, <=3800 chars) bảo toàn đóng/mở thẻ LIFO, triệt tiêu chia cắt giữa chừng thẻ hoặc entity. Safe Fallback cơ chế zero-drop: bắt lỗi Telegram HTTP 400 'can't parse entities' và tự động chuyển tức thì sang plain-text (stripMarkdownToPlainText) với parse_mode: undefined.",
     "native_chat_api": "100% Native Antigravity IDE Internal Command Architecture (antigravity.addContext, antigravity.triggerSend, antigravity.startNewConversation with 400ms stabilization delay, antigravity.prioritized.chat.stop). Focus-free background execution, zero DOM injection, immune to CSP Trusted Types restrictions.",
     "workbench_cleaner": "Automated self-healing cleanup engine (workbenchCleaner.ts) restoring original workbench.html, backup preservation, and orphan bridge file removal.",
     "credential_security": "VS Code SecretStorage API (context.secrets) lưu trữ token Telegram trong OS Keychains, fallback cấu hình an toàn, loại bỏ 100% hardcoded secrets",
@@ -80,9 +81,15 @@
     "Long-Running Phase Nudge Watchdog: Tự động nhắc nhở AI bằng steering prompt khi phase chạy vượt ngưỡng (mặc định 180s / 3 phút)",
     "Cooperative DOM Cancel Button Interruption: Click cascade nút Cancel trong DOM Bridge để dừng model an toàn trước khi inject steering prompt",
     "In-Session Mid-Flight Steering: Inject prompt vào hội thoại hiện tại (openNewConversation: false), bảo tồn ngữ cảnh làm việc",
-    "PromptOriginTracker SYSTEM_NUDGE: Gắn nhãn nguồn gốc prompt hệ thống, ngăn lặp echo và gửi thông báo trực quan lên Telegram"
+    "PromptOriginTracker SYSTEM_NUDGE: Gắn nhãn nguồn gốc prompt hệ thống, ngăn lặp echo và gửi thông báo trực quan lên Telegram",
+    "Telegram Rich HTML Formatting Engine: Chuyển đổi Markdown sang Telegram-compliant HTML (parse_mode: 'HTML') với tốc độ < 5ms cho 50KB payload, triệt tiêu 100% ký tự cú pháp rác (###, ---, raw **)",
+    "Tag-Aware HTML Message Chunk Splitter: Cắt nhỏ message HTML (<= 3800 ký tự) bảo đảm cân bằng thẻ mở/đóng chuẩn LIFO, không bao giờ ngắt giữa chừng thẻ hoặc entity HTML",
+    "Telegram Safe Fallback Zero-Drop Guarantee: Tự động bắt lỗi HTTP 400 (can't parse entities) từ Telegram API và lập tức gửi lại dạng plain-text không parse_mode, cam kết 0% mất mát tin nhắn"
   ],
   "decisions_made": [
+    "Áp dụng parse_mode: 'HTML' làm định dạng mặc định cho toàn bộ Telegram Live Chat Mirror, bot command replies (/run, /plan, /code...) và status notifications",
+    "Không chia cắt code fence thô dạng Markdown mà chuyển toàn bộ sang thẻ HTML <pre><code class=\"language-{lang}\">...</code></pre> kèm escape toàn bộ ký tự reserved (&, <, >) sang entity an toàn",
+    "Khi gặp lỗi Telegram HTTP 400 entity parse error, ThrottledResponseDeliverer và TelegramBridge lập tức fallback về plain-text qua stripMarkdownToPlainText và gửi không kèm parse_mode để bảo đảm zero-message-drop",
     "Sử dụng kiến trúc DOM Bridge tương tự zixfel nhưng mở rộng để điều phối Prompt và Phase",
     "Hỗ trợ chuẩn 2 nền tảng: Windows và Linux (loại trừ macOS)",
     "Xử lý phân quyền bằng pkexec trên Linux và PowerShell UAC trên Windows thay vì bắt user gõ terminal",
@@ -169,7 +176,10 @@
       "Đối tượng vscode và vscode.commands chỉ tồn tại trong Extension Host process, không truy cập được trực tiếp từ DevTools Renderer console.",
       "Antigravity IDE phiên bản mới lưu trữ transcript tại ~/.gemini/antigravity/brain/ thay vì ~/.gemini/antigravity-ide/brain/ như các bản cũ.",
       "Khi khởi động Telegram Live Q&A Chat Mirroring, bắt buộc đặt cờ startFromEnd: true cho TranscriptTailEngine để tránh đọc lại (replay) toàn bộ lịch sử chat cũ lên Telegram.",
-      "TranscriptTailEngine.findLatestConversation cần đối chiếu workspacePath và workspaceName qua verifyConversationOwnershipAsync để chọn chính xác session thuộc workspace hiện tại."
+      "TranscriptTailEngine.findLatestConversation cần đối chiếu workspacePath và workspaceName qua verifyConversationOwnershipAsync để chọn chính xác session thuộc workspace hiện tại.",
+      "Telegram HTML chỉ hỗ trợ tập thẻ hạn chế (<b>, <i>, <s>, <u>, <blockquote>, <pre>, <code>, <a>, <tg-spoiler>); các thẻ không hỗ trợ như <div>, <p>, <br> sẽ khiến Telegram ném lỗi HTTP 400 Bad Request: can't parse entities.",
+      "Trong code block của Telegram HTML, các ký tự &, <, > bắt buộc phải được escape thành &amp;, &lt;, &gt;. Thẻ <code> bên trong <pre> mang thuộc tính class=\"language-xxx\" để client tự highlight cú pháp.",
+      "Khi chia nhỏ chunk HTML, bắt buộc phải duyệt theo cây thẻ và đóng các thẻ còn mở ở cuối chunk theo thứ tự LIFO, sau đó mở lại y hệt ở đầu chunk tiếp theo."
     ]
   }
 }

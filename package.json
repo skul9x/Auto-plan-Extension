@@ -2,7 +2,7 @@
   "name": "antigravity-auto-plan",
   "displayName": "Antigravity Auto-Plan Runner",
   "description": "Automate repeated prompts and monitor completion in Antigravity IDE",
-  "version": "1.7.1",
+  "version": "1.7.3",
   "publisher": "skul9x",
   "engines": {
     "vscode": "^1.80.0"
@@ -478,6 +478,7 @@
     "compile": "node ./node_modules/typescript/bin/tsc -p ./",
     "watch": "node ./node_modules/typescript/bin/tsc -watch -p ./",
     "package": "node scripts/package.js package --allow-missing-repository --no-git-tag-version",
+    "test:phase04-telegram-rich": "node out/test/phase04_telegram_rich_formatting_regression.test.js",
     "test": "node out/test/phase05_e2e_cross_platform_release.test.js",
     "test:phase01-native": "node out/test/phase01_native_dispatcher_and_config.test.js",
     "test:phase02-native": "node out/test/phase02_native_ui_and_settings_simplification.test.js",

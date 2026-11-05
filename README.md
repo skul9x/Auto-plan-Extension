@@ -1,7 +1,7 @@
 # Antigravity Auto-Plan Extension
 
 <p align="center">
-  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/version-1.7.3-blue.svg?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/version-1.7.4-blue.svg?style=flat-square" alt="Version"></a>
   <a href="https://code.visualstudio.com/"><img src="https://img.shields.io/badge/VS_Code-^1.80.0-informational.svg?style=flat-square" alt="VS Code Compatibility"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.3.3-3178C6.svg?style=flat-square" alt="TypeScript"></a>
   <a href="https://grammy.dev/"><img src="https://img.shields.io/badge/Telegram-grammY_1.21.0-26A5E4.svg?style=flat-square" alt="grammY Framework"></a>
@@ -14,6 +14,7 @@
 ## 📌 Table of Contents
 - [Overview](#overview)
 - [Key Features](#key-features)
+  - [👑 Telegram Single-Leader Gating & Clean Delivery (v1.7.4)](#-telegram-single-leader-gating--clean-delivery-v174)
   - [🎨 Rich Telegram HTML Formatting & Zero-Drop Fallback (v1.7.3)](#-rich-telegram-html-formatting--zero-drop-fallback-v173)
   - [🛡️ Hardened DOM Bridge & Two-Phase Verification (v1.7.1)](#️-hardened-dom-bridge--two-phase-verification-v171)
   - [⚡ Native RPC Auto-Submit & Permission Approval (v1.7.0)](#-native-rpc-auto-submit--permission-approval-v170)
@@ -60,6 +61,12 @@ Equipped with an in-process DOM injection engine, a 3-tier resilient transport f
 ---
 
 ## Key Features
+
+### 👑 Telegram Single-Leader Gating & Clean Delivery (v1.7.4)
+- **Single-Leader Telegram Delivery Gating**: Enforces single-leader delivery policy across `ThrottledNotifier` and outbound Telegram dispatchers. In multi-window environments, non-leader (Standby) windows are cleanly muted, completely eliminating duplicate notifications and redundant `🔄 Live Progress` message containers.
+- **Clean Final-Only Delivery Mode (`autoplan.telegram.liveProgressMode: 'final_only'`)**: Intermediate throttled message edits are replaced with a non-intrusive continuous Telegram typing indicator (`sendChatAction('typing')`), delivering exactly one comprehensive Rich HTML summary upon phase completion.
+- **Default Nudge Watchdog Deactivation (`autoplan.longPhaseNudgeEnabled: false`)**: The 180-second mid-flight steering nudge is disabled by default to preserve uninterrupted AI context generation, while retaining full manual opt-in capability.
+- **Zero-Drop Resilient Delivery**: Any Telegram entity parse error (HTTP 400) automatically falls back to plain-text formatting with zero message loss.
 
 ### 🎨 Rich Telegram HTML Formatting & Zero-Drop Fallback (v1.7.3)
 - **Telegram Rich HTML Formatting Engine (`parse_mode: 'HTML'`)**: High-speed converter (`markdownToTelegramHtml`) transforming model Markdown into Telegram-compliant HTML (< 5ms for 50KB payloads) with zero external runtime dependencies.
@@ -399,7 +406,8 @@ All settings are available under the `autoplan.*` namespace in VS Code Settings 
 | `autoplan.telegram.enableChatMirror` | `boolean` | `true` | Enable or disable live Q&A chat mirroring to Telegram. |
 | `autoplan.telegram.mirrorIncludePcPrompts` | `boolean` | `true` | Whether to forward prompts entered on the PC keyboard (`💻 You (on PC): ...`). |
 | `autoplan.telegram.chatMirrorPrefix` | `string` | `"🤖 Antigravity:"` | Customizable header prefix for assistant responses mirrored to Telegram. |
-| `autoplan.longPhaseNudgeEnabled` | `boolean` | `true` | Enables or disables automatic nudging for phases running longer than threshold. |
+| `autoplan.telegram.liveProgressMode` | `string` | `"final_only"` | Telegram progress delivery mode: `'final_only'` (continuous typing indicator + 1 final Rich HTML summary) or `'live_edit'` (throttled message edits). |
+| `autoplan.longPhaseNudgeEnabled` | `boolean` | `false` | Enables or disables automatic nudging for phases running longer than threshold (default: disabled). |
 | `autoplan.longPhaseThresholdSeconds` | `number` | `180` | Threshold in seconds (3 minutes) before triggering mid-flight nudge. |
 | `autoplan.longPhaseNudgeMessage` | `string` | *(Prompt)* | Exact prompt message dispatched to the IDE during long phase nudge. |
 | `autoplan.longPhaseNudgeRecurring` | `boolean` | `false` | Whether to trigger nudge only once per phase (`false`) or periodically (`true`). |

@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import * as http from 'http';
-import { getConfig, getTelegramConfig, TelegramConfig, SecretStorageManager, secretStorageManager } from './config';
+import { getConfig, getTelegramConfig, TelegramConfig, TelegramLiveProgressMode, SecretStorageManager, secretStorageManager } from './config';
 import { debugLogger, DebugLogger } from './debugLogger';
 import { PORT_REGISTRY_FILENAME, PortRegistryData, TelegramLeaderEntry } from './bridgeServer';
 import { getWorkbenchPath } from './workbenchInjector';
@@ -407,6 +407,7 @@ export interface TelegramBridgeOptions {
   workspacePath?: string;
   isMultiWorkspace?: boolean | (() => boolean);
   port?: number;
+  liveProgressMode?: TelegramLiveProgressMode;
 }
 
 /**
@@ -463,6 +464,7 @@ export class TelegramBridge {
   private enableChatMirror: boolean = true;
   private mirrorIncludePcPrompts: boolean = true;
   private chatMirrorPrefix: string = DEFAULT_AI_RESPONSE_HEADER;
+  private liveProgressMode: TelegramLiveProgressMode = 'final_only';
   private tailEngine?: TranscriptTailEngine;
   private workspaceName?: string;
   private workspacePath?: string;
@@ -568,6 +570,10 @@ export class TelegramBridge {
     }
     if (options.notifier !== undefined) {
       this.notifier = options.notifier;
+      if (this.notifier) {
+        this.notifier.setLeader(this.isLeader);
+        this.notifier.setIsLeaderFn(() => this.isLeader);
+      }
     }
     if (options.orchestrator !== undefined) {
       this.attachOrchestrator(options.orchestrator);
@@ -604,6 +610,10 @@ export class TelegramBridge {
     }
     if (options.chatMirror !== undefined) {
       this.chatMirror = options.chatMirror;
+      if (this.chatMirror) {
+        this.chatMirror.setLeader(this.isLeader);
+        this.chatMirror.setIsLeaderFn(() => this.isLeader);
+      }
     }
     if (options.tailEngine !== undefined) {
       this.tailEngine = options.tailEngine;
@@ -632,6 +642,12 @@ export class TelegramBridge {
     if (options.chatMirrorPrefix !== undefined) {
       this.chatMirrorPrefix = options.chatMirrorPrefix;
     }
+    if (options.liveProgressMode !== undefined) {
+      this.liveProgressMode = options.liveProgressMode;
+      if (this.notifier) {
+        this.notifier.setLiveProgressMode(this.liveProgressMode);
+      }
+    }
     if (this.chatMirror) {
       this.chatMirror.setWorkspace(this.workspaceName, this.isMultiWorkspace, this.workspacePath);
       this.chatMirror.updateConfig({
@@ -658,6 +674,21 @@ export class TelegramBridge {
 
   public setChatMirror(mirror: TelegramChatMirror | null): void {
     this.chatMirror = mirror;
+    if (this.chatMirror) {
+      this.chatMirror.setLeader(this.isLeader);
+      this.chatMirror.setIsLeaderFn(() => this.isLeader);
+    }
+  }
+
+  public getLiveProgressMode(): TelegramLiveProgressMode {
+    return this.liveProgressMode;
+  }
+
+  public setLiveProgressMode(mode: TelegramLiveProgressMode): void {
+    this.liveProgressMode = mode;
+    if (this.notifier) {
+      this.notifier.setLiveProgressMode(mode);
+    }
   }
 
   /**
@@ -673,9 +704,11 @@ export class TelegramBridge {
     this.enableChatMirror = config.enableChatMirror ?? true;
     this.mirrorIncludePcPrompts = config.mirrorIncludePcPrompts ?? true;
     this.chatMirrorPrefix = config.chatMirrorPrefix || DEFAULT_AI_RESPONSE_HEADER;
+    this.liveProgressMode = config.liveProgressMode || 'final_only';
     if (this.notifier) {
       this.notifier.setThrottleMs(this.throttleMs);
       this.notifier.setChatIds(this.allowedUsers);
+      this.notifier.setLiveProgressMode(this.liveProgressMode);
     }
     if (this.chatMirror) {
       this.chatMirror.setAllowedUsers(this.allowedUsers);
@@ -1107,6 +1140,8 @@ export class TelegramBridge {
     if (this.bot) {
       this.notifier.setBot(this.bot);
     }
+    this.notifier.setLeader(this.isLeader);
+    this.notifier.setIsLeaderFn(() => this.isLeader);
     if (this.orchestrator) {
       this.notifier.attachOrchestrator(this.orchestrator);
     }
@@ -1221,6 +1256,10 @@ export class TelegramBridge {
    */
   public async handlePhaseNudged(payload: { phase: any; phaseIndex?: number; message?: string }): Promise<boolean> {
     if (!payload || !payload.phase) {
+      return false;
+    }
+    if (!this.isLeader) {
+      this.logger.info('TELEGRAM', 'Phase nudge notification skipped on standby window');
       return false;
     }
     const { phase, phaseIndex, message } = payload;
@@ -1496,6 +1535,13 @@ export class TelegramBridge {
         if (isSelf) {
           currentLeader.updatedAt = now;
           this.writeRegistry(registryPath, data);
+          this.isLeader = true;
+          if (this.notifier) {
+            this.notifier.setLeader(true);
+          }
+          if (this.chatMirror) {
+            this.chatMirror.setLeader(true);
+          }
           return true;
         }
 
@@ -1505,6 +1551,13 @@ export class TelegramBridge {
 
         if (alive && !stale) {
           // Primary window is active; standby
+          this.isLeader = false;
+          if (this.notifier) {
+            this.notifier.setLeader(false);
+          }
+          if (this.chatMirror) {
+            this.chatMirror.setLeader(false);
+          }
           return false;
         }
       }
@@ -1518,9 +1571,23 @@ export class TelegramBridge {
       };
 
       this.writeRegistry(registryPath, data);
+      this.isLeader = true;
+      if (this.notifier) {
+        this.notifier.setLeader(true);
+      }
+      if (this.chatMirror) {
+        this.chatMirror.setLeader(true);
+      }
       return true;
     } catch (err: any) {
       this.logger.warn('TELEGRAM', `Failed during leader election check: ${err?.message || err}`, err);
+      this.isLeader = false;
+      if (this.notifier) {
+        this.notifier.setLeader(false);
+      }
+      if (this.chatMirror) {
+        this.chatMirror.setLeader(false);
+      }
       return false;
     }
   }
@@ -1547,6 +1614,13 @@ export class TelegramBridge {
       }
     } catch (err: any) {
       this.logger.warn('TELEGRAM', `Failed to release leader ownership: ${err?.message || err}`, err);
+    }
+    this.isLeader = false;
+    if (this.notifier) {
+      this.notifier.setLeader(false);
+    }
+    if (this.chatMirror) {
+      this.chatMirror.setLeader(false);
     }
   }
 
@@ -1600,6 +1674,12 @@ export class TelegramBridge {
       if (this.tryAcquireLeadership()) {
         this.stopStandbyPolling();
         this.isLeader = true;
+        if (this.notifier) {
+          this.notifier.setLeader(true);
+        }
+        if (this.chatMirror) {
+          this.chatMirror.setLeader(true);
+        }
         this.logger.info(
           'TELEGRAM',
           `Standby instance successfully acquired Telegram leader role (window: ${this.windowKey})`
@@ -1720,12 +1800,18 @@ export class TelegramBridge {
           bot: this.bot,
           chatIds: this.allowedUsers,
           throttleMs: this.throttleMs,
-          logger: this.logger
+          logger: this.logger,
+          isLeader: this.isLeader,
+          isLeaderFn: () => this.isLeader,
+          liveProgressMode: this.liveProgressMode
         });
       } else {
         this.notifier.setBot(this.bot);
         this.notifier.setThrottleMs(this.throttleMs);
         this.notifier.setChatIds(this.allowedUsers);
+        this.notifier.setLeader(this.isLeader);
+        this.notifier.setIsLeaderFn(() => this.isLeader);
+        this.notifier.setLiveProgressMode(this.liveProgressMode);
       }
 
       if (this.orchestrator) {
@@ -1754,12 +1840,16 @@ export class TelegramBridge {
           workspacePath: this.workspacePath,
           isMultiWorkspace: this.isMultiWorkspace,
           registryPath: this.getPortRegistryPath(),
-          logger: this.logger
+          logger: this.logger,
+          isLeader: this.isLeader,
+          isLeaderFn: () => this.isLeader
         });
       } else {
         this.chatMirror.setBot(this.bot);
         this.chatMirror.setAllowedUsers(this.allowedUsers);
         this.chatMirror.setWorkspace(this.workspaceName, this.isMultiWorkspace, this.workspacePath);
+        this.chatMirror.setLeader(this.isLeader);
+        this.chatMirror.setIsLeaderFn(() => this.isLeader);
       }
 
       this.logger.info('TELEGRAM', 'Telegram Bot initialized successfully with security middleware, plan handlers, chat dispatchers, throttled notifier, and chat mirror');
@@ -2409,6 +2499,9 @@ export class TelegramBridge {
     text: string,
     other?: any
   ): Promise<any[]> {
+    if (!this.isLeader) {
+      return [];
+    }
     if (!this.bot) {
       throw new Error('Telegram bot is not initialized');
     }
@@ -2497,6 +2590,12 @@ export class TelegramBridge {
     const acquired = this.tryAcquireLeadership();
     if (acquired) {
       this.isLeader = true;
+      if (this.notifier) {
+        this.notifier.setLeader(true);
+      }
+      if (this.chatMirror) {
+        this.chatMirror.setLeader(true);
+      }
       this.logger.info(
         'TELEGRAM',
         `Acquired primary Telegram leader ownership (window: ${this.windowKey}, PID: ${process.pid})`
@@ -2508,6 +2607,12 @@ export class TelegramBridge {
       this.startPolling();
     } else {
       this.isLeader = false;
+      if (this.notifier) {
+        this.notifier.setLeader(false);
+      }
+      if (this.chatMirror) {
+        this.chatMirror.setLeader(false);
+      }
       this.logger.info(
         'TELEGRAM',
         `Standing by as Telegram follower; another instance holds active polling ownership.`
@@ -2539,6 +2644,12 @@ export class TelegramBridge {
     if (this.isLeader) {
       this.releaseLeadership();
       this.isLeader = false;
+      if (this.notifier) {
+        this.notifier.setLeader(false);
+      }
+      if (this.chatMirror) {
+        this.chatMirror.setLeader(false);
+      }
     }
 
     if (this.bot && this.isPolling) {

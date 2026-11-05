@@ -5,6 +5,7 @@ import * as os from 'os';
 import { getWorkbenchPath } from './workbenchInjector';
 
 export type ExecutionMode = 'auto' | 'domBridge' | 'nativeCommand' | 'keyboard';
+export type TelegramLiveProgressMode = 'final_only' | 'live_edit';
 
 export interface AutoPlanConfig {
   promptText: string;
@@ -47,6 +48,7 @@ export interface AutoPlanConfig {
   telegramEnableChatMirror?: boolean;
   telegramMirrorIncludePcPrompts?: boolean;
   telegramChatMirrorPrefix?: string;
+  telegramLiveProgressMode?: TelegramLiveProgressMode;
   longPhaseNudgeEnabled?: boolean;
   longPhaseThresholdSeconds?: number;
   longPhaseNudgeMessage?: string;
@@ -103,7 +105,8 @@ export const DEFAULT_CONFIG: AutoPlanConfig = {
   telegramEnableChatMirror: true,
   telegramMirrorIncludePcPrompts: true,
   telegramChatMirrorPrefix: '🤖 Antigravity:',
-  longPhaseNudgeEnabled: true,
+  telegramLiveProgressMode: 'final_only',
+  longPhaseNudgeEnabled: false,
   longPhaseThresholdSeconds: 180,
   longPhaseNudgeMessage: DEFAULT_LONG_PHASE_NUDGE_MESSAGE,
   longPhaseNudgeRecurring: false,
@@ -173,7 +176,8 @@ export function getConfig(): AutoPlanConfig {
     telegramEnableChatMirror: config.get<boolean>('telegram.enableChatMirror', config.get<boolean>('telegramEnableChatMirror', DEFAULT_CONFIG.telegramEnableChatMirror ?? true)),
     telegramMirrorIncludePcPrompts: config.get<boolean>('telegram.mirrorIncludePcPrompts', config.get<boolean>('telegramMirrorIncludePcPrompts', DEFAULT_CONFIG.telegramMirrorIncludePcPrompts ?? true)),
     telegramChatMirrorPrefix: config.get<string>('telegram.chatMirrorPrefix', config.get<string>('telegramChatMirrorPrefix', DEFAULT_CONFIG.telegramChatMirrorPrefix || '🤖 Antigravity:')),
-    longPhaseNudgeEnabled: config.get<boolean>('longPhaseNudgeEnabled', DEFAULT_CONFIG.longPhaseNudgeEnabled ?? true),
+    telegramLiveProgressMode: config.get<TelegramLiveProgressMode>('telegram.liveProgressMode', config.get<TelegramLiveProgressMode>('telegramLiveProgressMode', DEFAULT_CONFIG.telegramLiveProgressMode ?? 'final_only')),
+    longPhaseNudgeEnabled: config.get<boolean>('longPhaseNudgeEnabled', DEFAULT_CONFIG.longPhaseNudgeEnabled ?? false),
     longPhaseThresholdSeconds: config.get<number>('longPhaseThresholdSeconds', DEFAULT_CONFIG.longPhaseThresholdSeconds ?? 180),
     longPhaseNudgeMessage: config.get<string>('longPhaseNudgeMessage', DEFAULT_CONFIG.longPhaseNudgeMessage ?? DEFAULT_LONG_PHASE_NUDGE_MESSAGE),
     longPhaseNudgeRecurring: config.get<boolean>('longPhaseNudgeRecurring', DEFAULT_CONFIG.longPhaseNudgeRecurring ?? false),
@@ -201,7 +205,7 @@ export interface LongPhaseNudgeConfig {
 export function getLongPhaseNudgeConfig(): LongPhaseNudgeConfig {
   const config = getConfig();
   return {
-    enabled: config.longPhaseNudgeEnabled ?? true,
+    enabled: config.longPhaseNudgeEnabled ?? false,
     thresholdSeconds: config.longPhaseThresholdSeconds ?? 180,
     nudgeMessage: config.longPhaseNudgeMessage || DEFAULT_LONG_PHASE_NUDGE_MESSAGE,
     recurring: config.longPhaseNudgeRecurring ?? false,
@@ -218,6 +222,7 @@ export interface TelegramConfig {
   enableChatMirror: boolean;
   mirrorIncludePcPrompts: boolean;
   chatMirrorPrefix: string;
+  liveProgressMode: TelegramLiveProgressMode;
 }
 
 /**
@@ -229,6 +234,7 @@ export function getTelegramConfig(): TelegramConfig {
   let enableChatMirror = config.telegramEnableChatMirror ?? true;
   let mirrorIncludePcPrompts = config.telegramMirrorIncludePcPrompts ?? true;
   let chatMirrorPrefix = config.telegramChatMirrorPrefix || '🤖 Antigravity:';
+  let liveProgressMode: TelegramLiveProgressMode = config.telegramLiveProgressMode || 'final_only';
 
   try {
     const wsConfig = vscode.workspace.getConfiguration(CONFIG_SECTION);
@@ -241,6 +247,8 @@ export function getTelegramConfig(): TelegramConfig {
       if (explicitPc !== undefined) mirrorIncludePcPrompts = explicitPc;
       const explicitPrefix = wsConfig.get<string>('telegram.chatMirrorPrefix');
       if (explicitPrefix !== undefined) chatMirrorPrefix = explicitPrefix;
+      const explicitMode = wsConfig.get<TelegramLiveProgressMode>('telegram.liveProgressMode');
+      if (explicitMode !== undefined) liveProgressMode = explicitMode;
     }
   } catch {}
 
@@ -252,7 +260,8 @@ export function getTelegramConfig(): TelegramConfig {
     allowFreeChat,
     enableChatMirror,
     mirrorIncludePcPrompts,
-    chatMirrorPrefix
+    chatMirrorPrefix,
+    liveProgressMode
   };
 }
 

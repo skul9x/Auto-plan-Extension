@@ -2017,7 +2017,9 @@ export function activate(context: vscode.ExtensionContext) {
       e.affectsConfiguration('autoplan.telegramThrottleMs') ||
       e.affectsConfiguration('autoplan.telegram.enableChatMirror') ||
       e.affectsConfiguration('autoplan.telegram.mirrorIncludePcPrompts') ||
-      e.affectsConfiguration('autoplan.telegram.chatMirrorPrefix')
+      e.affectsConfiguration('autoplan.telegram.chatMirrorPrefix') ||
+      e.affectsConfiguration('autoplan.telegram.liveProgressMode') ||
+      e.affectsConfiguration('autoplan.telegramLiveProgressMode')
     ) {
       try {
         const reloadPromise = telegramBridge.reloadConfig();

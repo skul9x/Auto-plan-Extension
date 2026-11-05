@@ -1,114 +1,68 @@
-# 💡 BRIEF: Chuyển đổi 100% Native Antigravity Chat API & Tinh gọn Giao diện (Remove Legacy Tiers)
+# 💡 BRIEF: Nudge Watchdog Deactivation, Single-Leader Telegram Delivery & Clean Single-Message Streaming
 
-**Ngày cập nhật:** 2026-11-04  
-**Trạng thái:** Approved by User (Sẵn sàng triển khai `/plan`)  
-**Mục tiêu:** Loại bỏ hoàn toàn kiến trúc 3 Tier cũ (DOM Bridge chèn `workbench.html`, lệnh ảo, giả lập phím OS `xdotool`/PowerShell). Thay thế bằng giải pháp Native API 100% của Google Antigravity (`antigravity.addContext` + `antigravity.triggerSend`), tối giản toàn bộ giao diện người dùng và mang lại độ ổn định tuyệt đối.
-
----
-
-## 1. VẤN ĐỀ VÀ BỐI CẢNH (PROBLEM STATEMENT)
-
-Hệ thống điều phối prompt trước đây của extension sử dụng kiến trúc 3 Tier phức tạp và tiềm ẩn nhiều rủi ro:
-1. **Tier 1 (DOM Bridge):** 
-   - Phải chèn đoạn mã script vào file cài đặt `workbench.html` của IDE, can thiệp vào mã nguồn gốc của ứng dụng.
-   - Bị Chromium CSP và chính sách bảo mật Trusted Types (`TrustedScriptURL`) chặn Web Worker timer.
-   - Gây cảnh báo mã hash/checksum của IDE, dễ bị hỏng hoặc mất tác dụng khi Antigravity IDE cập nhật phiên bản mới.
-2. **Tier 2 (Native Command cũ):**
-   - Phụ thuộc vào lệnh `antigravity.sendTextToChat` vốn **không tồn tại** trong Antigravity IDE, khiến Tier này luôn bị lỗi.
-3. **Tier 3 (OS Keyboard Simulation):**
-   - Sử dụng `xdotool` (Linux) hoặc `PowerShell SendKeys` (Windows) để gõ phím giả lập.
-   - Bắt buộc phải cướp tiêu điểm cửa sổ (steal focus), dễ bị lệch phím, gõ nhầm vào tab khác nếu người dùng đang thao tác chuột hoặc bàn phím.
-4. **Giao diện người dùng rườm rà (UI Overhead):**
-   - Settings UI có tới 4 thẻ Tier lớn, các công tắc Fallback, nút 1-Click Setup, chẩn đoán phức tạp làm rối mắt người dùng.
+**Ngày tạo:** 2026-11-05  
+**Phiên bản dự kiến:** v1.7.4  
+**Brainstorm cùng:** skul9x (User)
 
 ---
 
-## 2. GIẢI PHÁP ĐỀ XUẤT (THE 100% NATIVE API SOLUTION)
+## 1. VẤN ĐỀ CẦN GIẢI QUYẾT
 
-Tận dụng trực tiếp các lệnh nội bộ chính thức được Google xây dựng sẵn bên trong Antigravity IDE:
-
-```
-[Orchestrator / Telegram / Loop]
-              │
-              ▼
-    [PromptDispatcher]
-              │
-              ├──► 1. (Nếu Phase mới) await vscode.commands.executeCommand('antigravity.startNewConversation')
-              │    └──► Chờ 400ms để giao diện chat ổn định
-              │
-              ├──► 2. await vscode.commands.executeCommand('antigravity.addContext', promptText)
-              │    └──► Đẩy text vào khung chat qua Protobuf RPC nội bộ
-              │
-              ├──► 3. Chờ 'sendDelayMs' (mặc định 500ms) để nút Send bật trạng thái hoạt động
-              │
-              └──► 4. await vscode.commands.executeCommand('antigravity.triggerSend')
-                   └──► Kích hoạt lệnh gửi tin nhắn
-```
-
-### Ưu điểm vượt trội:
-- **Độ tin cậy 100%:** Sử dụng API có sẵn của IDE, không lo bắt nhầm selector hay bị giao diện webview thay đổi.
-- **An toàn tuyệt đối:** Không đụng vào `workbench.html`, không vi phạm CSP `TrustedScriptURL`, không cần quyền quản trị hệ thống (`sudo`/admin).
-- **Hoạt động ngầm (True Background):** Không cướp tiêu điểm cửa sổ, người dùng có thể thoải mái làm việc khác trong lúc automation chạy.
+1. **Prompt Nudge tự động khó chịu sau 3 phút:**
+   - Trong quá trình thực thi phase, sau 180s (3 phút) extension tự động inject prompt:  
+     `"Search online to find the best practices. Note, do not open a browser and directly access the DOM. Use search_web / read_url_content when you need to look something up."`  
+   - Điều này làm gián đoạn luồng tư duy tự nhiên của AI và gây nhiễu context chat.
+2. **Nhân đôi tin nhắn "Live Progress" trên Telegram Bot:**
+   - Người dùng thấy 2 container tin nhắn `🔄 Live Progress: [Phase ...]` xuất hiện cùng lúc trên Telegram.
+   - Nguyên nhân chính:
+     - **Multi-Window / Standby Leaks:** Khi mở nhiều cửa sổ IDE hoặc reload window, chỉ có polling loop của bot có Leader Election, còn `ThrottledNotifier` và `TranscriptWatcher` ở cửa sổ Standby vẫn gắn listener và gọi Telegram API `sendMessage` / `safeSendMessage` độc lập tới cùng Chat ID!
+     - **Unbounded Creation:** `ThrottledNotifier.flushThrottleBuffer()` không có cơ chế khóa đơn lẻ theo Leader role (`getIsLeader()`) hoặc đồng bộ `liveMessageIds` tập trung.
+3. **Nhiễu notification trong lúc AI làm việc:**
+   - Người dùng muốn trải nghiệm tinh gọn: Trong lúc AI đang xử lý, Telegram Bot chỉ hiển thị trạng thái `typing...` (không spam tin nhắn sửa liên tục gây phân tâm), và chỉ gửi đúng **1 tin nhắn kết quả hoàn chỉnh** khi AI hoàn tất.
 
 ---
 
-## 3. CÁC QUYẾT ĐỊNH THIẾT KẾ ĐÃ THỐNG NHẤT (AGREED DESIGN DECISIONS)
+## 2. GIẢI PHÁP ĐỀ XUẤT
 
-1. **Loại bỏ hoàn toàn cơ chế chèn `workbench.html`:**
-   - Xoá bỏ các lệnh tiêm script vào file hệ thống.
-   - Bổ sung cơ chế tự động dọn sạch các thẻ chèn cũ trong `workbench.html` (nếu người dùng đã từng cài đặt trước đó) để khôi phục IDE về trạng thái nguyên bản sạch sẽ.
-2. **Quy trình gửi prompt mỗi Phase:**
-   - Mỗi Phase trong Plan sẽ tự động gọi `antigravity.startNewConversation` để bắt đầu ngữ cảnh mới.
-   - Thêm thời gian chờ ổn định cố định **400ms** trước khi gọi `antigravity.addContext`.
-3. **Cấu hình độ trễ gửi (Send Delay):**
-   - Thêm cấu hình `autoplan.sendDelayMs` vào Settings (mặc định: `500` ms) để người dùng có thể tùy chỉnh nếu máy tính cấu hình yếu hoặc mạnh.
-4. **Giao diện Cài đặt (Settings UI - Phương án A Tối giản):**
-   - Thiết kế lại Tab "Dispatch & Tiers" thành tab **"Native Dispatch"** tinh gọn:
-     - Badge trạng thái: `🟢 Antigravity Native Engine: Ready`.
-     - Nút thử nghiệm: `[🧪 Test Send Prompt]` (gửi thử prompt mẫu ngay lập tức).
-     - Trường nhập: `Send Delay (ms)` (input số, mặc định 500ms).
-     - Xoá bỏ: 4 thẻ Tier cũ, Fallback toggle, Strict mode toggle, nút 1-Click DOM Bridge.
-5. **Dọn dẹp Sidebar & Status Bar:**
-   - Thay thế các badge/nút "DOM Bridge" trên Sidebar và Status Bar bằng thông tin hiển thị trạng thái của Native Engine.
-6. **Xử lý mã nguồn cũ:**
-   - Ngắt hoàn toàn luồng gọi `keyboardManager.ts` trong `PromptDispatcher`, nhưng vẫn giữ file này trong repo làm tài liệu tham khảo dự phòng.
+1. **Vô hiệu hóa hoàn toàn Mid-Flight Nudge Watchdog:**
+   - Đặt `autoplan.longPhaseNudgeEnabled` thành `false` làm giá trị mặc định trong `package.json` và `src/config.ts`.
+   - Vô hiệu hóa việc tự inject prompt `"Search online to find the best practices..."` và dừng thông báo Nudge sang Telegram.
+2. **Triệt tiêu nhân đôi Live Message bằng Leader Gating (Single-Leader Policy):**
+   - Ràng buộc mọi thao tác gửi tin nhắn của `ThrottledNotifier` và `TelegramChatMirror`: Chỉ instance giữ vai trò **Leader** (`telegramBridge.getIsLeader() === true`) mới được phép gọi Telegram Bot API gửi/sửa tin nhắn.
+   - Các instance Standby (cửa sổ thứ 2 trở đi hoặc window phụ) sẽ hoạt động ở chế độ im lặng (Muted Standby), không tạo thêm Live Message hay gửi trùng lặp.
+3. **Chế độ Clean Single-Message Final Result & Typing Indicator:**
+   - Cung cấp tùy chọn cấu hình `autoplan.telegram.liveProgressMode`:
+     - `'final_only'` (Mặc định mới theo mong muốn của User): Trong suốt quá trình thực thi, duy trì typing indicator `sendChatAction('typing')`. Khi hoàn tất phase hoặc toàn bộ kế hoạch, gửi 1 tin nhắn kết quả cuối cùng (Rich HTML).
+     - `'live_edit'`: Chế độ thanh tiến độ cũ (1 message duy nhất được edit liên tục, bảo đảm không bị nhân đôi).
+   - Bảo đảm dọn dẹp sạch sẽ (finalize/unpin) mọi message tạm khi phase kết thúc hoặc bị hủy.
 
 ---
 
-## 4. PHẠM VI CÔNG VIỆC (SCOPE & TASKS)
-
-### 🚀 Giai đoạn 1: Core Engine & Dispatcher Refactoring
-- [ ] Cập nhật `src/config.ts`:
-  - Thêm `sendDelayMs` (number, default: 500).
-  - Deprecate các trường cũ: `executionMode`, `allowTierFallback`, `strictMode`, `bridgeTimeoutMs`.
-- [ ] Tái cấu trúc `src/promptDispatcher.ts`:
-  - Đơn giản hóa hàm `dispatchPrompt`: Chỉ gọi trực tiếp quy trình Native (`startNewConversation` $\rightarrow$ `addContext` $\rightarrow$ delay $\rightarrow$ `triggerSend`).
-  - Đơn giản hóa `validateDispatchReadiness`: Luôn trả về `ready: true` nếu lệnh VS Code sẵn sàng.
-  - Loại bỏ các bước thăm dò DOM client và vòng lặp fallback phức tạp.
-- [ ] Cập nhật `src/orchestrator.ts`:
-  - Đảm bảo các luồng `runPlanAsync`, `runLoop`, và `executeNudgeProcedure` tương thích mượt mà với Native Dispatcher.
-
-### 🎨 Giai đoạn 2: UI & Settings Simplification
-- [ ] Thiết kế lại `media/settings/settings.html`:
-  - Thay đổi Tab "Dispatch & Tiers" thành "Native Dispatch".
-  - Hiển thị thông tin phiên bản Native API và cấu hình `Send Delay (ms)`.
-  - Giữ nút `Test Send Prompt`.
-- [ ] Cập nhật `media/settings/settings.js`:
-  - Xoá các event listener và logic xử lý thẻ Tier cũ, fallback toggle.
-  - Kết nối nút `btnTestTier` với lệnh kiểm tra Native Dispatch mới.
-- [ ] Tinh gọn Sidebar (`media/sidebar/sidebar.html`, `sidebar.js`, `src/sidebarProvider.ts`):
-  - Chuyển `bridgeStatusBadge` thành trạng thái Native Engine.
-  - Xoá nút "⚡ DOM Bridge" không còn cần thiết.
-- [ ] Dọn dẹp Status Bar (`src/extension.ts`):
-  - Hiển thị trạng thái Auto-Plan Native Engine đơn giản, thân thiện.
-
-### 🧹 Giai đoạn 3: Dọn dẹp hệ thống & Tự động khôi phục `workbench.html`
-- [ ] Bổ sung cơ chế tự động kiểm tra `workbench.html`: Nếu phát hiện thẻ tag bridge cũ, tự động gỡ bỏ để phục hồi file nguyên bản.
-- [ ] Cập nhật `package.json`:
-  - Cập nhật danh sách configuration properties và commands.
+## 3. ĐỐI TƯỢNG SỬ DỤNG
+- **Người dùng chính:** Lập trình viên sử dụng Auto-Plan Extension trên Antigravity IDE kết hợp giám sát và điều khiển từ xa qua Telegram Bot.
+- **Môi trường:** Đơn hoặc Đa cửa sổ IDE (Multi-window / Multi-root workspace trên PC).
 
 ---
 
-## 5. KẾ HOẠCH BƯỚC TIẾP THEO
-Sau khi xem lại Brief này:
-👉 Gõ `/plan` để AI lập kế hoạch triển khai chi tiết từng bước (Architecture, Checklist, Test plan) và bắt đầu code.
+## 4. TÍNH NĂNG (SCOPE)
+
+### 🚀 MVP (Bắt buộc hoàn thành ngay):
+- [ ] **Config Update:** Chuyển `autoplan.longPhaseNudgeEnabled` default = `false` trong `package.json` và `src/config.ts`. Đảm bảo không còn auto-nudge sau 3 phút.
+- [ ] **Leader Gating cho Notifier & Mirror:** Tích hợp kiểm tra `isLeader` trước khi `ThrottledNotifier.flushThrottleBuffer()`, `broadcastMessage()`, `sendInfo()`, `safeSendMessage()`. Instance không phải leader sẽ bị drop/skip gửi ra Telegram.
+- [ ] **Clean Final-Only Delivery Mode:** Hỗ trợ gửi duy nhất 1 tin nhắn kết quả cuối cùng khi xong phase/task, giữ trạng thái `typing...` trong khi xử lý mà không tạo live message thừa.
+- [ ] **Deduplication Lock:** Đảm bảo mỗi chat ID chỉ có tối đa 1 Live Message ID duy nhất tại một thời điểm, loại bỏ triệt để hiện tượng nhân đôi tin nhắn.
+
+### 🎁 Phase 2 (Nâng cấp thêm):
+- [ ] Cho phép tùy chỉnh bật/tắt giữa `final_only` và `live_edit` trực tiếp trên Sidebar Webview / Settings Dashboard.
+- [ ] Tự động dọn (deleteMessage) placeholder cũ khi chuyển sang phase mới.
+
+---
+
+## 5. ƯỚC TÍNH SƠ BỘ
+- **Độ phức tạp:** Trung bình (Tập trung refactor logic `telegramNotifier.ts`, `telegramBridge.ts`, `orchestrator.ts`, `config.ts`).
+- **Rủi ro:** Cần đảm bảo các unit test hiện có cho Notifier và Watchdog vẫn tương thích khi bật cờ tùy chọn.
+
+---
+
+## 6. BƯỚC TIẾP THEO
+→ Chuyển sang workflow `/plan` để lập kế hoạch chi tiết (chia phases, viết test cases và triển khai code).

@@ -2,6 +2,24 @@
 
 All notable changes to the **Antigravity Auto-Plan Runner** extension will be documented in this file.
 
+## [1.7.4] - 2026-11-05
+
+### 👑 Telegram Single-Leader Gating, Clean Final-Only Delivery & Nudge Watchdog Deactivation
+- **Single-Leader Delivery Gating & Standby Muting**:
+  - Enforced single-leader delivery policy across `ThrottledNotifier` and outbound Telegram dispatchers.
+  - Non-leader (Standby) workspace windows cleanly mute all outbound Telegram deliveries (`flushThrottleBuffer`, `safeSendMessage`, `safeEditMessage`, `broadcastMessage`, `sendApprovalNotification`), completely eliminating duplicate live progress notifications across concurrent IDE windows.
+  - Standby instances seamlessly un-mute and resume full Telegram delivery upon acquiring leadership.
+- **Clean Final-Only Delivery Mode & Typing State Lifecycle**:
+  - Introduced configurable `autoplan.telegram.liveProgressMode` (`'final_only'` vs `'live_edit'`), defaulting to `'final_only'`.
+  - In `final_only` mode, intermediate progress edits are replaced with a continuous Telegram typing indicator (`sendChatAction('typing')`, refreshed every 4000ms), delivering exactly one finalized Rich HTML summary upon phase completion or failure.
+  - Eliminated mobile Telegram notification vibration/sound churn from rapid progress edits.
+- **Deactivated 180s Mid-Flight Nudge Watchdog by Default**:
+  - Set `autoplan.longPhaseNudgeEnabled` default to `false` in configuration schemas and package manifest.
+  - Prevents unsolicited injection of `"Search online to find the best practices..."` during long-running phases while preserving full opt-in support for users who want periodic steering.
+- **Full End-to-End Regression & VSIX Release Packaging**:
+  - Verified combined multi-window single-leader gating, deactivated nudge watchdog, final-only delivery with typing indicators, and zero-drop HTML/plain-text fallbacks in an end-to-end integration test suite.
+  - Compiled TypeScript codebase with zero errors and packaged `antigravity-auto-plan-1.7.4.vsix`.
+
 ## [1.7.3] - 2026-11-05
 
 ### 🎨 Telegram Rich HTML Formatting & Tag-Aware Chunking Pipeline

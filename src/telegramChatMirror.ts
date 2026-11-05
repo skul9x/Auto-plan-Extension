@@ -334,6 +334,8 @@ export interface TelegramChatMirrorOptions {
   isMultiWorkspace?: boolean | (() => boolean);
   registryPath?: string;
   logger?: any;
+  isLeader?: boolean;
+  isLeaderFn?: () => boolean;
 }
 
 /**
@@ -358,6 +360,8 @@ export class TelegramChatMirror {
   private registryPath?: string;
   private boundTailListeners: { event: string; listener: (...args: any[]) => any }[] = [];
   private logger?: any;
+  private _isLeader: boolean = true;
+  private isLeaderFn?: () => boolean;
 
   constructor(options?: TelegramChatMirrorOptions) {
     this.bot = options?.bot;
@@ -388,6 +392,12 @@ export class TelegramChatMirror {
 
     if (options?.tailEngine) {
       this.attachTailEngine(options.tailEngine);
+    }
+    if (options?.isLeader !== undefined) {
+      this._isLeader = options.isLeader;
+    }
+    if (options?.isLeaderFn) {
+      this.isLeaderFn = options.isLeaderFn;
     }
   }
 
@@ -421,6 +431,32 @@ export class TelegramChatMirror {
 
   public setEnabled(enabled: boolean): void {
     this.enableChatMirror = enabled;
+  }
+
+  public getIsLeader(): boolean {
+    if (this.isLeaderFn) {
+      return Boolean(this.isLeaderFn());
+    }
+    return this._isLeader;
+  }
+
+  public get isLeader(): boolean {
+    return this.getIsLeader();
+  }
+
+  public set isLeader(val: boolean) {
+    this.setLeader(val);
+  }
+
+  public setLeader(leader: boolean): void {
+    this._isLeader = leader;
+    if (!leader) {
+      this.typingManager.stopAll();
+    }
+  }
+
+  public setIsLeaderFn(fn: () => boolean): void {
+    this.isLeaderFn = fn;
   }
 
   public getPrefix(): string {
@@ -615,7 +651,7 @@ export class TelegramChatMirror {
    * Called when agent tools/thinking activities occur: triggers typing action.
    */
   public handleAgentActivity(targetChatId?: string | number): void {
-    if (!this.enableChatMirror || !this.bot) {
+    if (!this.enableChatMirror || !this.bot || !this.getIsLeader()) {
       return;
     }
     try {
@@ -639,7 +675,7 @@ export class TelegramChatMirror {
     targetChatId?: string | number,
     options?: DeliverChunkedResponseOptions
   ): Promise<void> {
-    if (!this.enableChatMirror || !this.bot) {
+    if (!this.enableChatMirror || !this.bot || !this.getIsLeader()) {
       return;
     }
 
@@ -688,7 +724,7 @@ export class TelegramChatMirror {
         ? (this.originTracker as any).getOrigin(promptText)
         : (this.originTracker.checkAndConsume(promptText).origin as PromptOrigin);
 
-    if (!this.enableChatMirror || !this.bot) {
+    if (!this.enableChatMirror || !this.bot || !this.getIsLeader()) {
       return { forwarded: false, origin };
     }
 

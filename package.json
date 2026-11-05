@@ -2,7 +2,7 @@
   "name": "antigravity-auto-plan",
   "displayName": "Antigravity Auto-Plan Runner",
   "description": "Automate repeated prompts and monitor completion in Antigravity IDE",
-  "version": "1.7.3",
+  "version": "1.7.4",
   "publisher": "skul9x",
   "engines": {
     "vscode": "^1.80.0"
@@ -394,9 +394,28 @@
           "markdownDeprecationMessage": "Use `autoplan.telegram.chatMirrorPrefix` instead.",
           "description": "Customizable header prefix for assistant responses mirrored to Telegram (alias for autoplan.telegram.chatMirrorPrefix)."
         },
+        "autoplan.telegram.liveProgressMode": {
+          "type": "string",
+          "enum": [
+            "final_only",
+            "live_edit"
+          ],
+          "default": "final_only",
+          "description": "Telegram progress delivery mode: 'final_only' keeps a quiet continuous typing indicator and delivers a single rich summary upon completion, while 'live_edit' updates a single status message via throttled edits."
+        },
+        "autoplan.telegramLiveProgressMode": {
+          "type": "string",
+          "enum": [
+            "final_only",
+            "live_edit"
+          ],
+          "default": "final_only",
+          "markdownDeprecationMessage": "Use `autoplan.telegram.liveProgressMode` instead.",
+          "description": "Telegram progress delivery mode (alias for autoplan.telegram.liveProgressMode)."
+        },
         "autoplan.longPhaseNudgeEnabled": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Enables or disables automatic nudging for phases running longer than threshold"
         },
         "autoplan.longPhaseThresholdSeconds": {
@@ -478,7 +497,9 @@
     "compile": "node ./node_modules/typescript/bin/tsc -p ./",
     "watch": "node ./node_modules/typescript/bin/tsc -watch -p ./",
     "package": "node scripts/package.js package --allow-missing-repository --no-git-tag-version",
+    "test:phase04-single-leader-regression": "node out/test/phase04_single_leader_clean_stream_regression.test.js",
     "test:phase04-telegram-rich": "node out/test/phase04_telegram_rich_formatting_regression.test.js",
+    "test:phase03-delivery": "node out/test/phase03_clean_final_only_delivery.test.js",
     "test": "node out/test/phase05_e2e_cross_platform_release.test.js",
     "test:phase01-native": "node out/test/phase01_native_dispatcher_and_config.test.js",
     "test:phase02-native": "node out/test/phase02_native_ui_and_settings_simplification.test.js",

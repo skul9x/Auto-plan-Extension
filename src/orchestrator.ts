@@ -470,7 +470,7 @@ export class Orchestrator extends EventEmitter {
   public startPhaseNudgeWatchdog(phase: PhaseItem, phaseIndex: number, thresholdMs?: number): void {
     this.stopPhaseNudgeWatchdog();
     const config = this.configProvider();
-    if (config.longPhaseNudgeEnabled === false) {
+    if (!config.longPhaseNudgeEnabled) {
       return;
     }
     if (phase.hasNudged) {

@@ -1,8 +1,8 @@
 import { Bot, GrammyError, HttpError } from 'grammy';
 import * as path from 'path';
 import { debugLogger, DebugLogger } from './debugLogger';
-import { getConfig, getTelegramConfig } from './config';
-import { splitMessage, stripMarkdownToPlainText, splitHtmlMessage, isEntityParseError } from './telegramUtils';
+import { getConfig, getTelegramConfig, TelegramLiveProgressMode } from './config';
+import { splitMessage, stripMarkdownToPlainText, splitHtmlMessage, isEntityParseError, markdownToTelegramHtml } from './telegramUtils';
 
 /**
  * Checks whether an error represents a Telegram 429 Too Many Requests response.
@@ -324,6 +324,10 @@ export interface ThrottledNotifierOptions {
   nowFn?: () => number;
   setTimerFn?: (fn: (...args: any[]) => void, ms: number) => any;
   clearTimerFn?: (timer: any) => void;
+  isLeader?: boolean;
+  isLeaderFn?: () => boolean;
+  liveProgressMode?: TelegramLiveProgressMode;
+  typingIntervalMs?: number;
 }
 
 /**
@@ -343,6 +347,14 @@ export class ThrottledNotifier {
   private pausedUntil: number = 0;
   private currentPhaseName: string = '';
   private latestActivityPreview: string = '';
+  private _isLeader: boolean = true;
+  private isLeaderFn?: () => boolean;
+  private activeFlushPromise: Promise<void> | null = null;
+  private liveProgressMode: TelegramLiveProgressMode = 'final_only';
+  private typingTimer: any = null;
+  private isTypingActive: boolean = false;
+  private typingIntervalMs: number = 4000;
+  private lastDetectedCompletion: any = null;
 
   private orchestrator: any = null;
   private transcriptWatcher: any = null;
@@ -378,6 +390,10 @@ export class ThrottledNotifier {
     this.throttleMs = options?.throttleMs ?? getTelegramConfig().throttleMs ?? 2500;
     this.approvalRateLimitMs = options?.approvalRateLimitMs ?? 1000;
     this.approvalDedupWindowMs = options?.approvalDedupWindowMs ?? 5000;
+    this.liveProgressMode = options?.liveProgressMode ?? getTelegramConfig().liveProgressMode ?? 'final_only';
+    if (options?.typingIntervalMs) {
+      this.typingIntervalMs = options.typingIntervalMs;
+    }
 
     if (options?.nowFn) {
       this.nowFn = options.nowFn;
@@ -408,6 +424,12 @@ export class ThrottledNotifier {
     }
     if (options?.autoSubmitEngine) {
       this.attachAutoSubmitEngine(options.autoSubmitEngine);
+    }
+    if (options?.isLeader !== undefined) {
+      this._isLeader = options.isLeader;
+    }
+    if (options?.isLeaderFn) {
+      this.isLeaderFn = options.isLeaderFn;
     }
   }
 
@@ -446,6 +468,137 @@ export class ThrottledNotifier {
 
   public getChatIds(): (number | string)[] {
     return Array.from(this.chatIds);
+  }
+
+  public getIsLeader(): boolean {
+    if (this.isLeaderFn) {
+      return Boolean(this.isLeaderFn());
+    }
+    return this._isLeader;
+  }
+
+  public get isLeader(): boolean {
+    return this.getIsLeader();
+  }
+
+  public set isLeader(val: boolean) {
+    this.setLeader(val);
+  }
+
+  public setLeader(leader: boolean): void {
+    this._isLeader = leader;
+    if (!leader) {
+      this.stopTyping();
+      if (this.throttleTimer) {
+        clearTimeout(this.throttleTimer);
+        this.throttleTimer = null;
+      }
+      this.pendingUpdate = false;
+      this.clearApprovalQueue();
+      this.liveMessageIds.clear();
+      this.latestActivityPreview = '';
+      this.lastEditTime = 0;
+    }
+  }
+
+  public getLiveProgressMode(): TelegramLiveProgressMode {
+    return this.liveProgressMode;
+  }
+
+  public setLiveProgressMode(mode: TelegramLiveProgressMode): void {
+    if (this.liveProgressMode === mode) {
+      return;
+    }
+    this.liveProgressMode = mode;
+    if (mode === 'live_edit') {
+      this.stopTyping();
+    } else {
+      if (this.throttleTimer) {
+        clearTimeout(this.throttleTimer);
+        this.throttleTimer = null;
+      }
+      this.pendingUpdate = false;
+    }
+  }
+
+  public getTypingIntervalMs(): number {
+    return this.typingIntervalMs;
+  }
+
+  public setTypingIntervalMs(ms: number): void {
+    if (ms > 0) {
+      this.typingIntervalMs = ms;
+    }
+  }
+
+  public isTyping(): boolean {
+    return this.isTypingActive;
+  }
+
+  public async sendChatAction(chatId: number | string, action: string = 'typing'): Promise<boolean> {
+    if (!this.getIsLeader() || !this.bot) {
+      return false;
+    }
+    try {
+      if (typeof this.bot.api?.sendChatAction === 'function') {
+        await this.bot.api.sendChatAction(chatId, action as any);
+        return true;
+      }
+    } catch (err: any) {
+      if (isRateLimitError(err)) {
+        this.handleRateLimit(err);
+      } else {
+        this.logger.warn('TELEGRAM', `sendChatAction failed for chat ${chatId}: ${err?.message || err}`);
+      }
+    }
+    return false;
+  }
+
+  public async sendTypingIndicator(): Promise<void> {
+    if (!this.getIsLeader() || !this.bot) {
+      return;
+    }
+    const chatIds = this.getEffectiveChatIds();
+    for (const chatId of chatIds) {
+      await this.sendChatAction(chatId, 'typing');
+    }
+  }
+
+  public startTyping(): void {
+    if (!this.getIsLeader() || !this.bot) {
+      return;
+    }
+    if (this.isTypingActive) {
+      return;
+    }
+    this.isTypingActive = true;
+    this.sendTypingIndicator().catch(() => {});
+    this.scheduleNextTyping();
+  }
+
+  private scheduleNextTyping(): void {
+    if (!this.isTypingActive || this.typingTimer) {
+      return;
+    }
+    this.typingTimer = this.setTimerFn(() => {
+      this.typingTimer = null;
+      if (this.isTypingActive && this.getIsLeader() && this.bot) {
+        this.sendTypingIndicator().catch(() => {});
+        this.scheduleNextTyping();
+      }
+    }, this.typingIntervalMs);
+  }
+
+  public stopTyping(): void {
+    this.isTypingActive = false;
+    if (this.typingTimer) {
+      this.clearTimerFn(this.typingTimer);
+      this.typingTimer = null;
+    }
+  }
+
+  public setIsLeaderFn(fn: () => boolean): void {
+    this.isLeaderFn = fn;
   }
 
   public getLiveMessageId(chatId?: number | string): number | undefined {
@@ -575,6 +728,9 @@ export class ThrottledNotifier {
    * Enqueues a debounced and throttled live message update.
    */
   public queueThrottledUpdate(): void {
+    if (!this.getIsLeader() || this.liveProgressMode === 'final_only') {
+      return;
+    }
     this.pendingUpdate = true;
     const now = Date.now();
 
@@ -608,12 +764,27 @@ export class ThrottledNotifier {
    * Flushes any buffered live updates immediately to Telegram.
    */
   public async flushThrottleBuffer(): Promise<void> {
-    if (!this.bot || !this.pendingUpdate) {
+    if (!this.getIsLeader() || this.liveProgressMode === 'final_only') {
+      if (this.throttleTimer) {
+        clearTimeout(this.throttleTimer);
+        this.throttleTimer = null;
+      }
+      this.pendingUpdate = false;
       return;
     }
 
     if (this.isEditing) {
       this.pendingUpdate = true;
+      if (this.activeFlushPromise) {
+        await this.activeFlushPromise;
+      }
+      return;
+    }
+
+    if (!this.bot || !this.pendingUpdate) {
+      if (this.activeFlushPromise) {
+        await this.activeFlushPromise;
+      }
       return;
     }
 
@@ -631,35 +802,44 @@ export class ThrottledNotifier {
     this.isEditing = true;
     this.pendingUpdate = false;
 
-    const text = this.buildLiveStatusText();
-    const chatIds = this.getEffectiveChatIds();
+    const doFlush = async () => {
+      const text = this.buildLiveStatusText();
+      const chatIds = this.getEffectiveChatIds();
 
-    try {
-      for (const chatId of chatIds) {
-        const existingMessageId = this.liveMessageIds.get(chatId);
-        if (existingMessageId) {
-          await this.safeEditMessage(chatId, existingMessageId, text);
-          this.lastEditTime = Date.now();
-        } else {
-          const sent = await this.safeSendMessage(chatId, text);
-          if (sent && sent.message_id) {
-            this.liveMessageIds.set(chatId, sent.message_id);
+      try {
+        for (const chatId of chatIds) {
+          const existingMessageId = this.liveMessageIds.get(chatId);
+          if (existingMessageId) {
+            await this.safeEditMessage(chatId, existingMessageId, text);
             this.lastEditTime = Date.now();
+          } else {
+            const sent = await this.safeSendMessage(chatId, text);
+            if (sent && sent.message_id) {
+              this.liveMessageIds.set(chatId, sent.message_id);
+              this.lastEditTime = Date.now();
+            }
           }
         }
+      } catch (err: any) {
+        this.logger.warn('TELEGRAM', `Error during flushThrottleBuffer: ${err?.message || err}`);
+      } finally {
+        this.isEditing = false;
+        if (this.pendingUpdate && !this.throttleTimer) {
+          const elapsed = Date.now() - this.lastEditTime;
+          const wait = Math.max(0, this.throttleMs - elapsed);
+          this.throttleTimer = setTimeout(() => {
+            this.throttleTimer = null;
+            this.flushThrottleBuffer().catch(() => {});
+          }, wait);
+        }
       }
-    } catch (err: any) {
-      this.logger.warn('TELEGRAM', `Error during flushThrottleBuffer: ${err?.message || err}`);
+    };
+
+    this.activeFlushPromise = doFlush();
+    try {
+      await this.activeFlushPromise;
     } finally {
-      this.isEditing = false;
-      if (this.pendingUpdate && !this.throttleTimer) {
-        const elapsed = Date.now() - this.lastEditTime;
-        const wait = Math.max(0, this.throttleMs - elapsed);
-        this.throttleTimer = setTimeout(() => {
-          this.throttleTimer = null;
-          this.flushThrottleBuffer().catch(() => {});
-        }, wait);
-      }
+      this.activeFlushPromise = null;
     }
   }
 
@@ -673,6 +853,13 @@ export class ThrottledNotifier {
       this.throttleTimer = null;
     }
     this.pendingUpdate = false;
+
+    if (!this.getIsLeader()) {
+      this.liveMessageIds.clear();
+      this.latestActivityPreview = '';
+      this.lastEditTime = 0;
+      return;
+    }
 
     for (const [chatId, messageId] of this.liveMessageIds.entries()) {
       if (finalText) {
@@ -696,6 +883,9 @@ export class ThrottledNotifier {
    * Broadcasts a new message to all active / authorized chats.
    */
   public async broadcastMessage(text: string, options?: any): Promise<any[]> {
+    if (!this.getIsLeader()) {
+      return [];
+    }
     const isHtml = options?.parse_mode === 'HTML';
     const messageText = isHtml ? text : stripMarkdownToPlainText(text);
     const chatIds = this.getEffectiveChatIds();
@@ -725,12 +915,21 @@ export class ThrottledNotifier {
    * Sends an informative notification to all authorized Telegram users.
    */
   public async sendInfo(text: string, options?: any): Promise<any[]> {
+    if (!this.getIsLeader()) {
+      return [];
+    }
     return this.broadcastMessage(text, options);
   }
 
   public handleLogUpdate(line: string): void {
     const preview = formatActivityPreview(line);
     this.latestActivityPreview = preview;
+    if (this.liveProgressMode === 'final_only') {
+      if (!this.isTypingActive) {
+        this.startTyping();
+      }
+      return;
+    }
     this.queueThrottledUpdate();
   }
 
@@ -739,6 +938,12 @@ export class ThrottledNotifier {
     this.latestActivityPreview = quietMs
       ? `⏳ Verifying completion stability (${quietMs}ms quiet period)...`
       : '⏳ Verifying completion stability...';
+    if (this.liveProgressMode === 'final_only') {
+      if (!this.isTypingActive) {
+        this.startTyping();
+      }
+      return;
+    }
     this.queueThrottledUpdate();
   }
 
@@ -749,6 +954,7 @@ export class ThrottledNotifier {
     fileName?: string,
     filePath?: string
   ): Promise<void> {
+    this.stopTyping();
     await this.finalizeLiveMessage();
 
     const rawPhaseName = phase?.fileName || phase?.name || phase?.title || (typeof phase === 'string' ? phase : 'Phase');
@@ -772,6 +978,10 @@ export class ThrottledNotifier {
 
     const messageText = `🚀 Phase Started: ${phaseName} (${idx}/${tot})`;
     await this.broadcastMessage(messageText);
+
+    if (this.liveProgressMode === 'final_only') {
+      this.startTyping();
+    }
   }
 
   public async handlePhaseComplete(
@@ -780,8 +990,13 @@ export class ThrottledNotifier {
     index?: number,
     total?: number
   ): Promise<void> {
-    await this.flushThrottleBuffer();
-    await this.finalizeLiveMessage();
+    this.stopTyping();
+    if (this.liveProgressMode === 'live_edit') {
+      await this.flushThrottleBuffer();
+      await this.finalizeLiveMessage();
+    } else {
+      await this.finalizeLiveMessage();
+    }
 
     const rawPhaseName = phase?.fileName || phase?.name || phase?.title || (typeof phase === 'string' ? phase : 'Phase');
     const phaseName = stripMarkdownToPlainText(rawPhaseName);
@@ -791,31 +1006,43 @@ export class ThrottledNotifier {
       const idx = index === 0 ? 1 : index;
       summaryParts.push(`Iteration ${idx}/${total}`);
     }
-    if (completionResult) {
-      if (typeof completionResult === 'string') {
-        const cleanResult = stripMarkdownToPlainText(completionResult);
+    const resultObj = completionResult || this.lastDetectedCompletion;
+    if (resultObj) {
+      if (typeof resultObj === 'string') {
+        const cleanResult = stripMarkdownToPlainText(resultObj);
         if (cleanResult) {
           summaryParts.push(cleanResult);
         }
-      } else if (typeof completionResult === 'object') {
-        if (completionResult.summary) {
-          const cleanSummary = stripMarkdownToPlainText(String(completionResult.summary));
+      } else if (typeof resultObj === 'object') {
+        if (resultObj.summary) {
+          const cleanSummary = stripMarkdownToPlainText(String(resultObj.summary));
           if (cleanSummary) {
             summaryParts.push(cleanSummary);
           }
         }
-        if (completionResult.durationMs) {
-          summaryParts.push(`Duration: ${Math.round(completionResult.durationMs / 1000)}s`);
+        if (resultObj.durationMs) {
+          summaryParts.push(`Duration: ${Math.round(resultObj.durationMs / 1000)}s`);
         }
       }
     }
+    this.lastDetectedCompletion = null;
 
-    const summaryText = summaryParts.length > 0 ? `\n• ${summaryParts.join(' • ')}` : '';
-    const messageText = `✅ Phase Completed: ${phaseName}${summaryText}`;
-    await this.broadcastMessage(messageText);
+    if (this.liveProgressMode === 'final_only') {
+      let mdText = `✅ **Phase Completed:** \`${phaseName}\``;
+      if (summaryParts.length > 0) {
+        mdText += `\n• ${summaryParts.join(' • ')}`;
+      }
+      const htmlText = markdownToTelegramHtml(mdText);
+      await this.broadcastMessage(htmlText, { parse_mode: 'HTML' });
+    } else {
+      const summaryText = summaryParts.length > 0 ? `\n• ${summaryParts.join(' • ')}` : '';
+      const messageText = `✅ Phase Completed: ${phaseName}${summaryText}`;
+      await this.broadcastMessage(messageText);
+    }
   }
 
   public async handleSkipped(phase: any): Promise<void> {
+    this.stopTyping();
     await this.finalizeLiveMessage();
     const rawPhaseName = phase?.fileName || phase?.name || phase?.title || (typeof phase === 'string' ? phase : 'Phase');
     const phaseName = stripMarkdownToPlainText(rawPhaseName);
@@ -824,18 +1051,21 @@ export class ThrottledNotifier {
   }
 
   public async handleAllComplete(total?: number): Promise<void> {
+    this.stopTyping();
     await this.finalizeLiveMessage();
     const messageText = '🎉 All Phases Completed Successfully!';
     await this.broadcastMessage(messageText);
   }
 
   public async handleStopped(): Promise<void> {
+    this.stopTyping();
     await this.finalizeLiveMessage();
     const messageText = '🛑 Plan Execution Stopped';
     await this.broadcastMessage(messageText);
   }
 
   public async handleError(err: any): Promise<void> {
+    this.stopTyping();
     await this.finalizeLiveMessage();
     const rawErrMsg = err?.message || String(err);
     const errMsg = stripMarkdownToPlainText(rawErrMsg);
@@ -844,6 +1074,13 @@ export class ThrottledNotifier {
   }
 
   public async handleCompletionDetected(eventData: any): Promise<void> {
+    if (!this.getIsLeader()) {
+      return;
+    }
+    if (this.liveProgressMode === 'final_only') {
+      this.lastDetectedCompletion = eventData;
+      return;
+    }
     await this.flushThrottleBuffer();
     await this.finalizeLiveMessage();
 
@@ -883,6 +1120,9 @@ export class ThrottledNotifier {
   }
 
   public async safeSendMessage(chatId: number | string, text: string, other?: any): Promise<any> {
+    if (!this.getIsLeader()) {
+      return null;
+    }
     if (!this.bot) {
       return null;
     }
@@ -924,6 +1164,9 @@ export class ThrottledNotifier {
   }
 
   public async safeEditMessage(chatId: number | string, messageId: number, text: string, other?: any): Promise<any> {
+    if (!this.getIsLeader()) {
+      return null;
+    }
     if (!this.bot) {
       return null;
     }
@@ -1033,6 +1276,9 @@ export class ThrottledNotifier {
    * Returns true if successfully enqueued, false if suppressed by deduplication or disabled config.
    */
   public queueApprovalNotification(candidateOrEvent: any): boolean {
+    if (!this.getIsLeader()) {
+      return false;
+    }
     const cfg = getConfig();
     if (cfg.autoSubmitNotifyTelegram === false) {
       return false;
@@ -1088,6 +1334,9 @@ export class ThrottledNotifier {
    * Enqueues an approval event and returns a promise that resolves when the message is dispatched.
    */
   public async sendApprovalNotification(candidateOrEvent: any): Promise<boolean> {
+    if (!this.getIsLeader()) {
+      return false;
+    }
     const cfg = getConfig();
     if (cfg.autoSubmitNotifyTelegram === false) {
       return false;
@@ -1179,6 +1428,10 @@ export class ThrottledNotifier {
    * Processes the next item in the approval queue if pacing permits.
    */
   public async processNextApprovalQueueItem(): Promise<void> {
+    if (!this.getIsLeader()) {
+      this.clearApprovalQueue();
+      return;
+    }
     if (this.approvalQueue.length === 0 || this.isProcessingApprovalQueue) {
       return;
     }
@@ -1272,6 +1525,7 @@ export class ThrottledNotifier {
    * Cleans up all pending timers and event listeners.
    */
   public dispose(): void {
+    this.stopTyping();
     if (this.throttleTimer) {
       clearTimeout(this.throttleTimer);
       this.throttleTimer = null;
@@ -1282,6 +1536,7 @@ export class ThrottledNotifier {
       this.approvalQueueTimer = null;
     }
     this.approvalQueue = [];
+    this.liveMessageIds.clear();
     this.detachAutoSubmitEngine();
 
     if (this.orchestrator) {

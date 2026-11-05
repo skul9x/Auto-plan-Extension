@@ -199,6 +199,7 @@ export function getCachedRunningTooltip(
 
 /**
  * Detects if active editor is currently viewing a markdown phase file within a plan directory.
+ * @deprecated Use `findActivePlanFolderAsync` instead to prevent blocking the event loop.
  */
 export function findActivePlanFolder(): string | null {
   const activeEditor = vscode.window.activeTextEditor;
@@ -1781,6 +1782,11 @@ export function activate(context: vscode.ExtensionContext) {
       });
       if (autoSubmitService) {
         autoSubmitService.invalidate(true);
+      }
+    }),
+    vscode.window.onDidChangeActiveTextEditor(async (editor) => {
+      if (editor && editor.document?.uri?.fsPath?.toLowerCase().endsWith('.md')) {
+        await findActivePlanFolderAsync();
       }
     })
   );

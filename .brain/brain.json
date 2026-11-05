@@ -2,14 +2,14 @@
   "meta": {
     "schema_version": "1.1.0",
     "awf_version": "4.0.2",
-    "updated_at": "2026-11-05T18:15:00+07:00"
+    "updated_at": "2026-11-06T00:30:00+07:00"
   },
   "project": {
     "name": "Auto-Plan_Extension",
-    "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan với 100% Native Antigravity Chat API Architecture (antigravity.addContext, antigravity.triggerSend, antigravity.startNewConversation, antigravity.prioritized.chat.stop), hoàn toàn focus-free, loại bỏ 100% DOM Bridge injection vào workbench.html và OS keyboard simulations. Tích hợp Telegram Rich HTML Formatting Engine (parse_mode: 'HTML'), Tag-Aware Chunk Splitter và Safe Plain-Text Fallback trên Telegram HTTP 400 cam kết zero-message-drop. Theo dõi log transcript AI sinh code, tự động chuyển tiếp phase, tự phục hồi file gốc qua Workbench Cleaner, kèm hệ thống Full-Screen Settings Panel hiện đại, Telegram Remote Control Bot và Two-Way Live Q&A Mirroring.",
-    "version": "1.7.3",
+    "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan với 100% Native Antigravity Chat API Architecture (antigravity.addContext, antigravity.triggerSend, antigravity.startNewConversation, antigravity.prioritized.chat.stop), hoàn toàn focus-free, loại bỏ 100% DOM Bridge injection vào workbench.html và OS keyboard simulations. Tích hợp Telegram Rich HTML Formatting Engine (parse_mode: 'HTML'), Tag-Aware Chunk Splitter và Safe Plain-Text Fallback trên Telegram HTTP 400 cam kết zero-message-drop. Hệ thống tối ưu hóa hiệu năng cao: bất đồng bộ hóa 100% disk I/O & process execution, adaptive RPC polling backoff, payload fingerprint cache, persistent FileHandle transcript tailing, và IPC batching webview.",
+    "version": "1.7.4",
     "created_at": "2026-08-27T23:51:00+07:00",
-    "active_plan": "plans/261104-2301-telegram-rich-html-formatting/plan.md"
+    "active_plan": "plans/261105-2320-high-medium-perf-audit-remediation/plan.md"
   },
   "tech_stack": {
     "language": "TypeScript 5.3 / JavaScript (Node.js 20+)",
@@ -31,7 +31,7 @@
     "dom_diagnostics": "Structured DOM snapshot evaluation, ShadowRoot boundary traversal, Container tree discovery, Antigravity IDE Title/DOM parser, DOM Explorer Root Folder Extractor",
     "chat_gating": "Fine-Grained Telegram Free-Text Silent Drop Gating (autoplan.telegram.allowFreeChat, zero event loop blocking, zero bot error replies, preserves all workflow & management commands)",
     "settings_dashboard": "Modern 4-Category Tabbed Settings Dashboard (Dispatch & Tiers, Telegram & Remote, Timing & Automation, Diagnostics & Logs), Real-Time Search Filter with DOM Highlighting, Debounced Auto-Save (300ms) with Optimistic Rollback",
-    "performance_engine": "LRU Ownership Memoization Cache (256 entries, >98% hit rate), Event-Driven Transcript Tail Engine (>90% I/O reduction), Zero Sync I/O Extension Host Telegram Fallback, Adaptive Dual-Tier DOM Bridge Polling (>75% HTTP reduction), Fast-Path Zero-Allocation Prompt Extraction, Bounded FIFO Sliding-Window Log Queue (MAX_PENDING_LOGS = 150), Non-blocking Async DOM Snapshot I/O, Bounded Concurrent Directory Scanner asyncPool(16, ...), Webview IPC Log Batching (100ms throttle)"
+    "performance_engine": "LRU Ownership Memoization Cache (256 entries, >98% hit rate), Event-Driven Transcript Tail Engine with Persistent FileHandle & 64KB reusable Buffer (>90% GC & I/O reduction), Zero Sync I/O Extension Host Telegram Fallback, Adaptive Dual-Tier DOM Bridge Polling (>75% HTTP reduction) & Relaxed Clearance Polling (>= 80ms), Adaptive RPC Auto-Submit Polling (>= 3000ms idle / 1000ms active) & Payload Fingerprint Cache (bypassing redundant deep key sorting and SHA-256), Fast-Path Zero-Allocation Prompt Extraction, Bounded FIFO Sliding-Window Log Queue (MAX_PENDING_LOGS = 150), Non-blocking Async DOM Snapshot I/O, Bounded Concurrent Directory Scanner asyncPool(16, ...), Webview IPC Log Batching (100ms throttle) and Bounded DOM Console (1000 nodes limit)"
   },
   "features": [
     "Quét và phân tích thư mục plans/*.md tự động với bounded async I/O 4KB",

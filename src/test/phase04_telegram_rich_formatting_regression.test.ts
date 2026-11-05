@@ -854,7 +854,7 @@ async function runPhase04RegressionTests() {
     const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
 
     assert.strictEqual(pkg.name, 'antigravity-auto-plan', 'Name matches extension id');
-    assert.strictEqual(pkg.version, '1.7.3', 'Version bumped to 1.7.3 for rich formatting release');
+    assert.strictEqual(pkg.version, '1.7.4', 'Version matches release 1.7.4');
     assert.strictEqual(pkg.main, './out/extension.js', 'Main entry points to ./out/extension.js');
     assert.ok(pkg.engines && pkg.engines.vscode, 'Defines vscode engine dependency');
   });

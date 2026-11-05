@@ -1,9 +1,46 @@
 import * as vscode from 'vscode';
-import { exec, execSync, execFile } from 'child_process';
+import { exec, execSync, execFile, spawn } from 'child_process';
 import * as fs from 'fs';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+function spawnWithInputAsync(command: string, args: string[], input: string, timeoutMs: number = 2500): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const child = spawn(command, args, { stdio: ['pipe', 'ignore', 'ignore'] });
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        child.kill();
+        reject(new Error(`Command ${command} timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+
+    child.on('error', (err) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      }
+    });
+
+    child.on('close', (code) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`Command ${command} exited with code ${code}`));
+        }
+      }
+    });
+
+    child.stdin.end(input);
+  });
+}
 
 export class ForeignWindowFocusError extends Error {
   public readonly detectedTitle: string;
@@ -216,26 +253,31 @@ export async function inspectWindowsActiveWindow(
     return cachedWindowsActiveWindow.info;
   }
 
+  // 1. Check VS Code native window focus property first (avoids subprocess spawning completely)
+  if (!customExecAsync) {
+    try {
+      const vscode = require('vscode');
+      if (vscode?.window?.state?.focused) {
+        const activeWs = vscode.workspace?.workspaceFolders?.[0];
+        const wsName = vscode.workspace?.name || (activeWs ? activeWs.name : 'Antigravity');
+        const result: ActiveWindowInfo = {
+          isTarget: true,
+          windowTitle: wsName,
+          processName: 'Antigravity',
+          pid: process.pid
+        };
+        cachedWindowsActiveWindow = { info: result, timestamp: now };
+        return result;
+      }
+    } catch {
+      // Standalone or VS Code module not available
+    }
+  }
+
   const runner = customExecAsync || execAsync;
   try {
-    const psCmd = `powershell -NoProfile -NonInteractive -Command "Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-public class Win32 {
-  [DllImport(\\"user32.dll\\")] public static extern IntPtr GetForegroundWindow();
-  [DllImport(\\"user32.dll\\")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
-  [DllImport(\\"user32.dll\\")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-}
-'@;
-$hwnd = [Win32]::GetForegroundWindow();
-$pidVal = 0;
-[Win32]::GetWindowThreadProcessId($hwnd, [ref]$pidVal);
-$sb = New-Object System.Text.StringBuilder 256;
-[Win32]::GetWindowText($hwnd, $sb, 256) | Out-Null;
-$title = $sb.ToString();
-$proc = if ($pidVal -gt 0) { (Get-Process -Id $pidVal -ErrorAction SilentlyContinue).ProcessName } else { '' };
-[PSCustomObject]@{ Title = $title; Process = $proc; Pid = $pidVal } | ConvertTo-Json -Compress"`;
+    // Non-compiling process inspection using precompiled .NET UIAutomationClient assembly (no dynamic Add-Type / Roslyn compilation)
+    const psCmd = `powershell -NoProfile -NonInteractive -Command "[void][System.Reflection.Assembly]::LoadWithPartialName('UIAutomationClient'); $el = [System.Windows.Automation.AutomationElement]::FocusedElement; $pidVal = if ($el) { $el.Current.ProcessId } else { 0 }; $title = if ($el) { $el.Current.Name } else { '' }; $proc = if ($pidVal -gt 0) { (Get-Process -Id $pidVal -ErrorAction SilentlyContinue).ProcessName } else { '' }; [PSCustomObject]@{ Title = $title; Process = $proc; Pid = $pidVal } | ConvertTo-Json -Compress"`;
 
     const { stdout } = await runner(psCmd, { timeout: 2500 });
     const parsed = JSON.parse(stdout.trim());
@@ -490,10 +532,10 @@ export class KeyboardManager {
     if (process.platform === 'linux') {
       try {
         try {
-          execSync('xclip -selection clipboard', { input: text, stdio: ['pipe', 'ignore', 'ignore'] });
+          await spawnWithInputAsync('xclip', ['-selection', 'clipboard'], text);
           return;
         } catch {
-          execSync('xsel --clipboard --input', { input: text, stdio: ['pipe', 'ignore', 'ignore'] });
+          await spawnWithInputAsync('xsel', ['--clipboard', '--input'], text);
           return;
         }
       } catch (clipErr: any) {
@@ -503,7 +545,7 @@ export class KeyboardManager {
 
     if (process.platform === 'darwin') {
       try {
-        execSync('pbcopy', { input: text, stdio: ['pipe', 'ignore', 'ignore'] });
+        await spawnWithInputAsync('pbcopy', [], text);
         return;
       } catch (clipErr: any) {
         throw new Error(`Failed to copy to macOS clipboard: ${clipErr.message || clipErr}`);
@@ -537,11 +579,11 @@ export class KeyboardManager {
     if (process.platform === 'linux') {
       try {
         try {
-          const stdout = execSync('xclip -selection clipboard -o', { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' });
-          return stdout.trim();
+          const { stdout } = await execFileAsync('xclip', ['-selection', 'clipboard', '-o']);
+          return (stdout || '').trim();
         } catch {
-          const stdout = execSync('xsel --clipboard --output', { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' });
-          return stdout.trim();
+          const { stdout } = await execFileAsync('xsel', ['--clipboard', '--output']);
+          return (stdout || '').trim();
         }
       } catch {
         return '';
@@ -550,8 +592,8 @@ export class KeyboardManager {
 
     if (process.platform === 'darwin') {
       try {
-        const stdout = execSync('pbpaste', { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' });
-        return stdout.trim();
+        const { stdout } = await execFileAsync('pbpaste', []);
+        return (stdout || '').trim();
       } catch {
         return '';
       }

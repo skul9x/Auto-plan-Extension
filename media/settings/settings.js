@@ -149,7 +149,9 @@
   let savedBaseline = '';
   let toastTimer = null;
   let logBuffer = [];
-  const MAX_LOG_BUFFER_SIZE = 500;
+  let MAX_LOG_BUFFER_SIZE = (typeof window !== 'undefined' && typeof window.__MAX_LOG_BUFFER_SIZE === 'number')
+    ? window.__MAX_LOG_BUFFER_SIZE
+    : 1000;
 
   // Search & Navigation State
   const SEARCHABLE_SELECTORS = '.card-title, .card-subtitle, .tier-name, .tier-desc, .toggle-title, .toggle-description, .form-label, .input-hint, .stat-label, .pill-label, .tier-meta-item';
@@ -1082,6 +1084,64 @@
     return row;
   }
 
+  let autoScrollRafId = null;
+
+  /**
+   * Synchronizes auto-scroll with the browser rendering pipeline via requestAnimationFrame (FR-03).
+   */
+  function scheduleAutoScroll() {
+    if (!chkAutoScroll || !chkAutoScroll.checked || !logConsoleViewport) {
+      return;
+    }
+    if (autoScrollRafId !== null) {
+      return; // Already scheduled for upcoming animation frame
+    }
+    const raf = (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function')
+      ? window.requestAnimationFrame
+      : (typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb) => setTimeout(cb, 16));
+
+    autoScrollRafId = raf(() => {
+      autoScrollRafId = null;
+      if (chkAutoScroll && chkAutoScroll.checked && logConsoleViewport) {
+        logConsoleViewport.scrollTop = logConsoleViewport.scrollHeight;
+      }
+    });
+  }
+
+  if (typeof window !== 'undefined') {
+    window.__resetAutoScroll = () => { autoScrollRafId = null; };
+  }
+
+  /**
+   * Prunes oldest child DOM elements in logConsoleOutput to enforce MAX_LOG_BUFFER_SIZE (FR-04, PERF-005).
+   */
+  function pruneConsoleDom() {
+    if (!logConsoleOutput) return;
+    const getCount = () => {
+      if (typeof logConsoleOutput.childElementCount === 'number') {
+        return logConsoleOutput.childElementCount;
+      }
+      if (logConsoleOutput.children && typeof logConsoleOutput.children.length === 'number') {
+        return logConsoleOutput.children.length;
+      }
+      return 0;
+    };
+
+    while (getCount() > MAX_LOG_BUFFER_SIZE) {
+      const first = logConsoleOutput.firstElementChild ||
+        (logConsoleOutput.children ? logConsoleOutput.children[0] : null) ||
+        logConsoleOutput.firstChild;
+      if (!first) break;
+      if (typeof first.remove === 'function') {
+        first.remove();
+      } else if (typeof logConsoleOutput.removeChild === 'function') {
+        logConsoleOutput.removeChild(first);
+      } else {
+        break;
+      }
+    }
+  }
+
   function renderLogConsole() {
     if (!logConsoleOutput) return;
     const filter = logLevelFilter ? logLevelFilter.value : 'all';
@@ -1100,48 +1160,80 @@
       return;
     }
 
+    const itemsToRender = filtered.length > MAX_LOG_BUFFER_SIZE
+      ? filtered.slice(-MAX_LOG_BUFFER_SIZE)
+      : filtered;
+
     const fragment = document.createDocumentFragment();
-    for (const entry of filtered) {
-      fragment.appendChild(createLogRow(entry));
+    for (let i = 0; i < itemsToRender.length; i++) {
+      fragment.appendChild(createLogRow(itemsToRender[i]));
     }
     logConsoleOutput.appendChild(fragment);
 
-    if (chkAutoScroll && chkAutoScroll.checked && logConsoleViewport) {
-      logConsoleViewport.scrollTop = logConsoleViewport.scrollHeight;
-    }
+    pruneConsoleDom();
+    scheduleAutoScroll();
   }
 
-  function appendSingleLogEntry(entry) {
-    if (!entry) return;
-    logBuffer.push(entry);
+  /**
+   * Appends a batch of log entries using DocumentFragment and enforces bounded DOM size (FR-02, FR-04).
+   */
+  function appendLogBatch(entries) {
+    if (!entries || !entries.length) return;
+
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (!entry) continue;
+      logBuffer.push(entry);
+    }
+
     if (logBuffer.length > MAX_LOG_BUFFER_SIZE) {
-      logBuffer.shift();
+      logBuffer.splice(0, logBuffer.length - MAX_LOG_BUFFER_SIZE);
     }
 
     const filter = logLevelFilter ? logLevelFilter.value : 'all';
-    if (matchesFilter(entry, filter) && logConsoleOutput) {
+    const matchingEntries = [];
+    for (let i = 0; i < entries.length; i++) {
+      if (matchesFilter(entries[i], filter)) {
+        matchingEntries.push(entries[i]);
+      }
+    }
+
+    if (matchingEntries.length > 0 && logConsoleOutput) {
       const empty = logConsoleOutput.querySelector('.log-empty-state');
       if (empty) {
         empty.remove();
       }
-      logConsoleOutput.appendChild(createLogRow(entry));
 
-      if (chkAutoScroll && chkAutoScroll.checked && logConsoleViewport) {
-        logConsoleViewport.scrollTop = logConsoleViewport.scrollHeight;
+      // Batch DOM element insertion via DocumentFragment (FR-02)
+      const fragment = document.createDocumentFragment();
+      for (let i = 0; i < matchingEntries.length; i++) {
+        fragment.appendChild(createLogRow(matchingEntries[i]));
       }
+      logConsoleOutput.appendChild(fragment);
+
+      // Enforce bounded DOM element capacity (FR-04, PERF-005)
+      pruneConsoleDom();
+
+      // Synchronize auto-scroll with browser rendering pipeline via rAF (FR-03)
+      scheduleAutoScroll();
     }
 
+    // Update log counter badge (FR-05)
     if (logCountBadge) {
       const filteredCount = logBuffer.filter((e) => matchesFilter(e, filter)).length;
       logCountBadge.textContent = `${filteredCount} / ${logBuffer.length} entries`;
     }
   }
 
+  function appendSingleLogEntry(entry) {
+    if (!entry) return;
+    appendLogBatch([entry]);
+  }
+
   // ==========================================================================
   // IPC Message Listener from Extension Host
   // ==========================================================================
-  window.addEventListener('message', (event) => {
-    const message = event.data;
+  function handleWebviewMessage(message) {
     if (!message) return;
 
     const command = message.command || message.type;
@@ -1370,18 +1462,28 @@
 
       case 'logBuffer': {
         const entries = Array.isArray(message.entries) ? message.entries : [];
-        logBuffer = entries;
+        logBuffer = entries.slice(-MAX_LOG_BUFFER_SIZE);
         renderLogConsole();
+        break;
+      }
+
+      case 'logBatch': {
+        const entries = Array.isArray(message.entries) ? message.entries : [];
+        appendLogBatch(entries);
         break;
       }
 
       case 'logEntry': {
         if (message.entry) {
-          appendSingleLogEntry(message.entry);
+          appendLogBatch([message.entry]);
         }
         break;
       }
     }
+  }
+
+  window.addEventListener('message', (event) => {
+    handleWebviewMessage(event.data);
   });
 
   // Initialize Baseline & Apply Initial Tab View
@@ -1407,6 +1509,15 @@
       createLogRow,
       renderLogConsole,
       appendSingleLogEntry,
+      appendLogBatch,
+      pruneConsoleDom,
+      scheduleAutoScroll,
+      MAX_LOG_BUFFER_SIZE,
+      getMaxLogBufferSize: () => MAX_LOG_BUFFER_SIZE,
+      setMaxLogBufferSize: (sz) => { MAX_LOG_BUFFER_SIZE = sz; },
+      getAutoScrollRafId: () => autoScrollRafId,
+      resetAutoScroll: () => { autoScrollRafId = null; },
+      handleWebviewMessage,
       updatePhaseDiagnostics,
       getLogBuffer: () => logBuffer,
       setLogBuffer: (buf) => { logBuffer = buf; },

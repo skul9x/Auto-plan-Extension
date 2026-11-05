@@ -1,26 +1,26 @@
 {
-  "updated_at": "2026-11-05T18:15:00+07:00",
-  "active_plan": "plans/261104-2301-telegram-rich-html-formatting/plan.md",
+  "updated_at": "2026-11-06T00:30:00+07:00",
+  "active_plan": "plans/261105-2320-high-medium-perf-audit-remediation/plan.md",
   "working_on": {
-    "feature": "Telegram Rich HTML Formatting & Tag-Aware Chunking Pipeline (v1.7.3)",
-    "task": "Hoàn tất trọn vẹn 4 Phases nâng cấp định dạng Rich HTML cho Telegram Bot, đóng gói VSIX v1.7.3 và cài đặt vào Antigravity IDE.",
+    "feature": "High and Medium Performance & Reliability Audit Remediation (v1.7.4)",
+    "task": "Hoàn thành toàn bộ 4 Phases tối ưu hóa hiệu năng và độ tin cậy, đóng gói VSIX v1.7.4 và cài đặt vào Antigravity IDE.",
     "status": "completed",
     "files": [
-      "src/telegramUtils.ts",
-      "src/telegramChatMirror.ts",
-      "src/telegramBridge.ts",
-      "src/telegramNotifier.ts",
-      "src/test/phase01_markdown_to_telegram_html.test.ts",
-      "src/test/phase02_html_tag_aware_chunk_splitter.test.ts",
-      "src/test/phase03_telegram_html_delivery_and_fallback.test.ts",
-      "src/test/phase04_telegram_rich_formatting_regression.test.ts",
+      "src/antigravityRpcAutoSubmit.ts",
+      "src/transcriptTailEngine.ts",
+      "media/autoplan-dom-bridge.js",
+      "src/settingsProvider.ts",
+      "media/settings.js",
+      "src/multiWindowRegistry.ts",
+      "src/planScanner.ts",
+      "src/keyboardManager.ts",
+      "src/test/phase04_rpc_engine_and_dom_performance_verification.test.ts",
       "package.json",
-      "README.md",
       "CHANGELOG.md",
-      "antigravity-auto-plan-1.7.3.vsix"
+      "antigravity-auto-plan-1.7.4.vsix"
     ],
     "blockers": [],
-    "notes": "Toàn bộ pipeline phân phối tin nhắn Telegram đã chuyển sang parse_mode: 'HTML'. Ký tự cú pháp Markdown rác (###, ---, raw **) được loại bỏ sạch sẽ, code blocks hiển thị đẹp với syntax highlighting class và escape entity an toàn (&amp;, &lt;, &gt;). Tag-aware splitter giữ nguyên tính toàn vẹn của cặp thẻ mở/đóng qua các chunk <= 3800 ký tự. Safe Fallback cơ chế zero-drop tự động bóc tách plain-text khi gặp Telegram HTTP 400. Đã đóng gói antigravity-auto-plan-1.7.3.vsix (807 KB) và cài đặt thành công vào Antigravity IDE."
+    "notes": "Đã giải quyết trọn vẹn 10 lỗi hiệu năng nghiêm trọng: bất đồng bộ hóa hoàn toàn disk I/O và subprocess execution (PERF-001, 004, 007); batching IPC message và giới hạn DOM console buffer ở webview (PERF-002, 005); adaptive idle backoff >= 3000ms, fingerprint cache và loại bỏ query trùng lặp ở RPC engine (PERF-003); persistent FileHandle và reusable 64KB Buffer cho transcript tailing (PERF-008); nới lỏng polling interval lên >= 80ms ở DOM submission clearance loop (PERF-009). Đã đóng gói và cài đặt antigravity-auto-plan-1.7.4.vsix vào Antigravity IDE."
   },
   "pending_tasks": [
     {
@@ -30,6 +30,61 @@
     }
   ],
   "recent_changes": [
+    {
+      "timestamp": "2026-11-06T00:26:00+07:00",
+      "type": "packaging_and_install",
+      "description": "Đóng gói extension thành file VSIX antigravity-auto-plan-1.7.4.vsix (820.8 KB) và cài đặt thành công vào Antigravity IDE via antigravity-ide.cmd CLI.",
+      "files": [
+        "antigravity-auto-plan-1.7.4.vsix"
+      ]
+    },
+    {
+      "timestamp": "2026-11-06T00:24:00+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 04: Background Engine Polling & Stream Optimization. Pass 11/11 tests trong phase04_rpc_engine_and_dom_performance_verification.test.ts (adaptive backoff, fingerprint caching, persistent FileHandle tailing, 80ms clearance relaxation).",
+      "files": [
+        "src/antigravityRpcAutoSubmit.ts",
+        "src/transcriptTailEngine.ts",
+        "media/autoplan-dom-bridge.js",
+        "src/test/phase04_rpc_engine_and_dom_performance_verification.test.ts",
+        "plans/261105-2320-high-medium-perf-audit-remediation/phase-04-background-engine-adaptive-polling-and-tailing.md",
+        "plans/261105-2320-high-medium-perf-audit-remediation/plan.md"
+      ]
+    },
+    {
+      "timestamp": "2026-11-06T00:10:00+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 03: Settings Webview IPC Batching & DOM Pruning. Pass 100% tests trong phase03_settings_webview_batching_and_memory_verification.test.ts.",
+      "files": [
+        "src/settingsProvider.ts",
+        "media/settings.js",
+        "src/test/phase03_settings_webview_batching_and_memory_verification.test.ts",
+        "plans/261105-2320-high-medium-perf-audit-remediation/phase-03-settings-webview-batching-and-dom-pruning.md"
+      ]
+    },
+    {
+      "timestamp": "2026-11-05T23:59:00+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 02: Event Loop Unblocking & Non-Blocking I/O. Pass 100% tests trong phase02_event_loop_and_async_io_verification.test.ts.",
+      "files": [
+        "src/multiWindowRegistry.ts",
+        "src/planScanner.ts",
+        "src/keyboardManager.ts",
+        "src/test/phase02_event_loop_and_async_io_verification.test.ts",
+        "plans/261105-2320-high-medium-perf-audit-remediation/phase-02-event-loop-unblocking-and-async-io.md"
+      ]
+    },
+    {
+      "timestamp": "2026-11-05T23:38:00+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 01: Test Suite Baseline Stabilization. Pass 100% tests trong phase01_test_suite_baseline_verification.test.ts.",
+      "files": [
+        "src/test/phase04_telegram_rich_formatting_regression.test.ts",
+        "src/test/phase05_e2e_cross_platform_release.test.ts",
+        "src/test/phase01_test_suite_baseline_verification.test.ts",
+        "plans/261105-2320-high-medium-perf-audit-remediation/phase-01-test-suite-baseline-stabilization.md"
+      ]
+    },
     {
       "timestamp": "2026-11-05T00:21:00+07:00",
       "type": "packaging_and_install",

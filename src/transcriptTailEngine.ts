@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as readline from 'readline';
+import { StringDecoder } from 'string_decoder';
 import { EventEmitter } from 'events';
 import { getDefaultBrainDir, verifyConversationOwnershipAsync } from './transcriptWatcher';
 
@@ -34,6 +34,7 @@ export interface TranscriptTailEngineOptions {
   activeConvId?: string;
   transcriptPath?: string;
   pollIntervalMs?: number;
+  relaxedPollIntervalMs?: number;
   readOffset?: number;
   startFromEnd?: boolean;
   discoveryThrottleMs?: number;
@@ -119,13 +120,15 @@ export function extractUserPrompt(rawContent: string): string {
 
 /**
  * Continuous background transcript tailing engine that monitors Antigravity IDE's
- * transcript.jsonl using persistent byte-offset streaming via fs.createReadStream and readline.
+ * transcript.jsonl using persistent FileHandle reading with a reusable buffer.
  */
 export class TranscriptTailEngine extends EventEmitter {
   private brainDir: string;
   private activeConvId: string;
   private explicitTranscriptPath?: string;
   private pollIntervalMs: number;
+  private relaxedPollIntervalMs: number;
+  private _activePollIntervalMs: number;
   private readOffset: number;
   private startFromEnd: boolean;
   private discoveryThrottleMs: number;
@@ -142,18 +145,42 @@ export class TranscriptTailEngine extends EventEmitter {
   private isReading: boolean = false;
   private pendingRead: boolean = false;
 
+  private persistentFileHandle: fs.promises.FileHandle | null = null;
+  private persistentFilePath: string | null = null;
+  private reusableBuffer: Buffer;
+  private static readonly DEFAULT_CHUNK_SIZE = 64 * 1024; // 64 KB reusable buffer
+
   constructor(options: TranscriptTailEngineOptions = {}) {
     super();
     this.brainDir = options.brainDir || getDefaultBrainDir();
     this.activeConvId = options.activeConvId || '';
     this.explicitTranscriptPath = options.transcriptPath;
     this.pollIntervalMs = options.pollIntervalMs ?? 300;
+    this.relaxedPollIntervalMs = options.relaxedPollIntervalMs ?? Math.max(this.pollIntervalMs * 4, 1200);
+    this._activePollIntervalMs = this.pollIntervalMs;
     this.readOffset = options.readOffset ?? 0;
     this.startFromEnd = options.startFromEnd ?? false;
     this.discoveryThrottleMs = options.discoveryThrottleMs ?? 5000;
     this.maxDiscoveryCandidates = options.maxDiscoveryCandidates ?? 25;
     this.workspacePath = options.workspacePath;
     this.workspaceName = options.workspaceName;
+    this.reusableBuffer = Buffer.alloc(TranscriptTailEngine.DEFAULT_CHUNK_SIZE);
+  }
+
+  public getActivePollIntervalMs(): number {
+    return this._activePollIntervalMs;
+  }
+
+  public get activePollIntervalMs(): number {
+    return this._activePollIntervalMs;
+  }
+
+  public getFileHandle(): fs.promises.FileHandle | null {
+    return this.persistentFileHandle;
+  }
+
+  public hasActiveHandle(): boolean {
+    return this.persistentFileHandle !== null;
   }
 
   // Typed EventEmitter overloads
@@ -275,21 +302,52 @@ export class TranscriptTailEngine extends EventEmitter {
     return release!;
   }
 
+  private async closeFileHandle(): Promise<void> {
+    if (this.persistentFileHandle) {
+      try {
+        await this.persistentFileHandle.close();
+      } catch (_) {}
+      this.persistentFileHandle = null;
+      this.persistentFilePath = null;
+    }
+  }
+
+  private async getOrCreateFileHandle(filePath: string): Promise<fs.promises.FileHandle | null> {
+    if (this.persistentFileHandle && this.persistentFilePath === filePath) {
+      return this.persistentFileHandle;
+    }
+    await this.closeFileHandle();
+    try {
+      this.persistentFileHandle = await fs.promises.open(filePath, 'r');
+      this.persistentFilePath = filePath;
+      return this.persistentFileHandle;
+    } catch {
+      this.persistentFileHandle = null;
+      this.persistentFilePath = null;
+      return null;
+    }
+  }
+
   /**
-   * Reads only newly appended lines using byte-offset streaming via fs.createReadStream and readline.
-   * Maintains persistent readOffset and emits events for parsed steps.
+   * Reads only newly appended lines using a persistent FileHandle and reusable buffer.
+   * Maintains persistent readOffset and emits events for parsed steps without re-creating streams.
    */
   public async readAppendedLines(filePath: string): Promise<string[]> {
     const release = await this.acquireReadLock();
     try {
-      return await this.executeReadStream(filePath);
+      return await this.executeFileRead(filePath);
     } finally {
       release();
     }
   }
 
-  private async executeReadStream(filePath: string): Promise<string[]> {
+  public async executeReadStream(filePath: string): Promise<string[]> {
+    return this.executeFileRead(filePath);
+  }
+
+  private async executeFileRead(filePath: string): Promise<string[]> {
     if (!fs.existsSync(filePath)) {
+      await this.closeFileHandle();
       return [];
     }
 
@@ -303,6 +361,7 @@ export class TranscriptTailEngine extends EventEmitter {
     // Handle file rotation or truncation
     if (stat.size < this.readOffset) {
       this.readOffset = 0;
+      await this.closeFileHandle();
     }
 
     if (stat.size === this.readOffset) {
@@ -311,67 +370,70 @@ export class TranscriptTailEngine extends EventEmitter {
 
     const initialOffset = this.readOffset;
     const targetEnd = stat.size;
+    const totalBytesToRead = targetEnd - initialOffset;
+    if (totalBytesToRead <= 0) {
+      return [];
+    }
 
-    return new Promise<string[]>((resolve, reject) => {
-      const linesRead: string[] = [];
-      let bytesRead = 0;
-      let lastByteEndsWithNewline = false;
+    const handle = await this.getOrCreateFileHandle(filePath);
+    if (!handle) {
+      return [];
+    }
 
-      const stream = fs.createReadStream(filePath, {
-        start: initialOffset,
-        end: targetEnd - 1
-      });
+    let bytesReadSoFar = 0;
+    const decoder = new StringDecoder('utf8');
+    let decodedText = '';
+    let lastByte = -1;
 
-      stream.on('data', (chunk: Buffer | string) => {
-        const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
-        bytesRead += buf.length;
-        if (buf.length > 0) {
-          const lastByte = buf[buf.length - 1];
-          lastByteEndsWithNewline = (lastByte === 0x0A || lastByte === 0x0D);
-        }
-      });
+    while (bytesReadSoFar < totalBytesToRead) {
+      const chunkSize = Math.min(this.reusableBuffer.length, totalBytesToRead - bytesReadSoFar);
+      let res: { bytesRead: number; buffer: Buffer };
+      try {
+        res = await handle.read(this.reusableBuffer, 0, chunkSize, initialOffset + bytesReadSoFar);
+      } catch (readErr) {
+        await this.closeFileHandle();
+        throw readErr;
+      }
 
-      const rl = readline.createInterface({
-        input: stream,
-        crlfDelay: Infinity
-      });
+      if (res.bytesRead === 0) {
+        break;
+      }
 
-      rl.on('line', (line: string) => {
-        linesRead.push(line);
-      });
+      bytesReadSoFar += res.bytesRead;
+      const chunk = this.reusableBuffer.subarray(0, res.bytesRead);
+      lastByte = chunk[chunk.length - 1];
+      decodedText += decoder.write(chunk);
+    }
 
-      rl.on('close', () => {
-        // If the stream did not end with a newline, the last line was incomplete (partial write)
-        if (!lastByteEndsWithNewline && linesRead.length > 0) {
-          const partialLine = linesRead.pop()!;
-          const partialBytes = Buffer.byteLength(partialLine, 'utf8');
-          this.readOffset = initialOffset + bytesRead - partialBytes;
-        } else {
-          this.readOffset = initialOffset + bytesRead;
-        }
+    decodedText += decoder.end();
 
-        // Parse and emit events for complete lines
-        for (const line of linesRead) {
-          const trimmed = line.trim();
-          if (trimmed) {
-            this.parseAndEmitStep(trimmed);
-          }
-        }
+    const lastByteEndsWithNewline = (lastByte === 0x0A || lastByte === 0x0D);
+    const rawLines = decodedText.split(/\r?\n/);
 
-        resolve(linesRead);
-      });
+    if (lastByteEndsWithNewline && rawLines.length > 0 && rawLines[rawLines.length - 1] === '') {
+      rawLines.pop();
+    }
 
-      stream.on('error', (err) => {
-        try {
-          rl.close();
-        } catch {}
-        reject(err);
-      });
+    let linesRead: string[];
+    if (!lastByteEndsWithNewline && rawLines.length > 0) {
+      const partialLine = rawLines.pop()!;
+      const partialBytes = Buffer.byteLength(partialLine, 'utf8');
+      this.readOffset = initialOffset + bytesReadSoFar - partialBytes;
+      linesRead = rawLines;
+    } else {
+      this.readOffset = initialOffset + bytesReadSoFar;
+      linesRead = rawLines;
+    }
 
-      rl.on('error', (err) => {
-        reject(err);
-      });
-    });
+    // Parse and emit events for complete lines
+    for (const line of linesRead) {
+      const trimmed = line.trim();
+      if (trimmed) {
+        this.parseAndEmitStep(trimmed);
+      }
+    }
+
+    return linesRead;
   }
 
   /**
@@ -468,6 +530,7 @@ export class TranscriptTailEngine extends EventEmitter {
 
     const oldConvId = this.activeConvId;
     this.cleanupTranscriptWatcher();
+    this.closeFileHandle().catch(() => {});
 
     this.activeConvId = newConvId;
     this.readOffset = 0;
@@ -613,10 +676,10 @@ export class TranscriptTailEngine extends EventEmitter {
     this.setupTranscriptWatcher();
     this.setupBrainDirWatcher();
 
-    // Start resilient polling fallback (300ms by default)
+    // Start resilient polling fallback (relaxed when watcher is healthy, activePollIntervalMs)
     this.pollTimer = setInterval(async () => {
       await this.pollTick();
-    }, this.pollIntervalMs);
+    }, this._activePollIntervalMs);
 
     // Initial read
     await this.checkAndRead();
@@ -635,6 +698,7 @@ export class TranscriptTailEngine extends EventEmitter {
 
     this.cleanupTranscriptWatcher();
     this.cleanupBrainDirWatcher();
+    this.closeFileHandle().catch(() => {});
   }
 
   /**
@@ -699,6 +763,18 @@ export class TranscriptTailEngine extends EventEmitter {
     }
   }
 
+  private restartPollTimer(): void {
+    if (!this.isRunning) {
+      return;
+    }
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = setInterval(async () => {
+        await this.pollTick();
+      }, this._activePollIntervalMs);
+    }
+  }
+
   private setupTranscriptWatcher(): void {
     if (this.transcriptWatcher) {
       return;
@@ -706,6 +782,7 @@ export class TranscriptTailEngine extends EventEmitter {
 
     const transcriptPath = this.resolveTranscriptPath();
     if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+      this._activePollIntervalMs = this.pollIntervalMs;
       return;
     }
 
@@ -717,9 +794,14 @@ export class TranscriptTailEngine extends EventEmitter {
       });
       this.transcriptWatcher.on('error', () => {
         this.cleanupTranscriptWatcher();
+        this._activePollIntervalMs = this.pollIntervalMs;
+        this.restartPollTimer();
       });
+      this._activePollIntervalMs = this.relaxedPollIntervalMs;
+      this.restartPollTimer();
     } catch {
       this.transcriptWatcher = null;
+      this._activePollIntervalMs = this.pollIntervalMs;
     }
   }
 
@@ -730,6 +812,7 @@ export class TranscriptTailEngine extends EventEmitter {
       } catch {}
       this.transcriptWatcher = null;
     }
+    this._activePollIntervalMs = this.pollIntervalMs;
   }
 
   private setupBrainDirWatcher(): void {

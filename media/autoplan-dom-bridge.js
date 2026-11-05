@@ -1380,6 +1380,19 @@
     return false;
   }
 
+  const CLEARANCE_MIN_POLL_INTERVAL_MS = 80;
+
+  /**
+   * Enforces bounded relaxed polling interval for DOM submission clearance checks (PERF-009).
+   * Prevents renderer thread saturation by clamping polling interval to at least 80ms.
+   */
+  function getEffectiveClearancePollInterval(options = {}) {
+    if (options && options.pollIntervalMs !== undefined) {
+      return Math.max(CLEARANCE_MIN_POLL_INTERVAL_MS, Number(options.pollIntervalMs) || CLEARANCE_MIN_POLL_INTERVAL_MS);
+    }
+    return CLEARANCE_MIN_POLL_INTERVAL_MS;
+  }
+
   /**
    * Asynchronously verifies that an input submission actually cleared the buffer
    * or triggered an active agent response / new user message (Phase 03: 3-Point Proof Verification Standard).
@@ -1403,7 +1416,7 @@
       : (options.clearanceObservationMs !== undefined
         ? options.clearanceObservationMs
         : (options.verificationDelayMs !== undefined ? options.verificationDelayMs : 1000));
-    const pollIntervalMs = options.pollIntervalMs !== undefined ? options.pollIntervalMs : 15;
+    const pollIntervalMs = getEffectiveClearancePollInterval(options);
 
     // Snapshot pre-submission message count
     const initialMessageCount = options.initialMessageCount !== undefined
@@ -1442,7 +1455,8 @@
         verified: true,
         reason: 'cancel_button_active',
         proof: 'proof2_active_cancel_button',
-        durationMs: Date.now() - startTime
+        durationMs: Date.now() - startTime,
+        pollIntervalMs
       };
     }
     if (checkProof3()) {
@@ -1450,7 +1464,8 @@
         verified: true,
         reason: 'message_count_incremented',
         proof: 'proof3_message_count_increment',
-        durationMs: Date.now() - startTime
+        durationMs: Date.now() - startTime,
+        pollIntervalMs
       };
     }
     if (hasConfirmedContentBeforeSubmit && checkProof1()) {
@@ -1458,7 +1473,8 @@
         verified: true,
         reason: 'input_cleared',
         proof: 'proof1_input_clearance',
-        durationMs: Math.max(1, Date.now() - startTime)
+        durationMs: Math.max(1, Date.now() - startTime),
+        pollIntervalMs
       };
     }
 
@@ -1470,7 +1486,8 @@
           verified: true,
           reason: 'input_cleared',
           proof: 'proof1_input_clearance',
-          durationMs: Math.max(1, Date.now() - startTime)
+          durationMs: Math.max(1, Date.now() - startTime),
+          pollIntervalMs
         };
       }
       if (checkProof2()) {
@@ -1478,7 +1495,8 @@
           verified: true,
           reason: 'cancel_button_active',
           proof: 'proof2_active_cancel_button',
-          durationMs: Date.now() - startTime
+          durationMs: Date.now() - startTime,
+          pollIntervalMs
         };
       }
       if (checkProof3()) {
@@ -1486,7 +1504,8 @@
           verified: true,
           reason: 'message_count_incremented',
           proof: 'proof3_message_count_increment',
-          durationMs: Date.now() - startTime
+          durationMs: Date.now() - startTime,
+          pollIntervalMs
         };
       }
 
@@ -1501,7 +1520,8 @@
         verified: true,
         reason: 'input_cleared',
         proof: 'proof1_input_clearance',
-        durationMs: Math.max(1, Date.now() - startTime)
+        durationMs: Math.max(1, Date.now() - startTime),
+        pollIntervalMs
       };
     }
     if (checkProof2()) {
@@ -1509,7 +1529,8 @@
         verified: true,
         reason: 'cancel_button_active',
         proof: 'proof2_active_cancel_button',
-        durationMs: Date.now() - startTime
+        durationMs: Date.now() - startTime,
+        pollIntervalMs
       };
     }
     if (checkProof3()) {
@@ -1517,7 +1538,8 @@
         verified: true,
         reason: 'message_count_incremented',
         proof: 'proof3_message_count_increment',
-        durationMs: Date.now() - startTime
+        durationMs: Date.now() - startTime,
+        pollIntervalMs
       };
     }
 
@@ -1527,6 +1549,7 @@
       rejectionReason: 'unverified_input_remains',
       error: 'Submission was not verified: input retains prompt and neither Cancel button nor user message increment was detected',
       durationMs: Date.now() - startTime,
+      pollIntervalMs,
       currentValue: (inputElem && (inputElem.tagName === 'TEXTAREA' || inputElem.tagName === 'INPUT'))
         ? (inputElem.value || '')
         : (inputElem ? (inputElem.textContent || inputElem.innerText || '') : '')
@@ -2387,7 +2410,7 @@
           document: doc,
           initialMessageCount,
           observationTimeoutMs: options.observationTimeoutMs !== undefined ? options.observationTimeoutMs : (options.clearanceObservationMs !== undefined ? options.clearanceObservationMs : (options.verificationDelayMs !== undefined ? options.verificationDelayMs : 1000)),
-          pollIntervalMs: options.pollIntervalMs !== undefined ? options.pollIntervalMs : 15,
+          pollIntervalMs: getEffectiveClearancePollInterval(options),
           ...options,
           hasConfirmedContentBeforeSubmit: options.hasConfirmedContentBeforeSubmit !== undefined ? options.hasConfirmedContentBeforeSubmit : isBufferVerified,
           charsDetectedInDOM: options.charsDetectedInDOM !== undefined ? options.charsDetectedInDOM : verificationDiag.charsDetectedInDOM
@@ -2510,7 +2533,7 @@
           document: doc,
           initialMessageCount,
           observationTimeoutMs: options.observationTimeoutMs !== undefined ? options.observationTimeoutMs : (options.clearanceObservationMs !== undefined ? options.clearanceObservationMs : (options.verificationDelayMs !== undefined ? options.verificationDelayMs : 1000)),
-          pollIntervalMs: options.pollIntervalMs !== undefined ? options.pollIntervalMs : 15,
+          pollIntervalMs: getEffectiveClearancePollInterval(options),
           ...options,
           hasConfirmedContentBeforeSubmit: options.hasConfirmedContentBeforeSubmit !== undefined ? options.hasConfirmedContentBeforeSubmit : isBufferVerified,
           charsDetectedInDOM: options.charsDetectedInDOM !== undefined ? options.charsDetectedInDOM : verificationDiag.charsDetectedInDOM
@@ -2557,7 +2580,7 @@
                 document: doc,
                 initialMessageCount,
                 observationTimeoutMs: options.observationTimeoutMs !== undefined ? options.observationTimeoutMs : (options.clearanceObservationMs !== undefined ? options.clearanceObservationMs : (options.verificationDelayMs !== undefined ? options.verificationDelayMs : 1000)),
-                pollIntervalMs: options.pollIntervalMs !== undefined ? options.pollIntervalMs : 15,
+                pollIntervalMs: getEffectiveClearancePollInterval(options),
                 ...options,
                 hasConfirmedContentBeforeSubmit: options.hasConfirmedContentBeforeSubmit !== undefined ? options.hasConfirmedContentBeforeSubmit : isBufferVerified,
                 charsDetectedInDOM: options.charsDetectedInDOM !== undefined ? options.charsDetectedInDOM : verificationDiag.charsDetectedInDOM
@@ -4105,6 +4128,8 @@
     dispatchButtonClickCascade,
     isInputClearedOrSubmitted,
     verifyInputSubmission,
+    CLEARANCE_MIN_POLL_INTERVAL_MS,
+    getEffectiveClearancePollInterval,
     extractDomBufferText,
     verifyBufferHasText,
     injectPromptAndSubmit,

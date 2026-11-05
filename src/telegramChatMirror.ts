@@ -333,6 +333,7 @@ export interface TelegramChatMirrorOptions {
   workspacePath?: string;
   isMultiWorkspace?: boolean | (() => boolean);
   registryPath?: string;
+  registryTtlMs?: number;
   logger?: any;
   isLeader?: boolean;
   isLeaderFn?: () => boolean;
@@ -358,6 +359,9 @@ export class TelegramChatMirror {
   private workspacePath?: string;
   private isMultiWorkspace?: boolean | (() => boolean);
   private registryPath?: string;
+  private registryTtlMs: number = 5000;
+  private _cachedIsMultiWorkspace: boolean | null = null;
+  private _cachedWorkspaceCheckTimestamp: number = 0;
   private boundTailListeners: { event: string; listener: (...args: any[]) => any }[] = [];
   private logger?: any;
   private _isLeader: boolean = true;
@@ -388,7 +392,12 @@ export class TelegramChatMirror {
     this.workspacePath = options?.workspacePath;
     this.isMultiWorkspace = options?.isMultiWorkspace;
     this.registryPath = options?.registryPath;
+    this.registryTtlMs = options?.registryTtlMs ?? 5000;
     this.logger = options?.logger;
+
+    if (this.registryPath) {
+      this.refreshWorkspaceRegistryAsync().catch(() => {});
+    }
 
     if (options?.tailEngine) {
       this.attachTailEngine(options.tailEngine);
@@ -475,13 +484,58 @@ export class TelegramChatMirror {
     this.mirrorIncludePcPrompts = include;
   }
 
-  public setWorkspace(workspaceName?: string, isMulti?: boolean | (() => boolean), workspacePath?: string): void {
+  public setWorkspace(
+    workspaceName?: string,
+    isMulti?: boolean | (() => boolean),
+    workspacePath?: string,
+    registryPath?: string
+  ): void {
     this.workspaceName = workspaceName;
     if (isMulti !== undefined) {
       this.isMultiWorkspace = isMulti;
     }
     if (workspacePath !== undefined) {
       this.workspacePath = workspacePath;
+    }
+    if (registryPath !== undefined) {
+      this.registryPath = registryPath;
+      this.invalidateWorkspaceCache();
+      this.refreshWorkspaceRegistryAsync().catch(() => {});
+    }
+  }
+
+  public invalidateWorkspaceCache(): void {
+    this._cachedIsMultiWorkspace = null;
+    this._cachedWorkspaceCheckTimestamp = 0;
+  }
+
+  public async refreshWorkspaceRegistryAsync(): Promise<boolean> {
+    if (!this.registryPath) {
+      this._cachedIsMultiWorkspace = false;
+      this._cachedWorkspaceCheckTimestamp = Date.now();
+      return false;
+    }
+    try {
+      if (!fs.existsSync(this.registryPath)) {
+        this._cachedIsMultiWorkspace = false;
+        this._cachedWorkspaceCheckTimestamp = Date.now();
+        return false;
+      }
+      const raw = await fs.promises.readFile(this.registryPath, 'utf8');
+      if (!raw || !raw.trim()) {
+        this._cachedIsMultiWorkspace = false;
+        this._cachedWorkspaceCheckTimestamp = Date.now();
+        return false;
+      }
+      const data = JSON.parse(raw);
+      const isMulti = !!(data?.ports && Object.keys(data.ports).length > 1);
+      this._cachedIsMultiWorkspace = isMulti;
+      this._cachedWorkspaceCheckTimestamp = Date.now();
+      return isMulti;
+    } catch {
+      this._cachedIsMultiWorkspace = false;
+      this._cachedWorkspaceCheckTimestamp = Date.now();
+      return false;
     }
   }
 
@@ -502,15 +556,20 @@ export class TelegramChatMirror {
         return true;
       }
     } catch {}
-    if (this.registryPath && fs.existsSync(this.registryPath)) {
-      try {
-        const raw = fs.readFileSync(this.registryPath, 'utf8');
-        const data = JSON.parse(raw);
-        if (data?.ports && Object.keys(data.ports).length > 1) {
-          return true;
-        }
-      } catch {}
+
+    const now = Date.now();
+    if (this._cachedIsMultiWorkspace !== null && (now - this._cachedWorkspaceCheckTimestamp < this.registryTtlMs)) {
+      return this._cachedIsMultiWorkspace;
     }
+
+    if (this.registryPath) {
+      this.refreshWorkspaceRegistryAsync().catch(() => {});
+    }
+
+    if (this._cachedIsMultiWorkspace !== null) {
+      return this._cachedIsMultiWorkspace;
+    }
+
     return false;
   }
 

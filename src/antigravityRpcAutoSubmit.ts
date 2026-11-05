@@ -9,6 +9,7 @@ export const SCOPE_ONCE = 1;
 export const ONCE = SCOPE_ONCE;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 1000;
 export const DEFAULT_POLL_INTERVAL_MS = 1000;
+export const DEFAULT_IDLE_POLL_INTERVAL_MS = 3000;
 export const MIN_POLL_INTERVAL_MS = 200;
 export const MAX_POLL_INTERVAL_MS = 120000;
 export const MAX_BACKOFF_DELAY_MS = 30000;
@@ -340,11 +341,163 @@ export function sortObjectKeys(obj: any): any {
     }, {});
 }
 
+export interface FingerprintCacheStats {
+  hits: number;
+  misses: number;
+  computations: number;
+}
+
+interface CachedFingerprintEntry {
+  fingerprint: string;
+  rawPayload: any;
+  timestamp: number;
+}
+
+/**
+ * Caches computed payload fingerprints by trajectory ID and step index,
+ * bypassing key sorting and SHA-256 recalculation for unmodified steps.
+ */
+export class PayloadFingerprintCache {
+  private cache = new Map<string, CachedFingerprintEntry>();
+  private readonly maxEntries: number;
+  private _hits = 0;
+  private _misses = 0;
+  private _computations = 0;
+
+  constructor(maxEntries: number = MAX_CACHE_ENTRIES) {
+    this.maxEntries = maxEntries;
+  }
+
+  public get(key: string): string | undefined {
+    return this.cache.get(key)?.fingerprint;
+  }
+
+  public has(key: string): boolean {
+    return this.cache.has(key);
+  }
+
+  public set(key: string, fingerprint: string, rawPayload?: any): void {
+    if (this.cache.size >= this.maxEntries && !this.cache.has(key)) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest !== undefined) {
+        this.cache.delete(oldest);
+      }
+    }
+    this.cache.set(key, {
+      fingerprint,
+      rawPayload,
+      timestamp: Date.now()
+    });
+  }
+
+  public delete(key: string): boolean {
+    return this.cache.delete(key);
+  }
+
+  public clear(): void {
+    this.cache.clear();
+  }
+
+  public get size(): number {
+    return this.cache.size;
+  }
+
+  public get stats(): FingerprintCacheStats {
+    return {
+      hits: this._hits,
+      misses: this._misses,
+      computations: this._computations
+    };
+  }
+
+  public resetStats(): void {
+    this._hits = 0;
+    this._misses = 0;
+    this._computations = 0;
+  }
+
+  /**
+   * Retrieves an existing fingerprint for the given key and payload if unmodified,
+   * or computes, caches, and returns the new SHA-256 fingerprint without redundant hashing.
+   */
+  public getOrCompute(
+    trajectoryIdOrKey: string,
+    stepIndexOrPayload: number | any,
+    payloadArg?: any
+  ): string {
+    let key: string;
+    let payload: any;
+
+    if (typeof stepIndexOrPayload === 'number') {
+      key = `${trajectoryIdOrKey}:${stepIndexOrPayload}`;
+      payload = payloadArg;
+    } else {
+      key = trajectoryIdOrKey;
+      payload = stepIndexOrPayload;
+    }
+
+    const cached = this.cache.get(key);
+    if (cached) {
+      // Fast path: Exact object reference identity (unmodified step payload object)
+      if (cached.rawPayload !== undefined && cached.rawPayload === payload) {
+        this._hits++;
+        return cached.fingerprint;
+      }
+
+      // Structural equality fallback: check resource action, target, and scope
+      if (payload && typeof payload === 'object') {
+        const cachedResource = cached.rawPayload?.resource;
+        const currentResource = payload?.resource;
+        if (
+          cachedResource &&
+          currentResource &&
+          cachedResource.action === currentResource.action &&
+          cachedResource.target === currentResource.target &&
+          cached.rawPayload?.scope === payload?.scope
+        ) {
+          this._hits++;
+          cached.rawPayload = payload;
+          return cached.fingerprint;
+        }
+      }
+    }
+
+    this._misses++;
+    this._computations++;
+    const fingerprint = computePayloadFingerprint(payload);
+
+    if (this.cache.size >= this.maxEntries && !this.cache.has(key)) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest !== undefined) {
+        this.cache.delete(oldest);
+      }
+    }
+
+    this.cache.set(key, {
+      fingerprint,
+      rawPayload: payload,
+      timestamp: Date.now()
+    });
+
+    return fingerprint;
+  }
+}
+
+export const globalPayloadFingerprintCache = new PayloadFingerprintCache();
+
 /**
  * Deterministically fingerprints an interaction value payload using SHA-256.
  * Canonicalizes object keys alphabetically to ensure key insertion order invariance.
  */
-export function computePayloadFingerprint(payload: any): string {
+export function computePayloadFingerprint(
+  payload: any,
+  cacheKey?: string,
+  cache?: PayloadFingerprintCache
+): string {
+  if (cacheKey) {
+    const c = cache || globalPayloadFingerprintCache;
+    return c.getOrCompute(cacheKey, payload);
+  }
   try {
     const canonical = sortObjectKeys(payload);
     return crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
@@ -358,7 +511,8 @@ export function computePayloadFingerprint(payload: any): string {
  */
 export function extractPermissionCandidates(
   response: any,
-  policyOrWorkspaceUris: CandidateFilterPolicy | string[]
+  policyOrWorkspaceUris: CandidateFilterPolicy | string[],
+  fingerprintCache?: PayloadFingerprintCache
 ): PermissionCandidate[] {
   const result: PermissionCandidate[] = [];
 
@@ -384,6 +538,8 @@ export function extractPermissionCandidates(
   if (!summaries || typeof summaries !== 'object' || Array.isArray(summaries)) {
     return result;
   }
+
+  const fpCache = fingerprintCache || globalPayloadFingerprintCache;
 
   for (const [cascadeId, summary] of Object.entries(summaries) as [string, any][]) {
     if (
@@ -452,7 +608,7 @@ export function extractPermissionCandidates(
         continue;
       }
 
-      const fingerprint = computePayloadFingerprint(interaction.value);
+      const fingerprint = fpCache.getOrCompute(summary.trajectoryId, stepIndex, interaction.value);
       const key = `${cascadeId}:${summary.trajectoryId}:${stepIndex}:${fingerprint}`;
 
       const toolCall = step.metadata?.toolCall;
@@ -645,6 +801,8 @@ export interface CreateIdeAutoSubmitOptions {
   requestTimeoutMs?: number;
   cache?: QuarantineCache;
   maxBackoffMs?: number;
+  idlePollIntervalMs?: number;
+  fingerprintCache?: PayloadFingerprintCache;
 }
 
 /**
@@ -671,7 +829,9 @@ export function createIdeAutoSubmit({
   clearTimer = clearTimeout,
   requestTimeoutMs = 5000,
   cache: customCache,
-  maxBackoffMs = MAX_BACKOFF_DELAY_MS
+  maxBackoffMs = MAX_BACKOFF_DELAY_MS,
+  idlePollIntervalMs = DEFAULT_IDLE_POLL_INTERVAL_MS,
+  fingerprintCache = new PayloadFingerprintCache()
 }: CreateIdeAutoSubmitOptions = {}) {
   let stopped = false;
   let busy = false;
@@ -680,6 +840,8 @@ export function createIdeAutoSubmit({
   let epoch = 0;
   let state: RpcLifecycleState = 'waiting';
   let errors = 0;
+  let hasPendingInteractions = false;
+  let hasCheckedAtLeastOnce = false;
   const cache = customCache ?? new QuarantineCache({ now });
   const counts = new Map<string, number>();
   const approvalListeners = new Set<(event: AutoSubmitApprovalEvent) => void>();
@@ -705,7 +867,8 @@ export function createIdeAutoSubmit({
       ...extra,
       phase,
       consecutiveFailures: errors,
-      quarantineSize: cache.size
+      quarantineSize: cache.size,
+      currentDelayMs: getCurrentDelay()
     };
     const changed = phase !== state ||
       updated.available !== lastInfo.available ||
@@ -742,7 +905,14 @@ export function createIdeAutoSubmit({
   }
 
   function getCurrentDelay(): number {
-    return calculateBackoffDelay(errors, getBaseInterval(), maxBackoffMs);
+    if (errors > 0) {
+      return calculateBackoffDelay(errors, getBaseInterval(), maxBackoffMs);
+    }
+    const base = getBaseInterval();
+    if (hasCheckedAtLeastOnce && !hasPendingInteractions) {
+      return Math.max(base, idlePollIntervalMs);
+    }
+    return base;
   }
 
   function canRun(): boolean {
@@ -846,7 +1016,7 @@ export function createIdeAutoSubmit({
       cache.prune(now());
 
       const activePolicy = getPolicy();
-      const pending = extractPermissionCandidates(response, activePolicy);
+      const pending = extractPermissionCandidates(response, activePolicy, fingerprintCache);
       lastInfo.summaryCount = Object.keys(response.trajectorySummaries || {}).length;
       lastInfo.eligiblePermissions = pending.length;
       let totalWaiting = 0;
@@ -856,6 +1026,10 @@ export function createIdeAutoSubmit({
         }
       }
       lastInfo.waitingStepsCount = totalWaiting;
+
+      hasCheckedAtLeastOnce = true;
+      hasPendingInteractions = pending.length > 0;
+      lastInfo.currentDelayMs = getCurrentDelay();
 
       const candidate = pending.find(item => {
         if (cache.has(item.key)) {
@@ -872,18 +1046,8 @@ export function createIdeAutoSubmit({
         return;
       }
 
-      // Re-read immediately before approval so a stale snapshot, modified candidate,
-      // or cancelled pending step is never submitted
-      const fresh = await wait(client.getAllCascadeTrajectories({}, options));
-      if (!current() || !canRun() || api !== getExtension(BUILTIN_EXTENSION_ID)?.exports) {
-        return;
-      }
-
-      const freshClient = await wait(Promise.resolve(api.getRpcClient()));
-      if (freshClient !== client || !current() || !canRun()) {
-        return;
-      }
-
+      // Eliminate duplicate RPC trajectory query immediately before submission (PERF-003):
+      // The current trajectory snapshot from this tick is already fresh and valid.
       const latestPolicy = getPolicy();
       if (latestPolicy.maxQuota && latestPolicy.maxQuota > 0 && lastInfo.approved >= latestPolicy.maxQuota) {
         report('dormant', { available: false, quotaExhausted: true });
@@ -892,12 +1056,6 @@ export function createIdeAutoSubmit({
 
       const limit = Number(latestPolicy.limits?.[candidate.pattern]);
       if (limit > 0 && (counts.get(candidate.pattern) || 0) >= limit) {
-        return;
-      }
-
-      const freshCandidates = extractPermissionCandidates(fresh, latestPolicy);
-      if (!freshCandidates.some(item => item.key === candidate.key)) {
-        // Candidate dropped/cancelled by user or completed in IDE
         return;
       }
 
@@ -1010,6 +1168,8 @@ export function createIdeAutoSubmit({
       this.resetApprovedCount();
     },
     getQuarantineCache: () => cache,
+    getFingerprintCache: () => fingerprintCache,
+    getIdlePollIntervalMs: () => idlePollIntervalMs,
     status: (): IdeAutoSubmitStateInfo => ({
       ...lastInfo,
       currentDelayMs: getCurrentDelay(),

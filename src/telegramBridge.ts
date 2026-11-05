@@ -479,6 +479,18 @@ export class TelegramBridge {
   private pollingPromise: Promise<void> | null = null;
   private activeWaiters: Set<{ abort: () => void }> = new Set();
 
+  private cachedWorkspaces: Array<{
+    port: number;
+    pid: number;
+    windowKey: string;
+    workspaceName: string;
+    workspacePath: string;
+    authToken?: string;
+    isCurrent: boolean;
+  }> | null = null;
+  private cachedWorkspacesTimestamp: number = 0;
+  private workspacesCacheTtlMs: number = 2000;
+
   constructor(options?: TelegramBridgeOptions) {
     this.secretManager = options?.secretStorageManager || options?.secretManager || secretStorageManager;
     this.logger = options?.logger || debugLogger;
@@ -778,6 +790,86 @@ export class TelegramBridge {
     return undefined;
   }
 
+  public invalidateWorkspaceCache(): void {
+    this.cachedWorkspaces = null;
+    this.cachedWorkspacesTimestamp = 0;
+  }
+
+  /**
+   * Asynchronously returns all currently active IDE workspaces registered in `ag-autoplan-ports.json`.
+   */
+  public async getActiveWorkspacesAsync(): Promise<Array<{
+    port: number;
+    pid: number;
+    windowKey: string;
+    workspaceName: string;
+    workspacePath: string;
+    authToken?: string;
+    isCurrent: boolean;
+  }>> {
+    const now = Date.now();
+    if (this.cachedWorkspaces && (now - this.cachedWorkspacesTimestamp < this.workspacesCacheTtlMs)) {
+      return this.cachedWorkspaces;
+    }
+
+    let registryPath = this.getPortRegistryPath();
+    if (!fs.existsSync(registryPath)) {
+      const fallbackTmp = path.join(os.tmpdir(), PORT_REGISTRY_FILENAME);
+      if (fs.existsSync(fallbackTmp)) {
+        registryPath = fallbackTmp;
+      }
+    }
+
+    const result: Array<{
+      port: number;
+      pid: number;
+      windowKey: string;
+      workspaceName: string;
+      workspacePath: string;
+      authToken?: string;
+      isCurrent: boolean;
+    }> = [];
+
+    try {
+      const data = await this.readRegistryAsync(registryPath);
+      if (!data.ports) return result;
+
+      for (const key of Object.keys(data.ports)) {
+        const entry = data.ports[key];
+        if (!entry || !entry.port || !entry.pid) continue;
+
+        if (!isProcessAlive(entry.pid)) continue;
+        if (entry.updatedAt && (now - entry.updatedAt > 7200000)) continue;
+
+        const isCurrent = (entry.windowKey && this.windowKey ? entry.windowKey === this.windowKey : false) ||
+                          (this.port !== undefined ? entry.port === this.port : false) ||
+                          (!this.windowKey && this.port === undefined && entry.pid === process.pid);
+
+        result.push({
+          port: entry.port,
+          pid: entry.pid,
+          windowKey: entry.windowKey || '',
+          workspaceName: entry.workspaceName || (entry.workspacePath ? path.basename(entry.workspacePath) : `Workspace-${entry.port}`),
+          workspacePath: entry.workspacePath || '',
+          authToken: entry.authToken,
+          isCurrent
+        });
+      }
+    } catch (err: any) {
+      this.logger.warn('TELEGRAM', `Failed to read active workspaces from registry asynchronously: ${err?.message || err}`);
+    }
+
+    result.sort((a, b) => {
+      if (a.isCurrent && !b.isCurrent) return -1;
+      if (!a.isCurrent && b.isCurrent) return 1;
+      return a.port - b.port;
+    });
+
+    this.cachedWorkspaces = result;
+    this.cachedWorkspacesTimestamp = Date.now();
+    return result;
+  }
+
   /**
    * Returns all currently active IDE workspaces registered in `ag-autoplan-ports.json`.
    */
@@ -790,6 +882,11 @@ export class TelegramBridge {
     authToken?: string;
     isCurrent: boolean;
   }> {
+    const now = Date.now();
+    if (this.cachedWorkspaces && (now - this.cachedWorkspacesTimestamp < this.workspacesCacheTtlMs)) {
+      return this.cachedWorkspaces;
+    }
+
     let registryPath = this.getPortRegistryPath();
     if (!fs.existsSync(registryPath)) {
       const fallbackTmp = path.join(os.tmpdir(), PORT_REGISTRY_FILENAME);
@@ -816,7 +913,6 @@ export class TelegramBridge {
       const data: PortRegistryData = JSON.parse(raw);
       if (!data.ports) return result;
 
-      const now = Date.now();
       for (const key of Object.keys(data.ports)) {
         const entry = data.ports[key];
         if (!entry || !entry.port || !entry.pid) continue;
@@ -852,6 +948,8 @@ export class TelegramBridge {
       return a.port - b.port;
     });
 
+    this.cachedWorkspaces = result;
+    this.cachedWorkspacesTimestamp = Date.now();
     return result;
   }
 
@@ -1505,6 +1603,46 @@ export class TelegramBridge {
   }
 
   /**
+   * Asynchronously reads registry data from `ag-autoplan-ports.json` with retry backoff for transient Windows file locks.
+   */
+  public async readRegistryAsync(targetPath: string, retries = 3, initialDelayMs = 20): Promise<PortRegistryData> {
+    let delay = initialDelayMs;
+    for (let i = 0; i < retries; i++) {
+      try {
+        if (!fs.existsSync(targetPath)) {
+          return { version: 1, ports: {} };
+        }
+        const raw = await fs.promises.readFile(targetPath, 'utf8');
+        if (!raw || !raw.trim()) {
+          if (i < retries - 1) {
+            await new Promise((r) => setTimeout(r, delay));
+            delay *= 2;
+            continue;
+          }
+          return { version: 1, ports: {} };
+        }
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          if (!parsed.ports || typeof parsed.ports !== 'object') {
+            parsed.ports = {};
+          }
+          return parsed as PortRegistryData;
+        }
+        return { version: 1, ports: {} };
+      } catch (err: any) {
+        const isTransient = err.code === 'EPERM' || err.code === 'EBUSY' || err.code === 'EACCES' || err instanceof SyntaxError;
+        if (isTransient && i < retries - 1) {
+          await new Promise((r) => setTimeout(r, delay));
+          delay *= 2;
+        } else {
+          return { version: 1, ports: {} };
+        }
+      }
+    }
+    return { version: 1, ports: {} };
+  }
+
+  /**
    * Safely writes registry data to `ag-autoplan-ports.json`.
    */
   private writeRegistry(targetPath: string, data: PortRegistryData): void {
@@ -1513,6 +1651,44 @@ export class TelegramBridge {
       fs.mkdirSync(dir, { recursive: true });
     }
     fs.writeFileSync(targetPath, JSON.stringify(data, null, 2), 'utf8');
+  }
+
+  /**
+   * Safely and atomically writes registry data to `ag-autoplan-ports.json` with Windows EPERM retry handling.
+   */
+  public async writeRegistryAsync(targetPath: string, data: PortRegistryData, retries = 5, initialDelayMs = 25): Promise<void> {
+    const dir = path.dirname(targetPath);
+    await fs.promises.mkdir(dir, { recursive: true });
+
+    const tmpPath = path.join(
+      dir,
+      `.${path.basename(targetPath)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.tmp`
+    );
+    const content = JSON.stringify(data, null, 2);
+    await fs.promises.writeFile(tmpPath, content, 'utf8');
+
+    let delay = initialDelayMs;
+    for (let i = 0; i < retries; i++) {
+      try {
+        await fs.promises.rename(tmpPath, targetPath);
+        return;
+      } catch (err: any) {
+        const isTransient = err.code === 'EPERM' || err.code === 'EBUSY' || err.code === 'EACCES';
+        if (isTransient && i < retries - 1) {
+          await new Promise((r) => setTimeout(r, delay));
+          delay *= 2;
+        } else {
+          try {
+            await fs.promises.unlink(tmpPath);
+          } catch {}
+          if (isTransient) {
+            await fs.promises.writeFile(targetPath, content, 'utf8');
+            return;
+          }
+          throw err;
+        }
+      }
+    }
   }
 
   /**
@@ -1593,6 +1769,78 @@ export class TelegramBridge {
   }
 
   /**
+   * Asynchronously attempts to acquire Telegram polling leadership across IDE windows without blocking the event loop.
+   */
+  public async tryAcquireLeadershipAsync(): Promise<boolean> {
+    const registryPath = this.getPortRegistryPath();
+    try {
+      const data = await this.readRegistryAsync(registryPath);
+      const now = Date.now();
+      const currentLeader = data.telegramLeader;
+
+      if (currentLeader) {
+        const isSelf =
+          currentLeader.pid === process.pid &&
+          (!this.windowKey || !currentLeader.windowKey || currentLeader.windowKey === this.windowKey);
+
+        if (isSelf) {
+          currentLeader.updatedAt = now;
+          await this.writeRegistryAsync(registryPath, data);
+          this.isLeader = true;
+          if (this.notifier) {
+            this.notifier.setLeader(true);
+          }
+          if (this.chatMirror) {
+            this.chatMirror.setLeader(true);
+          }
+          return true;
+        }
+
+        const alive = isProcessAlive(currentLeader.pid);
+        const stale = now - currentLeader.updatedAt > this.leaderStaleTimeoutMs;
+
+        if (alive && !stale) {
+          this.isLeader = false;
+          if (this.notifier) {
+            this.notifier.setLeader(false);
+          }
+          if (this.chatMirror) {
+            this.chatMirror.setLeader(false);
+          }
+          return false;
+        }
+      }
+
+      data.telegramLeader = {
+        pid: process.pid,
+        windowKey: this.windowKey,
+        acquiredAt: now,
+        updatedAt: now
+      };
+
+      await this.writeRegistryAsync(registryPath, data);
+      this.isLeader = true;
+      if (this.notifier) {
+        this.notifier.setLeader(true);
+      }
+      if (this.chatMirror) {
+        this.chatMirror.setLeader(true);
+      }
+      return true;
+    } catch (err: any) {
+      this.logger.warn('TELEGRAM', `Failed during async leader election check: ${err?.message || err}`, err);
+      this.isLeader = false;
+      if (this.notifier) {
+        this.notifier.setLeader(false);
+      }
+      if (this.chatMirror) {
+        this.chatMirror.setLeader(false);
+      }
+      return false;
+    }
+  }
+
+  /**
    * Releases Telegram polling leadership in `ag-autoplan-ports.json`.
    */
   public releaseLeadership(): void {
@@ -1625,28 +1873,67 @@ export class TelegramBridge {
   }
 
   /**
+   * Asynchronously releases Telegram polling leadership in `ag-autoplan-ports.json`.
+   */
+  public async releaseLeadershipAsync(): Promise<void> {
+    const registryPath = this.getPortRegistryPath();
+    try {
+      if (fs.existsSync(registryPath)) {
+        const data = await this.readRegistryAsync(registryPath);
+        if (data.telegramLeader) {
+          const isSelf =
+            data.telegramLeader.pid === process.pid &&
+            (!this.windowKey || !data.telegramLeader.windowKey || data.telegramLeader.windowKey === this.windowKey);
+
+          if (isSelf) {
+            delete data.telegramLeader;
+            await this.writeRegistryAsync(registryPath, data);
+            this.logger.info('TELEGRAM', `Released Telegram leader ownership for window ${this.windowKey}`);
+          }
+        }
+      }
+    } catch (err: any) {
+      this.logger.warn('TELEGRAM', `Failed to asynchronously release leader ownership: ${err?.message || err}`, err);
+    }
+    this.isLeader = false;
+    if (this.notifier) {
+      this.notifier.setLeader(false);
+    }
+    if (this.chatMirror) {
+      this.chatMirror.setLeader(false);
+    }
+  }
+
+  /**
+   * Triggers an asynchronous leader heartbeat pulse directly.
+   */
+  public async triggerHeartbeatAsync(): Promise<void> {
+    if (!this.isRunning || !this.isLeader) {
+      return;
+    }
+    const registryPath = this.getPortRegistryPath();
+    try {
+      if (fs.existsSync(registryPath)) {
+        const data = await this.readRegistryAsync(registryPath);
+        if (data.telegramLeader && data.telegramLeader.pid === process.pid) {
+          data.telegramLeader.updatedAt = Date.now();
+          await this.writeRegistryAsync(registryPath, data);
+        }
+      }
+    } catch {
+      // Non-fatal background heartbeat error
+    }
+  }
+
+  /**
    * Starts periodic heartbeat updating `updatedAt` for the leader in `ag-autoplan-ports.json`.
    */
   private startHeartbeat(): void {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
     }
-    this.heartbeatTimer = setInterval(() => {
-      if (!this.isRunning || !this.isLeader) {
-        return;
-      }
-      const registryPath = this.getPortRegistryPath();
-      try {
-        if (fs.existsSync(registryPath)) {
-          const data = this.readRegistry(registryPath);
-          if (data.telegramLeader && data.telegramLeader.pid === process.pid) {
-            data.telegramLeader.updatedAt = Date.now();
-            this.writeRegistry(registryPath, data);
-          }
-        }
-      } catch {
-        // Non-fatal background heartbeat error
-      }
+    this.heartbeatTimer = setInterval(async () => {
+      await this.triggerHeartbeatAsync();
     }, this.heartbeatIntervalMs);
   }
 
@@ -1667,11 +1954,11 @@ export class TelegramBridge {
     if (this.standbyPollTimer) {
       clearInterval(this.standbyPollTimer);
     }
-    this.standbyPollTimer = setInterval(() => {
+    this.standbyPollTimer = setInterval(async () => {
       if (!this.isRunning) {
         return;
       }
-      if (this.tryAcquireLeadership()) {
+      if (await this.tryAcquireLeadershipAsync()) {
         this.stopStandbyPolling();
         this.isLeader = true;
         if (this.notifier) {
@@ -2587,7 +2874,7 @@ export class TelegramBridge {
     }
 
     // Perform leader election guard
-    const acquired = this.tryAcquireLeadership();
+    const acquired = await this.tryAcquireLeadershipAsync();
     if (acquired) {
       this.isLeader = true;
       if (this.notifier) {
@@ -2642,7 +2929,7 @@ export class TelegramBridge {
     }
 
     if (this.isLeader) {
-      this.releaseLeadership();
+      await this.releaseLeadershipAsync();
       this.isLeader = false;
       if (this.notifier) {
         this.notifier.setLeader(false);

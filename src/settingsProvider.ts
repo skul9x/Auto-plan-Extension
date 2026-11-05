@@ -124,6 +124,8 @@ export function getNonce(): string {
 export class SettingsProvider {
   public static currentPanel: SettingsProvider | undefined;
   public static readonly viewType = 'autoplan.settingsPanel';
+  public static readonly LOG_BATCH_CADENCE_MS = 50;
+  public static readonly MAX_LOG_BATCH_SIZE = 500;
 
   private readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
@@ -132,8 +134,10 @@ export class SettingsProvider {
   private _secretManager: SecretStorageManager;
   private _disposables: vscode.Disposable[] = [];
   private _isDisposing: boolean = false;
+  private _pendingLogEntries: LogEntry[] = [];
+  private _logBatchTimer: NodeJS.Timeout | null = null;
 
-  private constructor(
+  public constructor(
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
     promptDispatcher?: PromptDispatcher,
@@ -253,6 +257,11 @@ export class SettingsProvider {
       return;
     }
     this._isDisposing = true;
+    if (this._logBatchTimer) {
+      clearTimeout(this._logBatchTimer);
+      this._logBatchTimer = null;
+    }
+    this._pendingLogEntries = [];
     SettingsProvider.currentPanel = undefined;
 
     try {
@@ -442,6 +451,11 @@ export class SettingsProvider {
    */
   public sendLogBuffer(): void {
     try {
+      if (this._logBatchTimer) {
+        clearTimeout(this._logBatchTimer);
+        this._logBatchTimer = null;
+      }
+      this._pendingLogEntries = [];
       const entries = this._logger.getEntries();
       this._panel.webview.postMessage({
         command: 'logBuffer',
@@ -452,16 +466,75 @@ export class SettingsProvider {
   }
 
   /**
-   * Pushes a single log entry update to the webview.
+   * Queues a single log entry to be dispatched to the webview in periodic batches (FR-01).
    */
   public sendLogEntry(entry: LogEntry): void {
+    this.queueLogEntry(entry);
+  }
+
+  /**
+   * Buffers a log entry into the batch queue and schedules periodic dispatch.
+   */
+  public queueLogEntry(entry: LogEntry): void {
+    if (this._isDisposing || !entry) {
+      return;
+    }
+    this._pendingLogEntries.push(entry);
+
+    if (this._pendingLogEntries.length >= SettingsProvider.MAX_LOG_BATCH_SIZE) {
+      this.flushLogBatch();
+    } else if (!this._logBatchTimer) {
+      this._logBatchTimer = setTimeout(() => {
+        this._logBatchTimer = null;
+        this.flushLogBatch();
+      }, SettingsProvider.LOG_BATCH_CADENCE_MS);
+    }
+  }
+
+  /**
+   * Flushes all buffered log entries immediately as a batched message to the webview.
+   */
+  public flushLogBatch(): void {
+    if (this._logBatchTimer) {
+      clearTimeout(this._logBatchTimer);
+      this._logBatchTimer = null;
+    }
+    if (this._pendingLogEntries.length === 0 || this._isDisposing) {
+      return;
+    }
+    const batch = this._pendingLogEntries;
+    this._pendingLogEntries = [];
+    this.sendLogBatch(batch);
+  }
+
+  /**
+   * Dispatches a batch of log entries to the webview via IPC postMessage.
+   */
+  public sendLogBatch(entries: LogEntry[]): void {
+    if (!entries || entries.length === 0 || this._isDisposing) {
+      return;
+    }
     try {
       this._panel.webview.postMessage({
-        command: 'logEntry',
-        type: 'logEntry',
-        entry
+        command: 'logBatch',
+        type: 'logBatch',
+        entries
       });
     } catch {}
+  }
+
+  /**
+   * Returns a copy of currently pending log entries in the batch buffer.
+   */
+  public getPendingLogEntries(): LogEntry[] {
+    return [...this._pendingLogEntries];
+  }
+
+  /**
+   * Returns true if a batch timer is currently active.
+   */
+  public isBatchTimerActive(): boolean {
+    return this._logBatchTimer !== null;
   }
 
   /**
@@ -728,6 +801,11 @@ export class SettingsProvider {
       }
 
       case 'clearDebugLog': {
+        if (this._logBatchTimer) {
+          clearTimeout(this._logBatchTimer);
+          this._logBatchTimer = null;
+        }
+        this._pendingLogEntries = [];
         this._logger.clear();
         this.sendLogBuffer();
         try {

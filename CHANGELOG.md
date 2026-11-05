@@ -2,7 +2,23 @@
 
 All notable changes to the **Antigravity Auto-Plan Runner** extension will be documented in this file.
 
-## [1.7.4] - 2026-11-05
+## [1.7.4] - 2026-11-06
+
+### ⚡ High & Medium Performance & Reliability Audit Remediation
+- **Asynchronous Non-Blocking Disk & Process I/O (PERF-001, PERF-004, PERF-007)**:
+  - Migrated multi-window registry disk I/O, plan folder directory scanning, and subprocess execution to non-blocking asynchronous APIs (`fs.promises`).
+- **Settings Webview IPC Batching & DOM Pruning (PERF-002, PERF-005)**:
+  - Batched Extension Host to Webview `postMessage` traffic and pruned unbounded console DOM nodes in the Settings panel.
+- **Adaptive RPC Polling & Payload Fingerprint Caching (PERF-003)**:
+  - Implemented adaptive polling backoff ($\ge 3000$ms) when idle, returning to 1000ms upon discovering actionable interaction steps.
+  - Added `PayloadFingerprintCache` to bypass redundant object key sorting and SHA-256 calculation for unmodified steps.
+  - Eliminated redundant duplicate pre-approval trajectory queries.
+- **Persistent FileHandle & Reusable Buffer Transcript Tailing (PERF-008)**:
+  - Replaced per-append `fs.createReadStream` and `readline.createInterface` allocations in `TranscriptTailEngine` with a persistent open `FileHandle`, a 64KB reusable `Buffer`, and `StringDecoder`.
+  - Added robust partial write rollback and file truncation / log rotation handling.
+  - Relaxed fallback polling cadence when native filesystem watchers are healthy.
+- **Relaxed DOM Clearance Verification (PERF-009)**:
+  - Enforced a minimum 80ms poll interval in `autoplan-dom-bridge.js` submission clearance verification, preventing renderer thread CPU saturation.
 
 ### 👑 Telegram Single-Leader Gating, Clean Final-Only Delivery & Nudge Watchdog Deactivation
 - **Single-Leader Delivery Gating & Standby Muting**:

@@ -132,11 +132,11 @@ async function runPhase01Tests() {
 
   // Validate 5-step numbered structure and protocol phrases
   assert.ok(DEFAULT_PROMPT_TEMPLATE.includes('{xxx}'), 'Template must include {xxx} placeholder');
-  assert.ok(DEFAULT_PROMPT_TEMPLATE.includes('1. First, read the provided phase file'), 'Must include Step 1');
-  assert.ok(DEFAULT_PROMPT_TEMPLATE.includes('2. After at least 1 minute has elapsed, search online'), 'Must include Step 2');
-  assert.ok(DEFAULT_PROMPT_TEMPLATE.includes('3. Use the research findings together with the existing codebase'), 'Must include Step 3');
-  assert.ok(DEFAULT_PROMPT_TEMPLATE.includes('4. After implementation, run exactly ONE comprehensive file-based test'), 'Must include Step 4');
-  assert.ok(DEFAULT_PROMPT_TEMPLATE.includes('5. Only after implementation is complete and the required test passes'), 'Must include Step 5');
+  assert.ok(DEFAULT_PROMPT_TEMPLATE.includes('INITIAL INSPECTION AND TECHNICAL ANALYSIS'), 'Must include Step 1');
+  assert.ok(DEFAULT_PROMPT_TEMPLATE.includes('ONLINE RESEARCH AND BEST PRACTICE VALIDATION'), 'Must include Step 2');
+  assert.ok(DEFAULT_PROMPT_TEMPLATE.includes('IMPLEMENTATION'), 'Must include Step 3');
+  assert.ok(DEFAULT_PROMPT_TEMPLATE.includes('SINGLE TEST FILE CREATION AND VERIFICATION'), 'Must include Step 4');
+  assert.ok(DEFAULT_PROMPT_TEMPLATE.includes('PHASE PLAN STATUS UPDATE'), 'Must include Step 5');
   assert.ok(DEFAULT_PROMPT_TEMPLATE.includes('Done skul9x.'), 'Template must terminate with completion phrase "Done skul9x."');
 
   console.log('  ✓ Core configuration synchronization passed.');
@@ -183,11 +183,11 @@ async function runPhase01Tests() {
   const interpolated = interpolatePromptTemplate(DEFAULT_PROMPT_TEMPLATE, samplePhase);
   assert.ok(!interpolated.includes('{xxx}'), 'Interpolated prompt must not retain {xxx}');
   assert.ok(interpolated.includes(samplePhase), 'Interpolated prompt must contain sample phase path');
-  assert.ok(interpolated.startsWith('Implement the phase described in the provided phase file ' + samplePhase));
-  assert.ok(interpolated.endsWith('Done skul9x.'));
+  assert.ok(interpolated.includes('Done skul9x.'), 'Interpolated prompt must contain completion phrase');
+  const xxxOccurrences = (DEFAULT_PROMPT_TEMPLATE.match(/\{xxx\}/gi) || []).length;
   assert.strictEqual(
     interpolated.length,
-    DEFAULT_PROMPT_TEMPLATE.length - '{xxx}'.length + samplePhase.length,
+    DEFAULT_PROMPT_TEMPLATE.length - ('{xxx}'.length * xxxOccurrences) + (samplePhase.length * xxxOccurrences),
     'Interpolated string length must match expected arithmetic length exactly'
   );
 

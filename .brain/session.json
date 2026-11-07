@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-06T00:30:00+07:00",
+  "updated_at": "2026-11-07T16:40:22.154Z",
   "active_plan": "plans/261105-2320-high-medium-perf-audit-remediation/plan.md",
   "working_on": {
     "feature": "High and Medium Performance & Reliability Audit Remediation (v1.7.4)",
@@ -30,6 +30,18 @@
     }
   ],
   "recent_changes": [
+    {
+      "timestamp": "2026-11-07T16:40:22.154Z",
+      "type": "prompt_template_update",
+      "description": "Cập nhật prompt mặc định theo file prompt.txt (cấu trúc JSON Specification 227 dòng), compile và đóng gói VSIX v1.7.4 cài đặt vào Antigravity IDE.",
+      "files": [
+        "src/config.ts",
+        "package.json",
+        "media/settings/settings.js",
+        "newprompt.txt",
+        "antigravity-auto-plan-1.7.4.vsix"
+      ]
+    },
     {
       "timestamp": "2026-11-06T00:26:00+07:00",
       "type": "packaging_and_install",

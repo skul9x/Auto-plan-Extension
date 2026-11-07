@@ -403,7 +403,7 @@
       txtDefaultPlanFolder.value = config.defaultPlanFolder || '';
     }
     if (txtPromptTemplate) {
-      txtPromptTemplate.value = config.promptTemplate || config.promptText || '';
+      txtPromptTemplate.value = config.promptTemplate || config.defaultPromptTemplate || config.promptText || '';
     }
     if (txtCompletionKeyword) {
       txtCompletionKeyword.value = config.completionKeyword || 'Done skul9x.';

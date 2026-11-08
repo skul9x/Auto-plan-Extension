@@ -305,6 +305,26 @@ export class Orchestrator extends EventEmitter {
     return this.workspacePath;
   }
 
+  /**
+   * Resolves the concrete WorkspaceFolder matching a given target file or folder path in multi-root workspaces.
+   */
+  public resolveTargetWorkspaceFolder(targetPath?: string | null): any {
+    if (!targetPath || typeof vscode === 'undefined' || !vscode?.workspace?.workspaceFolders) {
+      return undefined;
+    }
+    if (typeof vscode.workspace.getWorkspaceFolder === 'function') {
+      try {
+        const found = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(targetPath));
+        if (found) return found;
+      } catch { }
+    }
+    const normTarget = path.normalize(targetPath).toLowerCase();
+    return vscode.workspace.workspaceFolders.find((f: any) => {
+      const normWs = path.normalize(f.uri?.fsPath || '').toLowerCase();
+      return normTarget === normWs || normTarget.startsWith(normWs + path.sep) || normTarget.startsWith(normWs + '/');
+    });
+  }
+
   public getBridgeServer(): BridgeServer | undefined {
     return this.bridgeServer || (this.promptDispatcher ? this.promptDispatcher.getBridgeServer() : defaultBridgeServer);
   }
@@ -981,6 +1001,13 @@ export class Orchestrator extends EventEmitter {
     const firstPath = typeof firstItem === 'string' ? firstItem : firstItem.filePath;
     this.currentPlanFolder = path.dirname(path.resolve(firstPath));
 
+    // Resolve matching workspace folder for multi-root workspace environments
+    const matchedWs = this.resolveTargetWorkspaceFolder(this.currentPlanFolder);
+    if (matchedWs) {
+      this.workspacePath = matchedWs.uri?.fsPath || this.workspacePath;
+      this.workspaceName = matchedWs.name || this.workspaceName;
+    }
+
     // Pre-flight health guard check (< 100ms fail-fast)
     const baseConfig = this.configProvider();
     const config: AutoPlanConfig = {
@@ -1530,13 +1557,15 @@ export class Orchestrator extends EventEmitter {
             this.startPhaseNudgeWatchdog(phase, i, nudgeThresholdMs);
 
             try {
-              const activeWorkspaceFolder = vscode?.workspace?.workspaceFolders?.[0];
-              const activeWsName = this.workspaceName || (activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined);
-              const activeWsPath = this.workspacePath || (activeWorkspaceFolder ? activeWorkspaceFolder.uri?.fsPath : undefined) || this.currentPlanFolder || undefined;
+              const targetPath = phase.filePath || this.currentPlanFolder;
+              const matchedFolder = this.resolveTargetWorkspaceFolder(targetPath);
+              const activeWorkspaceFolder = matchedFolder || (typeof vscode !== 'undefined' && vscode?.workspace?.workspaceFolders?.[0]) || undefined;
+              const activeWsName = this.workspaceName || (matchedFolder ? matchedFolder.name : undefined) || (activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined);
+              const activeWsPath = this.workspacePath || (matchedFolder ? matchedFolder.uri?.fsPath : undefined) || (activeWorkspaceFolder ? activeWorkspaceFolder.uri?.fsPath : undefined) || this.currentPlanFolder || undefined;
               const activeWsFolders = this.workspaceFolders.length > 0
                 ? this.workspaceFolders
-                : (vscode?.workspace?.workspaceFolders?.map(f => f.name) || []);
-              const activeWsTitle = this.workspaceTitle || vscode?.workspace?.name;
+                : (typeof vscode !== 'undefined' && vscode?.workspace?.workspaceFolders?.map((f: any) => f.name) || []);
+              const activeWsTitle = this.workspaceTitle || (typeof vscode !== 'undefined' && vscode?.workspace?.name) || undefined;
               const ownershipCriteria: ConversationOwnershipCriteria = {
                 expectedPromptSnippet: phase.fileName,
                 workspacePath: activeWsPath,
@@ -2000,13 +2029,15 @@ export class Orchestrator extends EventEmitter {
         try {
           try {
             const convTimeoutMs = config.newConversationTimeoutMs || 8000;
-            const activeWorkspaceFolder = vscode?.workspace?.workspaceFolders?.[0];
-            const activeWsName = this.workspaceName || (activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined);
-            const activeWsPath = this.workspacePath || (activeWorkspaceFolder ? activeWorkspaceFolder.uri?.fsPath : undefined) || this.currentPlanFolder || undefined;
+            const targetPath = this.currentPlanFolder;
+            const matchedFolder = this.resolveTargetWorkspaceFolder(targetPath);
+            const activeWorkspaceFolder = matchedFolder || (typeof vscode !== 'undefined' && vscode?.workspace?.workspaceFolders?.[0]) || undefined;
+            const activeWsName = this.workspaceName || (matchedFolder ? matchedFolder.name : undefined) || (activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined);
+            const activeWsPath = this.workspacePath || (matchedFolder ? matchedFolder.uri?.fsPath : undefined) || (activeWorkspaceFolder ? activeWorkspaceFolder.uri?.fsPath : undefined) || this.currentPlanFolder || undefined;
             const activeWsFolders = this.workspaceFolders.length > 0
               ? this.workspaceFolders
-              : (vscode?.workspace?.workspaceFolders?.map(f => f.name) || []);
-            const activeWsTitle = this.workspaceTitle || vscode?.workspace?.name;
+              : (typeof vscode !== 'undefined' && vscode?.workspace?.workspaceFolders?.map((f: any) => f.name) || []);
+            const activeWsTitle = this.workspaceTitle || (typeof vscode !== 'undefined' && vscode?.workspace?.name) || undefined;
             const ownershipCriteria: ConversationOwnershipCriteria = {
               workspacePath: activeWsPath,
               workspaceName: activeWsName,

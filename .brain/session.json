@@ -1,35 +1,40 @@
 {
-  "updated_at": "2026-11-07T16:40:22.154Z",
+  "updated_at": "2026-11-08T15:37:00.000Z",
   "active_plan": "plans/261105-2320-high-medium-perf-audit-remediation/plan.md",
   "working_on": {
-    "feature": "High and Medium Performance & Reliability Audit Remediation (v1.7.4)",
-    "task": "Hoàn thành toàn bộ 4 Phases tối ưu hóa hiệu năng và độ tin cậy, đóng gói VSIX v1.7.4 và cài đặt vào Antigravity IDE.",
+    "feature": "Multi-Root Workspace Ownership Verification & Dynamic Target Folder Resolution",
+    "task": "Sửa triệt để lỗi NewConversationTimeoutError trong Multi-Root Workspace (bỏ qua nhầm conversation của folder khác folder[0]). Đã pass 100% tests, đóng gói và cài đặt VSIX vào IDE.",
     "status": "completed",
     "files": [
-      "src/antigravityRpcAutoSubmit.ts",
-      "src/transcriptTailEngine.ts",
-      "media/autoplan-dom-bridge.js",
-      "src/settingsProvider.ts",
-      "media/settings.js",
-      "src/multiWindowRegistry.ts",
-      "src/planScanner.ts",
-      "src/keyboardManager.ts",
-      "src/test/phase04_rpc_engine_and_dom_performance_verification.test.ts",
-      "package.json",
-      "CHANGELOG.md",
+      "src/transcriptWatcher.ts",
+      "src/extension.ts",
+      "src/orchestrator.ts",
+      "src/test/phase06_multiroot_workspace_ownership_verification.test.ts",
       "antigravity-auto-plan-1.7.4.vsix"
     ],
     "blockers": [],
-    "notes": "Đã giải quyết trọn vẹn 10 lỗi hiệu năng nghiêm trọng: bất đồng bộ hóa hoàn toàn disk I/O và subprocess execution (PERF-001, 004, 007); batching IPC message và giới hạn DOM console buffer ở webview (PERF-002, 005); adaptive idle backoff >= 3000ms, fingerprint cache và loại bỏ query trùng lặp ở RPC engine (PERF-003); persistent FileHandle và reusable 64KB Buffer cho transcript tailing (PERF-008); nới lỏng polling interval lên >= 80ms ở DOM submission clearance loop (PERF-009). Đã đóng gói và cài đặt antigravity-auto-plan-1.7.4.vsix vào Antigravity IDE."
+    "notes": "Đã thêm multi-root fallback trong verifyConversationOwnershipAsync (so khớp workspaceFolders nếu workspacePath khác nhau), chuẩn hóa so sánh đường dẫn không phân biệt chữ hoa/thường (case-insensitive) cho Windows. Đã bổ sung resolveTargetWorkspaceFolder trong Orchestrator và extension.ts để tự động tìm đúng WorkspaceFolder cha của plan folder thay vì gán cứng workspaceFolders[0]."
   },
   "pending_tasks": [
     {
-      "task": "Chạy thử nghiệm một plan thực tế từ thư mục plans/ bằng lệnh /run hoặc qua Dashboard",
+      "task": "Chạy thử nghiệm một plan thực tế trong workspace 3 thư mục bằng lệnh /run hoặc qua Dashboard",
       "priority": "low",
-      "notes": "Kiểm tra trải nghiệm người dùng thực tế với kế hoạch code tự động"
+      "notes": "Kiểm tra trải nghiệm người dùng thực tế với kế hoạch code tự động trong môi trường đa thư mục"
     }
   ],
   "recent_changes": [
+    {
+      "timestamp": "2026-11-08T15:37:00.000Z",
+      "type": "bugfix_multiroot_workspace",
+      "description": "Fix NewConversationTimeoutError trong Multi-Root Workspace: bổ sung resolveTargetWorkspaceFolder, multi-folder fallback và case-insensitive normalization cho transcript ownership verification.",
+      "files": [
+        "src/transcriptWatcher.ts",
+        "src/extension.ts",
+        "src/orchestrator.ts",
+        "src/test/phase06_multiroot_workspace_ownership_verification.test.ts",
+        "antigravity-auto-plan-1.7.4.vsix"
+      ]
+    },
     {
       "timestamp": "2026-11-07T16:40:22.154Z",
       "type": "prompt_template_update",

@@ -371,36 +371,50 @@ export async function verifyConversationOwnershipAsync(
       }
 
       const fullSearchText = promptContent + '\n' + chunkStr;
+      const fullSearchLower = fullSearchText.toLowerCase();
+      const normSearchLower = fullSearchText.replace(/\\/g, '/').toLowerCase();
       let matches = true;
 
       if (criteria.expectedPromptSnippet) {
+        const snippet = criteria.expectedPromptSnippet;
         if (
-          !promptContent.includes(criteria.expectedPromptSnippet) &&
-          !chunkStr.includes(criteria.expectedPromptSnippet)
+          !promptContent.includes(snippet) &&
+          !chunkStr.includes(snippet) &&
+          !fullSearchLower.includes(snippet.toLowerCase())
         ) {
           matches = false;
         }
       }
 
       if (matches && criteria.workspacePath) {
-        const normWp = criteria.workspacePath.replace(/\\/g, '/');
-        const normSearch = fullSearchText.replace(/\\/g, '/');
-        if (!normSearch.includes(normWp)) {
-          const base = path.basename(criteria.workspacePath);
-          if (!normSearch.includes(base)) {
-            matches = false;
+        const normWp = criteria.workspacePath.replace(/\\/g, '/').toLowerCase();
+        let pathMatched = normSearchLower.includes(normWp);
+        if (!pathMatched) {
+          const base = path.basename(criteria.workspacePath).toLowerCase();
+          pathMatched = normSearchLower.includes(base);
+        }
+        // Multi-root fallback: if workspacePath didn't directly match, check if ANY folder in workspaceFolders matches
+        if (!pathMatched && criteria.workspaceFolders && criteria.workspaceFolders.length > 0) {
+          for (const folder of criteria.workspaceFolders) {
+            if (folder && fullSearchLower.includes(folder.toLowerCase())) {
+              pathMatched = true;
+              break;
+            }
           }
+        }
+        if (!pathMatched) {
+          matches = false;
         }
       }
 
       if (matches && (criteria.workspaceName || (criteria.workspaceFolders && criteria.workspaceFolders.length > 0))) {
         let wsMatched = false;
-        if (criteria.workspaceName && fullSearchText.includes(criteria.workspaceName)) {
+        if (criteria.workspaceName && fullSearchLower.includes(criteria.workspaceName.toLowerCase())) {
           wsMatched = true;
         }
         if (!wsMatched && criteria.workspaceFolders) {
           for (const folder of criteria.workspaceFolders) {
-            if (fullSearchText.includes(folder)) {
+            if (folder && fullSearchLower.includes(folder.toLowerCase())) {
               wsMatched = true;
               break;
             }

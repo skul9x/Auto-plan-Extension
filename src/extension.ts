@@ -743,8 +743,22 @@ export async function executePhases(
   currentPlanFolder = folderPath;
   runStartTime = Date.now();
 
-  const activeWs = vscode.workspace.workspaceFolders?.[0];
-  const wsName = activeWs ? activeWs.name : undefined;
+  // Dynamically resolve the workspace folder containing the selected plan folder (multi-root workspace support)
+  let matchedFolder: vscode.WorkspaceFolder | undefined;
+  if (vscode.workspace && typeof vscode.workspace.getWorkspaceFolder === 'function') {
+    try {
+      matchedFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(folderPath));
+    } catch { }
+  }
+  if (!matchedFolder && vscode.workspace && vscode.workspace.workspaceFolders) {
+    const normFolder = path.normalize(folderPath).toLowerCase();
+    matchedFolder = vscode.workspace.workspaceFolders.find(f => {
+      const normWs = path.normalize(f.uri.fsPath).toLowerCase();
+      return normFolder === normWs || normFolder.startsWith(normWs + path.sep) || normFolder.startsWith(normWs + '/');
+    });
+  }
+  const activeWs = matchedFolder || vscode.workspace.workspaceFolders?.[0];
+  const wsName = activeWs ? activeWs.name : path.basename(folderPath);
   const wsPath = activeWs ? activeWs.uri.fsPath : folderPath;
   const wsFolders = vscode.workspace.workspaceFolders?.map(f => f.name) || [];
   const wsTitle = vscode.workspace.name;

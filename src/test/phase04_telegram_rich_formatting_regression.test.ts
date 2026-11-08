@@ -834,7 +834,10 @@ async function runPhase04RegressionTests() {
 
     const runAdd = executedCommands.find(c => c.command === 'antigravity.addContext');
     assert.ok(runAdd, 'Telegram /run must trigger antigravity.addContext');
-    assert.strictEqual(runAdd.args[0], '/run deploy pipeline');
+    assert.ok(
+      runAdd.args[0].includes('[run](recipe;file:///') && runAdd.args[0].endsWith('deploy pipeline'),
+      `Telegram /run must format as Recipe Mention with args (got: ${runAdd.args[0]})`
+    );
 
     const runSend = executedCommands.find(c => c.command === 'antigravity.triggerSend');
     assert.ok(runSend, 'Telegram /run must trigger antigravity.triggerSend');

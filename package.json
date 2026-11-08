@@ -2,7 +2,7 @@
   "name": "antigravity-auto-plan",
   "displayName": "Antigravity Auto-Plan Runner",
   "description": "Automate repeated prompts and monitor completion in Antigravity IDE",
-  "version": "1.7.4",
+  "version": "1.7.5",
   "publisher": "skul9x",
   "engines": {
     "vscode": "^1.80.0"
@@ -403,6 +403,11 @@
           "default": "final_only",
           "description": "Telegram progress delivery mode: 'final_only' keeps a quiet continuous typing indicator and delivers a single rich summary upon completion, while 'live_edit' updates a single status message via throttled edits."
         },
+        "autoplan.telegram.formatWorkflowRecipes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically format Telegram workflow slash commands (e.g. /code) to Antigravity IDE native Recipe Mention markdown syntax."
+        },
         "autoplan.telegramLiveProgressMode": {
           "type": "string",
           "enum": [
@@ -498,6 +503,7 @@
     "watch": "node ./node_modules/typescript/bin/tsc -watch -p ./",
     "package": "node scripts/package.js package --allow-missing-repository --no-git-tag-version",
     "test:phase04-single-leader-regression": "node out/test/phase04_single_leader_clean_stream_regression.test.js",
+    "test:phase04-telegram-recipe": "node out/test/phase04_telegram_recipe_workflow_dispatch.test.js",
     "test:phase04-telegram-rich": "node out/test/phase04_telegram_rich_formatting_regression.test.js",
     "test:phase03-delivery": "node out/test/phase03_clean_final_only_delivery.test.js",
     "test": "node out/test/phase05_e2e_cross_platform_release.test.js",

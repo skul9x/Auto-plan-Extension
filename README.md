@@ -1,7 +1,7 @@
 # Antigravity Auto-Plan Extension
 
 <p align="center">
-  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/version-1.7.4-blue.svg?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/skul9x/Auto-plan-Extension/releases"><img src="https://img.shields.io/badge/version-1.7.5-blue.svg?style=flat-square" alt="Version"></a>
   <a href="https://code.visualstudio.com/"><img src="https://img.shields.io/badge/VS_Code-^1.80.0-informational.svg?style=flat-square" alt="VS Code Compatibility"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.3.3-3178C6.svg?style=flat-square" alt="TypeScript"></a>
   <a href="https://grammy.dev/"><img src="https://img.shields.io/badge/Telegram-grammY_1.21.0-26A5E4.svg?style=flat-square" alt="grammY Framework"></a>
@@ -362,11 +362,11 @@ sudo dnf install xdotool gnome-screenshot
 ### VSIX Installation
 ```bash
 # Install to Antigravity IDE
-antigravity --install-extension antigravity-auto-plan-1.7.3.vsix
-# (or prior release: antigravity-auto-plan-1.7.1.vsix)
+antigravity --install-extension antigravity-auto-plan-1.7.5.vsix
+# (or prior release: antigravity-auto-plan-1.7.4.vsix)
 
 # Install to Visual Studio Code
-code --install-extension antigravity-auto-plan-1.7.3.vsix
+code --install-extension antigravity-auto-plan-1.7.5.vsix
 ```
 
 ---

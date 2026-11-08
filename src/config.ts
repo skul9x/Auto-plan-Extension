@@ -49,6 +49,7 @@ export interface AutoPlanConfig {
   telegramMirrorIncludePcPrompts?: boolean;
   telegramChatMirrorPrefix?: string;
   telegramLiveProgressMode?: TelegramLiveProgressMode;
+  telegramFormatWorkflowRecipes?: boolean;
   longPhaseNudgeEnabled?: boolean;
   longPhaseThresholdSeconds?: number;
   longPhaseNudgeMessage?: string;
@@ -119,6 +120,7 @@ export const DEFAULT_CONFIG: AutoPlanConfig = {
   telegramMirrorIncludePcPrompts: true,
   telegramChatMirrorPrefix: '🤖 Antigravity:',
   telegramLiveProgressMode: 'final_only',
+  telegramFormatWorkflowRecipes: true,
   longPhaseNudgeEnabled: false,
   longPhaseThresholdSeconds: 180,
   longPhaseNudgeMessage: DEFAULT_LONG_PHASE_NUDGE_MESSAGE,
@@ -190,6 +192,7 @@ export function getConfig(): AutoPlanConfig {
     telegramMirrorIncludePcPrompts: config.get<boolean>('telegram.mirrorIncludePcPrompts', config.get<boolean>('telegramMirrorIncludePcPrompts', DEFAULT_CONFIG.telegramMirrorIncludePcPrompts ?? true)),
     telegramChatMirrorPrefix: config.get<string>('telegram.chatMirrorPrefix', config.get<string>('telegramChatMirrorPrefix', DEFAULT_CONFIG.telegramChatMirrorPrefix || '🤖 Antigravity:')),
     telegramLiveProgressMode: config.get<TelegramLiveProgressMode>('telegram.liveProgressMode', config.get<TelegramLiveProgressMode>('telegramLiveProgressMode', DEFAULT_CONFIG.telegramLiveProgressMode ?? 'final_only')),
+    telegramFormatWorkflowRecipes: config.get<boolean>('telegram.formatWorkflowRecipes', config.get<boolean>('telegramFormatWorkflowRecipes', DEFAULT_CONFIG.telegramFormatWorkflowRecipes ?? true)),
     longPhaseNudgeEnabled: config.get<boolean>('longPhaseNudgeEnabled', DEFAULT_CONFIG.longPhaseNudgeEnabled ?? false),
     longPhaseThresholdSeconds: config.get<number>('longPhaseThresholdSeconds', DEFAULT_CONFIG.longPhaseThresholdSeconds ?? 180),
     longPhaseNudgeMessage: config.get<string>('longPhaseNudgeMessage', DEFAULT_CONFIG.longPhaseNudgeMessage ?? DEFAULT_LONG_PHASE_NUDGE_MESSAGE),
@@ -236,6 +239,7 @@ export interface TelegramConfig {
   mirrorIncludePcPrompts: boolean;
   chatMirrorPrefix: string;
   liveProgressMode: TelegramLiveProgressMode;
+  formatWorkflowRecipes: boolean;
 }
 
 /**
@@ -248,6 +252,7 @@ export function getTelegramConfig(): TelegramConfig {
   let mirrorIncludePcPrompts = config.telegramMirrorIncludePcPrompts ?? true;
   let chatMirrorPrefix = config.telegramChatMirrorPrefix || '🤖 Antigravity:';
   let liveProgressMode: TelegramLiveProgressMode = config.telegramLiveProgressMode || 'final_only';
+  let formatWorkflowRecipes = config.telegramFormatWorkflowRecipes ?? true;
 
   try {
     const wsConfig = vscode.workspace.getConfiguration(CONFIG_SECTION);
@@ -262,6 +267,8 @@ export function getTelegramConfig(): TelegramConfig {
       if (explicitPrefix !== undefined) chatMirrorPrefix = explicitPrefix;
       const explicitMode = wsConfig.get<TelegramLiveProgressMode>('telegram.liveProgressMode');
       if (explicitMode !== undefined) liveProgressMode = explicitMode;
+      const explicitRecipes = wsConfig.get<boolean>('telegram.formatWorkflowRecipes');
+      if (explicitRecipes !== undefined) formatWorkflowRecipes = explicitRecipes;
     }
   } catch {}
 
@@ -274,7 +281,8 @@ export function getTelegramConfig(): TelegramConfig {
     enableChatMirror,
     mirrorIncludePcPrompts,
     chatMirrorPrefix,
-    liveProgressMode
+    liveProgressMode,
+    formatWorkflowRecipes
   };
 }
 

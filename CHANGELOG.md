@@ -2,6 +2,22 @@
 
 All notable changes to the **Antigravity Auto-Plan Runner** extension will be documented in this file.
 
+## [1.7.5] - 2026-11-08
+
+### ⚡ Antigravity Native Recipe Mention Mapping & Workflow Injection
+- **Native Recipe Mention Link Formatting**:
+  - Automatically converts incoming Telegram AWF workflow commands (`/code`, `/plan`, `/save_brain`, `/awf_update`...) into Antigravity IDE native Recipe Mention markdown syntax: `[<name>](recipe;file:///<encoded_path>) <args>`.
+  - Encodes Windows drive letters with lowercase and `%3A` (`recipe;file:///c%3A/...`), using forward slashes conforming to Antigravity's internal recipe parser.
+  - Supports cross-platform URI generation for both Windows and Unix environments.
+- **Hierarchical Workflow Path Resolution**:
+  - Automatically resolves workflow markdown files across local workspace directories (`.agent/workflows/`, `.agents/workflows/`, `.gemini/workflows/`) and global configuration directories (`~/.gemini/config/global_workflows/`, `~/.gemini/antigravity/global_workflows/`).
+  - Symmetrically handles naming variations between hyphens and underscores (`save_brain.md` vs `save-brain.md`, `awf-update.md` vs `awf_update.md`).
+- **Resilient Fallback & Argument Preservation**:
+  - Seamlessly appends trailing command arguments (e.g., `/code phase-01: setup` -> `[code](recipe;file:///...) phase-01: setup`).
+  - Gracefully falls back to plain-text normalized slash commands if the workflow markdown file does not exist on disk.
+- **Configurable Recipe Mention Setting**:
+  - Added `autoplan.telegram.formatWorkflowRecipes` setting (enabled by default) to control Recipe Mention transformation.
+
 ## [1.7.4] - 2026-11-06
 
 ### ⚡ High & Medium Performance & Reliability Audit Remediation

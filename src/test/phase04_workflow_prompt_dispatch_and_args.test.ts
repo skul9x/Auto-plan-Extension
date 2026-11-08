@@ -325,7 +325,8 @@ async function runPhase04WorkflowPromptDispatchAndArgsTest() {
       registryPath: testRegistryPath,
       logger: testLogger,
       botFactory: () => testBot,
-      promptDispatcher: mockPromptDispatcher
+      promptDispatcher: mockPromptDispatcher,
+      formatWorkflowRecipes: false
     });
 
     bridge.initBot();

@@ -1,28 +1,44 @@
 {
-  "updated_at": "2026-11-08T15:37:00.000Z",
+  "updated_at": "2026-11-08T23:48:00+07:00",
   "active_plan": "plans/261105-2320-high-medium-perf-audit-remediation/plan.md",
   "working_on": {
-    "feature": "Multi-Root Workspace Ownership Verification & Dynamic Target Folder Resolution",
-    "task": "Sửa triệt để lỗi NewConversationTimeoutError trong Multi-Root Workspace (bỏ qua nhầm conversation của folder khác folder[0]). Đã pass 100% tests, đóng gói và cài đặt VSIX vào IDE.",
+    "feature": "Telegram Workflow to Antigravity Recipe Markdown Link Mapping",
+    "task": "Chuyển đổi các lệnh workflow slash commands từ Telegram (/code, /save_brain, /awf_update...) thành cú pháp native Recipe Mention pill của Antigravity IDE: [<name>](recipe;file:///<encoded_path>) <args>. Đã pass 100% test suites, compile và đóng gói VSIX.",
     "status": "completed",
     "files": [
-      "src/transcriptWatcher.ts",
-      "src/extension.ts",
-      "src/orchestrator.ts",
-      "src/test/phase06_multiroot_workspace_ownership_verification.test.ts",
+      "src/telegramBridge.ts",
+      "src/config.ts",
+      "package.json",
+      "src/test/phase04_telegram_recipe_workflow_dispatch.test.ts",
+      "src/test/phase04_telegram_rich_formatting_regression.test.ts",
+      "src/test/phase04_workflow_prompt_dispatch_and_args.test.ts",
       "antigravity-auto-plan-1.7.4.vsix"
     ],
     "blockers": [],
-    "notes": "Đã thêm multi-root fallback trong verifyConversationOwnershipAsync (so khớp workspaceFolders nếu workspacePath khác nhau), chuẩn hóa so sánh đường dẫn không phân biệt chữ hoa/thường (case-insensitive) cho Windows. Đã bổ sung resolveTargetWorkspaceFolder trong Orchestrator và extension.ts để tự động tìm đúng WorkspaceFolder cha của plan folder thay vì gán cứng workspaceFolders[0]."
+    "notes": "Đã bổ sung formatWorkflowRecipeUrl, resolveWorkflowFilePath (hỗ trợ cả local workspace workflows và global workflows, đối chiếu biến thể - và _), formatWorkflowRecipePrompt, và tích hợp vào TelegramBridge pipeline cùng cấu hình autoplan.telegram.formatWorkflowRecipes."
   },
   "pending_tasks": [
     {
-      "task": "Chạy thử nghiệm một plan thực tế trong workspace 3 thư mục bằng lệnh /run hoặc qua Dashboard",
+      "task": "Test thực tế các lệnh /code, /plan từ Telegram trên máy thật và kiểm tra hiển thị pill trong Antigravity IDE",
       "priority": "low",
-      "notes": "Kiểm tra trải nghiệm người dùng thực tế với kế hoạch code tự động trong môi trường đa thư mục"
+      "notes": "Xác nhận hiển thị trực quan và khả năng load workflow context tự động"
     }
   ],
   "recent_changes": [
+    {
+      "timestamp": "2026-11-08T23:48:00+07:00",
+      "type": "feature_telegram_recipe_mapping",
+      "description": "Ánh xạ lệnh workflow Telegram sang cú pháp native Antigravity Recipe Mention: formatWorkflowRecipeUrl, resolveWorkflowFilePath, formatWorkflowRecipePrompt, tích hợp handleIncomingMessage và pass 100% test suites.",
+      "files": [
+        "src/telegramBridge.ts",
+        "src/config.ts",
+        "package.json",
+        "src/test/phase04_telegram_recipe_workflow_dispatch.test.ts",
+        "src/test/phase04_telegram_rich_formatting_regression.test.ts",
+        "src/test/phase04_workflow_prompt_dispatch_and_args.test.ts",
+        "antigravity-auto-plan-1.7.4.vsix"
+      ]
+    },
     {
       "timestamp": "2026-11-08T15:37:00.000Z",
       "type": "bugfix_multiroot_workspace",
@@ -261,6 +277,10 @@
     {
       "decision": "Đồng bộ Telegram Remote Control (/run, /plan, /stop) với Native Chat API",
       "reason": "Người dùng điều khiển từ xa qua Telegram được kích hoạt trực tiếp vào IDE không bị giật focus hay lỗi gõ phím mù."
+    },
+    {
+      "decision": "Ánh xạ Telegram Workflow Slash Commands sang Native Antigravity Recipe Mentions: [<name>](recipe;file:///<encoded_path>) <args>",
+      "reason": "Cho phép tin nhắn gửi từ Telegram kích hoạt cơ chế Recipe Mention nội bộ của Antigravity, render thành pill trực quan và tự động nạp toàn bộ file workflow .md vào prompt instructions."
     }
   ]
 }

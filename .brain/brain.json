@@ -2,12 +2,12 @@
   "meta": {
     "schema_version": "1.1.0",
     "awf_version": "4.0.2",
-    "updated_at": "2026-11-06T00:30:00+07:00"
+    "updated_at": "2026-11-08T23:48:00+07:00"
   },
   "project": {
     "name": "Auto-Plan_Extension",
     "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan với 100% Native Antigravity Chat API Architecture (antigravity.addContext, antigravity.triggerSend, antigravity.startNewConversation, antigravity.prioritized.chat.stop), hoàn toàn focus-free, loại bỏ 100% DOM Bridge injection vào workbench.html và OS keyboard simulations. Tích hợp Telegram Rich HTML Formatting Engine (parse_mode: 'HTML'), Tag-Aware Chunk Splitter và Safe Plain-Text Fallback trên Telegram HTTP 400 cam kết zero-message-drop. Hệ thống tối ưu hóa hiệu năng cao: bất đồng bộ hóa 100% disk I/O & process execution, adaptive RPC polling backoff, payload fingerprint cache, persistent FileHandle transcript tailing, và IPC batching webview.",
-    "version": "1.7.4",
+    "version": "1.7.5",
     "created_at": "2026-08-27T23:51:00+07:00",
     "active_plan": "plans/261105-2320-high-medium-perf-audit-remediation/plan.md"
   },
@@ -84,10 +84,12 @@
     "PromptOriginTracker SYSTEM_NUDGE: Gắn nhãn nguồn gốc prompt hệ thống, ngăn lặp echo và gửi thông báo trực quan lên Telegram",
     "Telegram Rich HTML Formatting Engine: Chuyển đổi Markdown sang Telegram-compliant HTML (parse_mode: 'HTML') với tốc độ < 5ms cho 50KB payload, triệt tiêu 100% ký tự cú pháp rác (###, ---, raw **)",
     "Tag-Aware HTML Message Chunk Splitter: Cắt nhỏ message HTML (<= 3800 ký tự) bảo đảm cân bằng thẻ mở/đóng chuẩn LIFO, không bao giờ ngắt giữa chừng thẻ hoặc entity HTML",
-    "Telegram Safe Fallback Zero-Drop Guarantee: Tự động bắt lỗi HTTP 400 (can't parse entities) từ Telegram API và lập tức gửi lại dạng plain-text không parse_mode, cam kết 0% mất mát tin nhắn"
+    "Telegram Safe Fallback Zero-Drop Guarantee: Tự động bắt lỗi HTTP 400 (can't parse entities) từ Telegram API và lập tức gửi lại dạng plain-text không parse_mode, cam kết 0% mất mát tin nhắn",
+    "Telegram Workflow Recipe Mention Mapping: Tự động ánh xạ Telegram Workflow Slash Commands (/code, /save_brain, /awf_update...) thành cú pháp Native Antigravity Recipe Mentions: [<name>](recipe;file:///<encoded_path>) <args>"
   ],
   "decisions_made": [
     "Áp dụng parse_mode: 'HTML' làm định dạng mặc định cho toàn bộ Telegram Live Chat Mirror, bot command replies (/run, /plan, /code...) và status notifications",
+    "Ánh xạ workflow slash commands nhận từ Telegram sang cú pháp Native Recipe Link của Antigravity ([<name>](recipe;file:///<encoded_path>) <args>) để IDE tự động render Rich Mention Pill và inject toàn bộ nội dung hướng dẫn quy trình từ file .md vào prompt context",
     "Không chia cắt code fence thô dạng Markdown mà chuyển toàn bộ sang thẻ HTML <pre><code class=\"language-{lang}\">...</code></pre> kèm escape toàn bộ ký tự reserved (&, <, >) sang entity an toàn",
     "Khi gặp lỗi Telegram HTTP 400 entity parse error, ThrottledResponseDeliverer và TelegramBridge lập tức fallback về plain-text qua stripMarkdownToPlainText và gửi không kèm parse_mode để bảo đảm zero-message-drop",
     "Sử dụng kiến trúc DOM Bridge tương tự zixfel nhưng mở rộng để điều phối Prompt và Phase",
@@ -179,7 +181,8 @@
       "TranscriptTailEngine.findLatestConversation cần đối chiếu workspacePath và workspaceName qua verifyConversationOwnershipAsync để chọn chính xác session thuộc workspace hiện tại.",
       "Telegram HTML chỉ hỗ trợ tập thẻ hạn chế (<b>, <i>, <s>, <u>, <blockquote>, <pre>, <code>, <a>, <tg-spoiler>); các thẻ không hỗ trợ như <div>, <p>, <br> sẽ khiến Telegram ném lỗi HTTP 400 Bad Request: can't parse entities.",
       "Trong code block của Telegram HTML, các ký tự &, <, > bắt buộc phải được escape thành &amp;, &lt;, &gt;. Thẻ <code> bên trong <pre> mang thuộc tính class=\"language-xxx\" để client tự highlight cú pháp.",
-      "Khi chia nhỏ chunk HTML, bắt buộc phải duyệt theo cây thẻ và đóng các thẻ còn mở ở cuối chunk theo thứ tự LIFO, sau đó mở lại y hệt ở đầu chunk tiếp theo."
+      "Khi chia nhỏ chunk HTML, bắt buộc phải duyệt theo cây thẻ và đóng các thẻ còn mở ở cuối chunk theo thứ tự LIFO, sau đó mở lại y hệt ở đầu chunk tiếp theo.",
+      "Cú pháp Recipe Mention trong Antigravity IDE yêu cầu URI scheme recipe;file:///, ký tự ổ đĩa Windows viết thường kèm %3A (ví dụ c%3A/), và dấu gạch chéo xuôi /. Nếu thiếu định dạng này, IDE sẽ coi là text thường và không render thành Pill."
     ]
   }
 }

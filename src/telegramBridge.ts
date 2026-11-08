@@ -227,13 +227,143 @@ export interface ParsedWorkflowCommand {
   rawCommand: string;       // Original command name before mapping (e.g., 'save_brain')
   args: string;             // Preserved trailing argument string
   normalizedPrompt: string; // Complete normalized prompt ready for dispatch (e.g., '/save-brain custom note')
+  recipePrompt: string;     // Antigravity Recipe Markdown format (e.g., '[code](recipe;file:///...) custom note')
+}
+
+/**
+ * Formats a local absolute file path into Antigravity IDE's native Recipe Mention URI:
+ *   recipe;file:///<encoded_path>
+ *
+ * On Windows: 'C:\Users\Admin\.gemini\config\global_workflows\code.md'
+ *          -> 'recipe;file:///c%3A/Users/Admin/.gemini/config/global_workflows/code.md'
+ * On Unix:    '/home/user/.gemini/config/global_workflows/code.md'
+ *          -> 'recipe;file:///home/user/.gemini/config/global_workflows/code.md'
+ */
+export function formatWorkflowRecipeUrl(filePath: string): string {
+  if (!filePath || typeof filePath !== 'string') {
+    return '';
+  }
+  const normalized = filePath.replace(/\\/g, '/');
+  const withDrive = normalized.replace(/^([a-zA-Z]):\/?/, (_match, drive) => `${drive.toLowerCase()}%3A/`);
+  const cleanPath = withDrive.startsWith('/') ? withDrive.slice(1) : withDrive;
+  return `recipe;file:///${cleanPath}`;
+}
+
+/**
+ * Resolves the absolute path to a workflow markdown (.md) file on disk.
+ *
+ * Search priority:
+ * 1. Local workspace workflows:
+ *    - <workspacePath>/.agent/workflows/
+ *    - <workspacePath>/.agents/workflows/
+ *    - <workspacePath>/.gemini/workflows/
+ * 2. Global workflows:
+ *    - ~/.gemini/config/global_workflows/
+ *    - ~/.gemini/antigravity/global_workflows/
+ *    - ~/.gemini/antigravity/workflows/
+ *
+ * File name matching handles variations with hyphens and underscores:
+ * e.g., 'save-brain' matches 'save_brain.md' and 'save-brain.md';
+ * 'awf_update' matches 'awf-update.md' and 'awf_update.md'.
+ */
+export function resolveWorkflowFilePath(command: string, workspacePath?: string): string | null {
+  if (!command || typeof command !== 'string') {
+    return null;
+  }
+
+  const cleanCmd = command.trim().replace(/^\//, '').toLowerCase();
+  if (!cleanCmd) {
+    return null;
+  }
+
+  // Generate candidate filenames (without extension)
+  const candidateNames = new Set<string>();
+  candidateNames.add(cleanCmd);
+  candidateNames.add(cleanCmd.replace(/-/g, '_'));
+  candidateNames.add(cleanCmd.replace(/_/g, '-'));
+
+  if (WORKFLOW_COMMAND_MAP[cleanCmd]) {
+    const mapped = WORKFLOW_COMMAND_MAP[cleanCmd].toLowerCase();
+    candidateNames.add(mapped);
+    candidateNames.add(mapped.replace(/-/g, '_'));
+    candidateNames.add(mapped.replace(/_/g, '-'));
+  }
+  if (WORKFLOW_COMMAND_REVERSE_MAP[cleanCmd]) {
+    const revMapped = WORKFLOW_COMMAND_REVERSE_MAP[cleanCmd].toLowerCase();
+    candidateNames.add(revMapped);
+    candidateNames.add(revMapped.replace(/-/g, '_'));
+    candidateNames.add(revMapped.replace(/_/g, '-'));
+  }
+
+  const searchDirs: string[] = [];
+
+  // Workspace-local candidate directories
+  if (workspacePath && typeof workspacePath === 'string') {
+    searchDirs.push(path.join(workspacePath, '.agent', 'workflows'));
+    searchDirs.push(path.join(workspacePath, '.agents', 'workflows'));
+    searchDirs.push(path.join(workspacePath, '.gemini', 'workflows'));
+  }
+
+  // Global candidate directories
+  const home = os.homedir();
+  searchDirs.push(path.join(home, '.gemini', 'config', 'global_workflows'));
+  searchDirs.push(path.join(home, '.gemini', 'antigravity', 'global_workflows'));
+  searchDirs.push(path.join(home, '.gemini', 'antigravity', 'workflows'));
+
+  for (const dir of searchDirs) {
+    try {
+      if (!fs.existsSync(dir)) {
+        continue;
+      }
+      for (const name of candidateNames) {
+        const filePath = path.join(dir, `${name}.md`);
+        if (fs.existsSync(filePath)) {
+          return filePath;
+        }
+      }
+    } catch {
+      // Ignore file system / permission errors
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Formats a workflow command into Antigravity IDE's native Recipe Mention syntax:
+ *   [<recipe_name>](recipe;file:///<encoded_path>) <args>
+ *
+ * If the workflow markdown file does not exist on disk, gracefully falls back to
+ * standard slash command text: `/<normalizedCommand> <args>`.
+ */
+export function formatWorkflowRecipePrompt(
+  command: string,
+  rawArgs: string = '',
+  workspacePath?: string
+): string {
+  if (!command || typeof command !== 'string') {
+    return '';
+  }
+
+  const cleanCmd = command.trim().replace(/^\//, '').toLowerCase();
+  const normalizedCommand = WORKFLOW_COMMAND_MAP[cleanCmd] || cleanCmd;
+  const argsPart = rawArgs && rawArgs.trim().length > 0 ? ` ${rawArgs.trim()}` : '';
+
+  const filePath = resolveWorkflowFilePath(cleanCmd, workspacePath);
+  if (!filePath) {
+    return `/${normalizedCommand}${argsPart}`;
+  }
+
+  const recipeName = path.basename(filePath, '.md');
+  const recipeUrl = formatWorkflowRecipeUrl(filePath);
+  return `[${recipeName}](${recipeUrl})${argsPart}`;
 }
 
 /**
  * Parses an incoming text message to detect and extract workflow slash command and its arguments.
  * Distinguishes AWF workflow commands from internal bot administration commands.
  */
-export function parseWorkflowCommand(text: string): ParsedWorkflowCommand | null {
+export function parseWorkflowCommand(text: string, workspacePath?: string): ParsedWorkflowCommand | null {
   if (!text || typeof text !== 'string') {
     return null;
   }
@@ -267,12 +397,15 @@ export function parseWorkflowCommand(text: string): ParsedWorkflowCommand | null
     ? `/${normalizedCommand} ${rawArgs}`
     : `/${normalizedCommand}`;
 
+  const recipePrompt = formatWorkflowRecipePrompt(normalizedCommand, rawArgs, workspacePath);
+
   return {
     isWorkflow: true,
     command: normalizedCommand,
     rawCommand: match[1],
     args: rawArgs,
-    normalizedPrompt
+    normalizedPrompt,
+    recipePrompt
   };
 }
 
@@ -408,6 +541,7 @@ export interface TelegramBridgeOptions {
   isMultiWorkspace?: boolean | (() => boolean);
   port?: number;
   liveProgressMode?: TelegramLiveProgressMode;
+  formatWorkflowRecipes?: boolean;
 }
 
 /**
@@ -472,6 +606,7 @@ export class TelegramBridge {
   private port?: number;
   private targetPort?: number;
   private targetWorkspaceName?: string;
+  private formatWorkflowRecipes: boolean = true;
 
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private standbyPollTimer: NodeJS.Timeout | null = null;
@@ -660,6 +795,9 @@ export class TelegramBridge {
         this.notifier.setLiveProgressMode(this.liveProgressMode);
       }
     }
+    if (options.formatWorkflowRecipes !== undefined) {
+      this.formatWorkflowRecipes = options.formatWorkflowRecipes;
+    }
     if (this.chatMirror) {
       this.chatMirror.setWorkspace(this.workspaceName, this.isMultiWorkspace, this.workspacePath);
       this.chatMirror.updateConfig({
@@ -717,6 +855,7 @@ export class TelegramBridge {
     this.mirrorIncludePcPrompts = config.mirrorIncludePcPrompts ?? true;
     this.chatMirrorPrefix = config.chatMirrorPrefix || DEFAULT_AI_RESPONSE_HEADER;
     this.liveProgressMode = config.liveProgressMode || 'final_only';
+    this.formatWorkflowRecipes = config.formatWorkflowRecipes ?? true;
     if (this.notifier) {
       this.notifier.setThrottleMs(this.throttleMs);
       this.notifier.setChatIds(this.allowedUsers);
@@ -2304,7 +2443,17 @@ export class TelegramBridge {
       }
 
       // Check if message matches an AWF workflow command (e.g., /brainstorm, /code, /save_brain, /recap)
-      const parsedWorkflow = parseWorkflowCommand(rawText);
+      let targetWorkspaceFolder = this.workspacePath;
+      const ownPort = this.getOwnPort();
+      if (this.targetPort && ownPort && this.targetPort !== ownPort) {
+        const workspaces = this.getActiveWorkspaces();
+        const targetWs = workspaces.find((w) => w.port === this.targetPort);
+        if (targetWs && targetWs.workspacePath) {
+          targetWorkspaceFolder = targetWs.workspacePath;
+        }
+      }
+
+      const parsedWorkflow = parseWorkflowCommand(rawText, targetWorkspaceFolder);
 
       if (!this.allowFreeChat && !isInternalCommand && !parsedWorkflow) {
         this.logger.debug(
@@ -2317,10 +2466,12 @@ export class TelegramBridge {
       let text: string;
 
       if (parsedWorkflow) {
-        text = parsedWorkflow.normalizedPrompt;
+        text = this.formatWorkflowRecipes
+          ? (parsedWorkflow.recipePrompt || parsedWorkflow.normalizedPrompt)
+          : parsedWorkflow.normalizedPrompt;
         this.logger.info(
           'TELEGRAM',
-          `Parsed workflow command '/${parsedWorkflow.rawCommand}' normalized to '${parsedWorkflow.command}' (prompt: "${text.slice(0, 60)}")`
+          `Parsed workflow command '/${parsedWorkflow.rawCommand}' normalized to '${parsedWorkflow.command}' (prompt: "${text.slice(0, 80)}")`
         );
       } else {
         // Sanitize input to prevent shell escaping issues if Tier 3 OS keyboard simulation is used
@@ -2330,7 +2481,6 @@ export class TelegramBridge {
       this.logger.info('TELEGRAM', `Received prompt from user ${ctx.from?.id}: "${text.slice(0, 50)}..."`);
 
       // If a remote target workspace is selected:
-      const ownPort = this.getOwnPort();
       if (this.targetPort && ownPort && this.targetPort !== ownPort) {
         const workspaces = this.getActiveWorkspaces();
         const targetWs = workspaces.find((w) => w.port === this.targetPort);

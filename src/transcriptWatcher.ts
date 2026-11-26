@@ -7,6 +7,8 @@ import { DEFAULT_CONFIG } from './config';
 
 export interface ConversationOwnershipCriteria {
   expectedPromptSnippet?: string;
+  expectedPromptHead?: string;
+  expectedPromptTail?: string;
   workspacePath?: string;
   workspaceName?: string;
   workspaceFolders?: string[];
@@ -95,6 +97,8 @@ export const MAX_CACHED_CONVERSATIONS = 100;
 export interface CachedOwnershipEntry {
   mtimeMs: number;
   size: number;
+  fullMtimeMs?: number;
+  fullSize?: number;
   isOwner: boolean;
   checkedAt: number;
 }
@@ -279,22 +283,178 @@ export async function countTranscriptLinesAsync(filePath: string, maxOffset?: nu
   });
 }
 
+function hasOwnershipCriteria(criteria?: ConversationOwnershipCriteria): criteria is ConversationOwnershipCriteria {
+  return Boolean(
+    criteria &&
+      (criteria.expectedPromptSnippet ||
+        criteria.expectedPromptHead ||
+        criteria.expectedPromptTail ||
+        criteria.workspacePath ||
+        criteria.workspaceName ||
+        (criteria.workspaceFolders && criteria.workspaceFolders.length > 0))
+  );
+}
+
+/**
+ * Safely reads up to `maxBytes` from the head of a UTF-8 file using `fs.promises.open`
+ * and `try...finally` handle cleanup. Returns `null` if the file cannot be opened.
+ */
+async function readFileHeadUtf8Async(
+  filePath: string,
+  maxBytes: number
+): Promise<{ content: string; fileSize: number; mtimeMs: number } | null> {
+  let fileHandle: fs.promises.FileHandle | null = null;
+  try {
+    fileHandle = await fs.promises.open(filePath, 'r');
+    const stats = await fileHandle.stat();
+    if (stats.size === 0) {
+      return { content: '', fileSize: 0, mtimeMs: stats.mtimeMs };
+    }
+    const bytesToRead = Math.min(maxBytes, stats.size);
+    const buffer = Buffer.alloc(bytesToRead);
+    const { bytesRead } = await fileHandle.read(buffer, 0, bytesToRead, 0);
+    return {
+      content: bytesRead > 0 ? buffer.toString('utf8', 0, bytesRead) : '',
+      fileSize: stats.size,
+      mtimeMs: stats.mtimeMs
+    };
+  } catch {
+    return null;
+  } finally {
+    if (fileHandle) {
+      try {
+        await fileHandle.close();
+      } catch {}
+    }
+  }
+}
+
+interface ChunkOwnershipEvalResult {
+  matches: boolean;
+  snippetMatched: boolean;
+  workspaceMatched: boolean;
+  promptContent: string;
+  isContentTruncated: boolean;
+  isLine0Partial: boolean;
+}
+
+function evaluateChunkOwnership(
+  chunkStr: string,
+  criteria: ConversationOwnershipCriteria
+): ChunkOwnershipEvalResult {
+  let promptContent = '';
+  let isContentTruncated = false;
+  let isLine0Partial = false;
+
+  const firstNewlineIdx = chunkStr.indexOf('\n');
+  const firstLine = firstNewlineIdx !== -1 ? chunkStr.substring(0, firstNewlineIdx) : chunkStr;
+
+  try {
+    const parsed = JSON.parse(firstLine);
+    if (parsed && typeof parsed === 'object') {
+      promptContent = parsed.content || parsed.text || parsed.response || '';
+      if (typeof promptContent !== 'string') {
+        promptContent = JSON.stringify(promptContent);
+      }
+      isContentTruncated =
+        Array.isArray(parsed.truncated_fields) && parsed.truncated_fields.includes('content');
+    }
+  } catch {
+    isLine0Partial = firstNewlineIdx === -1;
+    isContentTruncated = /"truncated_fields"\s*:\s*\[[^\]]*"content"/.test(firstLine);
+    const contentMatch = /"content"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(chunkStr);
+    if (contentMatch && contentMatch[1]) {
+      try {
+        promptContent = JSON.parse(`"${contentMatch[1]}"`);
+      } catch {
+        promptContent = contentMatch[1];
+      }
+    } else {
+      promptContent = chunkStr;
+    }
+  }
+
+  const fullSearchText = promptContent + '\n' + chunkStr;
+  const fullSearchLower = fullSearchText.toLowerCase();
+  const normSearchLower = fullSearchText.replace(/\\/g, '/').toLowerCase();
+
+  let snippetMatched = true;
+  if (criteria.expectedPromptSnippet) {
+    const snippet = criteria.expectedPromptSnippet;
+    if (
+      !promptContent.includes(snippet) &&
+      !chunkStr.includes(snippet) &&
+      !fullSearchLower.includes(snippet.toLowerCase())
+    ) {
+      snippetMatched = false;
+    }
+  }
+
+  let workspaceMatched = true;
+  if (criteria.workspacePath) {
+    const normWp = criteria.workspacePath.replace(/\\/g, '/').toLowerCase();
+    let pathMatched = normSearchLower.includes(normWp);
+    if (!pathMatched) {
+      const base = path.basename(criteria.workspacePath).toLowerCase();
+      pathMatched = normSearchLower.includes(base);
+    }
+    // Multi-root fallback: if workspacePath didn't directly match, check if ANY folder in workspaceFolders matches
+    if (!pathMatched && criteria.workspaceFolders && criteria.workspaceFolders.length > 0) {
+      for (const folder of criteria.workspaceFolders) {
+        if (folder && fullSearchLower.includes(folder.toLowerCase())) {
+          pathMatched = true;
+          break;
+        }
+      }
+    }
+    if (!pathMatched) {
+      workspaceMatched = false;
+    }
+  }
+
+  if (
+    workspaceMatched &&
+    (criteria.workspaceName || (criteria.workspaceFolders && criteria.workspaceFolders.length > 0))
+  ) {
+    let wsMatched = false;
+    if (criteria.workspaceName && fullSearchLower.includes(criteria.workspaceName.toLowerCase())) {
+      wsMatched = true;
+    }
+    if (!wsMatched && criteria.workspaceFolders) {
+      for (const folder of criteria.workspaceFolders) {
+        if (folder && fullSearchLower.includes(folder.toLowerCase())) {
+          wsMatched = true;
+          break;
+        }
+      }
+    }
+    if (!wsMatched) {
+      workspaceMatched = false;
+    }
+  }
+
+  return {
+    matches: snippetMatched && workspaceMatched,
+    snippetMatched,
+    workspaceMatched,
+    promptContent,
+    isContentTruncated,
+    isLine0Partial
+  };
+}
+
 /**
  * Asynchronously verifies if candidate conversation belongs to current phase/workspace
- * by reading the first 8KB of the transcript and checking for prompt/workspace fingerprint.
+ * by reading the first 8KB of the transcript and checking for prompt/workspace fingerprint,
+ * with fallback to sibling `transcript_full.jsonl`, bounded 32KB scan, and head/tail structural
+ * matching when Antigravity compacts `step_index: 0` (`truncated_fields: ["content"]`).
  */
 export async function verifyConversationOwnershipAsync(
   transcriptPath: string,
   criteria: ConversationOwnershipCriteria,
   statHint?: { mtimeMs: number; size: number }
 ): Promise<boolean> {
-  if (
-    !criteria ||
-    (!criteria.expectedPromptSnippet &&
-      !criteria.workspacePath &&
-      !criteria.workspaceName &&
-      (!criteria.workspaceFolders || criteria.workspaceFolders.length === 0))
-  ) {
+  if (!hasOwnershipCriteria(criteria)) {
     return true;
   }
 
@@ -318,123 +478,94 @@ export async function verifyConversationOwnershipAsync(
     return false;
   }
 
-  const criteriaKey = `${criteria.expectedPromptSnippet || ''}::${criteria.workspacePath || ''}::${criteria.workspaceName || ''}::${criteria.workspaceFolders?.join(',') || ''}`;
+  const criteriaKey = `${criteria.expectedPromptSnippet || ''}::${criteria.expectedPromptHead || ''}::${criteria.expectedPromptTail || ''}::${criteria.workspacePath || ''}::${criteria.workspaceName || ''}::${criteria.workspaceFolders?.join(',') || ''}`;
   const cacheKey = `${transcriptPath}::${criteriaKey}`;
+  const fullTranscriptPath = path.join(path.dirname(transcriptPath), 'transcript_full.jsonl');
 
   const cached = conversationOwnershipCache.get(cacheKey);
   if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
-    ownershipCacheHits++;
-    // Re-insert to maintain LRU recency
-    conversationOwnershipCache.delete(cacheKey);
-    conversationOwnershipCache.set(cacheKey, cached);
-    return cached.isOwner;
+    let fullCacheValid = true;
+    if (cached.fullMtimeMs !== undefined) {
+      try {
+        const fullStat = await fs.promises.stat(fullTranscriptPath);
+        if (fullStat.mtimeMs !== cached.fullMtimeMs || fullStat.size !== cached.fullSize) {
+          fullCacheValid = false;
+        }
+      } catch {
+        fullCacheValid = false;
+      }
+    }
+    if (fullCacheValid) {
+      ownershipCacheHits++;
+      // Re-insert to maintain LRU recency
+      conversationOwnershipCache.delete(cacheKey);
+      conversationOwnershipCache.set(cacheKey, cached);
+      return cached.isOwner;
+    }
   }
 
   ownershipCacheMisses++;
 
   let isOwner = false;
-  let fileHandle: fs.promises.FileHandle | null = null;
-  try {
-    fileHandle = await fs.promises.open(transcriptPath, 'r');
-    const maxBytes = Math.min(8192, size);
-    const buffer = Buffer.alloc(maxBytes);
-    const { bytesRead } = await fileHandle.read(buffer, 0, maxBytes, 0);
-    if (bytesRead === 0) {
-      isOwner = false;
-    } else {
-      const chunkStr = buffer.toString('utf8', 0, bytesRead);
+  let isContentTruncated = false;
+  let fullStatInfo: { mtimeMs: number; size: number } | null = null;
 
-      // Extract step 0 content
-      let promptContent = '';
-      const firstNewlineIdx = chunkStr.indexOf('\n');
-      const firstLine = firstNewlineIdx !== -1 ? chunkStr.substring(0, firstNewlineIdx) : chunkStr;
+  // Stage A: Fast Path — Initial 8,192 bytes of transcript.jsonl
+  const headResult = await readFileHeadUtf8Async(transcriptPath, 8192);
+  if (headResult && headResult.content.length > 0) {
+    const evalA = evaluateChunkOwnership(headResult.content, criteria);
+    isContentTruncated = evalA.isContentTruncated;
 
-      try {
-        const parsed = JSON.parse(firstLine);
-        if (parsed && typeof parsed === 'object') {
-          promptContent = parsed.content || parsed.text || parsed.response || '';
-          if (typeof promptContent !== 'string') {
-            promptContent = JSON.stringify(promptContent);
+    if (evalA.matches) {
+      isOwner = true;
+    } else if (evalA.isContentTruncated || evalA.isLine0Partial) {
+      // Stage B: Sibling transcript_full.jsonl check (up to 64KB)
+      const fullHead = await readFileHeadUtf8Async(fullTranscriptPath, 65536);
+      if (fullHead) {
+        fullStatInfo = { mtimeMs: fullHead.mtimeMs, size: fullHead.fileSize };
+        if (fullHead.content.length > 0) {
+          const evalFull = evaluateChunkOwnership(fullHead.content, criteria);
+          if (evalFull.matches) {
+            isOwner = true;
           }
-        }
-      } catch {
-        const contentMatch = /"content"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(chunkStr);
-        if (contentMatch && contentMatch[1]) {
-          try {
-            promptContent = JSON.parse(`"${contentMatch[1]}"`);
-          } catch {
-            promptContent = contentMatch[1];
-          }
-        } else {
-          promptContent = chunkStr;
         }
       }
 
-      const fullSearchText = promptContent + '\n' + chunkStr;
-      const fullSearchLower = fullSearchText.toLowerCase();
-      const normSearchLower = fullSearchText.replace(/\\/g, '/').toLowerCase();
-      let matches = true;
-
-      if (criteria.expectedPromptSnippet) {
-        const snippet = criteria.expectedPromptSnippet;
-        if (
-          !promptContent.includes(snippet) &&
-          !chunkStr.includes(snippet) &&
-          !fullSearchLower.includes(snippet.toLowerCase())
-        ) {
-          matches = false;
-        }
-      }
-
-      if (matches && criteria.workspacePath) {
-        const normWp = criteria.workspacePath.replace(/\\/g, '/').toLowerCase();
-        let pathMatched = normSearchLower.includes(normWp);
-        if (!pathMatched) {
-          const base = path.basename(criteria.workspacePath).toLowerCase();
-          pathMatched = normSearchLower.includes(base);
-        }
-        // Multi-root fallback: if workspacePath didn't directly match, check if ANY folder in workspaceFolders matches
-        if (!pathMatched && criteria.workspaceFolders && criteria.workspaceFolders.length > 0) {
-          for (const folder of criteria.workspaceFolders) {
-            if (folder && fullSearchLower.includes(folder.toLowerCase())) {
-              pathMatched = true;
-              break;
+      // Stage C: Bounded 32KB scan on transcript.jsonl + Structural Head/Tail fallback
+      if (!isOwner && evalA.isContentTruncated) {
+        if (size > 8192) {
+          const extHead = await readFileHeadUtf8Async(transcriptPath, 32768);
+          if (extHead && extHead.content.length > 0) {
+            const evalExt = evaluateChunkOwnership(extHead.content, criteria);
+            if (evalExt.matches) {
+              isOwner = true;
             }
           }
         }
-        if (!pathMatched) {
-          matches = false;
-        }
-      }
 
-      if (matches && (criteria.workspaceName || (criteria.workspaceFolders && criteria.workspaceFolders.length > 0))) {
-        let wsMatched = false;
-        if (criteria.workspaceName && fullSearchLower.includes(criteria.workspaceName.toLowerCase())) {
-          wsMatched = true;
-        }
-        if (!wsMatched && criteria.workspaceFolders) {
-          for (const folder of criteria.workspaceFolders) {
-            if (folder && fullSearchLower.includes(folder.toLowerCase())) {
-              wsMatched = true;
-              break;
+        if (!isOwner && !evalA.snippetMatched && evalA.workspaceMatched) {
+          const headTrimmed = criteria.expectedPromptHead?.trim() ?? '';
+          const tailTrimmed = criteria.expectedPromptTail?.trim() ?? '';
+          if (headTrimmed.length >= 24 && tailTrimmed.length >= 24) {
+            const targetText = evalA.promptContent || headResult.content;
+            const headMatched =
+              targetText.includes(criteria.expectedPromptHead!) ||
+              headResult.content.includes(criteria.expectedPromptHead!);
+            const tailMatched =
+              targetText.includes(criteria.expectedPromptTail!) ||
+              headResult.content.includes(criteria.expectedPromptTail!);
+            if (headMatched && tailMatched) {
+              isOwner = true;
             }
           }
         }
-        if (!wsMatched) {
-          matches = false;
-        }
       }
+    }
+  }
 
-      isOwner = matches;
-    }
-  } catch {
-    isOwner = false;
-  } finally {
-    if (fileHandle) {
-      try {
-        await fileHandle.close();
-      } catch { }
-    }
+  // Negative Cache Guard: do not poison LRU cache when truncated step-0 has no flushed transcript_full.jsonl yet
+  if (!isOwner && isContentTruncated && (!fullStatInfo || fullStatInfo.size === 0)) {
+    return false;
   }
 
   // Update LRU cache
@@ -450,6 +581,7 @@ export async function verifyConversationOwnershipAsync(
   conversationOwnershipCache.set(cacheKey, {
     mtimeMs,
     size,
+    ...(fullStatInfo ? { fullMtimeMs: fullStatInfo.mtimeMs, fullSize: fullStatInfo.size } : {}),
     isOwner,
     checkedAt: Date.now()
   });
@@ -583,14 +715,8 @@ export async function getCandidateConversationsAsync(
           const tSize = tStats ? tStats.size : 0;
           const tBirthtime = tStats ? Math.max(tStats.birthtimeMs || 0, tStats.ctimeMs || 0) : 0;
 
-          if (
-            criteria &&
-            (criteria.expectedPromptSnippet ||
-              criteria.workspacePath ||
-              criteria.workspaceName ||
-              (criteria.workspaceFolders && criteria.workspaceFolders.length > 0))
-          ) {
-            const isOwner = await verifyConversationOwnershipAsync(transcriptPath, criteria, { mtimeMs: tMtime, size: tSize });
+          if (hasOwnershipCriteria(criteria)) {
+            const isOwner = await verifyConversationOwnershipAsync(transcriptPath, criteria!, { mtimeMs: tMtime, size: tSize });
             if (!isOwner) {
               if (tSize > 0 && onCandidateSkipped) {
                 onCandidateSkipped(dirEntry.name, criteria);
@@ -641,17 +767,11 @@ export async function getCandidateConversationsAsync(
         continue;
       }
 
-      if (
-        criteria &&
-        (criteria.expectedPromptSnippet ||
-          criteria.workspacePath ||
-          criteria.workspaceName ||
-          (criteria.workspaceFolders && criteria.workspaceFolders.length > 0))
-      ) {
+      if (hasOwnershipCriteria(criteria)) {
         if (!transcriptPath) {
           continue;
         }
-        const isOwner = await verifyConversationOwnershipAsync(transcriptPath, criteria, { mtimeMs: transcriptMtime, size: transcriptSize });
+        const isOwner = await verifyConversationOwnershipAsync(transcriptPath, criteria!, { mtimeMs: transcriptMtime, size: transcriptSize });
         if (!isOwner) {
           if (transcriptSize > 0 && onCandidateSkipped) {
             onCandidateSkipped(dirEntry.name, criteria);

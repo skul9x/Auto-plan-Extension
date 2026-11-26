@@ -18,6 +18,7 @@ import {
   transcriptWatcher as defaultTranscriptWatcher,
   CompletionResult,
   getTranscriptPath,
+  getCandidateConversationsAsync,
   NewConversationTimeoutError,
   ConversationOwnershipCriteria
 } from './transcriptWatcher';
@@ -42,6 +43,22 @@ import {
   PhaseStallReason
 } from './planScanner';
 import { debugLogger as defaultDebugLogger, DebugLogger } from './debugLogger';
+
+export function extractPromptFingerprints(renderedPrompt: string): { head?: string; tail?: string } {
+  if (!renderedPrompt || typeof renderedPrompt !== 'string') {
+    return {};
+  }
+  const normalized = renderedPrompt.replace(/\r\n/g, '\n').trim();
+  if (normalized.length < 48) {
+    return {};
+  }
+  const head = normalized.slice(0, 120).trim();
+  const tail = normalized.slice(-120).trim();
+  return {
+    ...(head.length >= 24 ? { head } : {}),
+    ...(tail.length >= 24 ? { tail } : {})
+  };
+}
 
 export type OrchestratorState =
   | 'idle'
@@ -350,6 +367,27 @@ export class Orchestrator extends EventEmitter {
       return undefined;
     }
 
+    const server = this.getBridgeServer();
+    const connectedClientsCount = server ? server.getConnectedClients().length : 0;
+    const readiness = this.promptDispatcher?.validateDispatchReadiness?.(
+      undefined,
+      cfg.executionMode,
+      cfg.allowTierFallback
+    );
+    const isNativeDispatchActive =
+      cfg.executionMode !== 'domBridge' &&
+      (cfg.executionMode === 'nativeCommand' ||
+        !cfg.allowTierFallback ||
+        readiness?.selectedTier === 'nativeCommand');
+
+    if (connectedClientsCount === 0 && isNativeDispatchActive) {
+      this.debugLogger.debug(
+        'ORCHESTRATOR',
+        'Skipping DOM snapshot: running in focus-free Native Dispatch mode without DOM bridge clients'
+      );
+      return undefined;
+    }
+
     try {
       // 1. Resolve current workspace name dynamically
       const activeWsFolder = (typeof vscode !== 'undefined' && vscode?.workspace?.workspaceFolders)
@@ -379,7 +417,6 @@ export class Orchestrator extends EventEmitter {
       const fileName = `snapshot_phase_${pad(options.phaseIndex + 1)}_${options.triggerType}_attempt_${options.attempt}_${timestampStr}.html`;
       const fullPath = path.join(targetDir, fileName);
 
-      const server = this.getBridgeServer();
       if (!server) {
         this.debugLogger.warn('ORCHESTRATOR', 'Failed to capture DOM snapshot: BridgeServer instance not available');
         return undefined;
@@ -1556,23 +1593,33 @@ export class Orchestrator extends EventEmitter {
               : 180000;
             this.startPhaseNudgeWatchdog(phase, i, nudgeThresholdMs);
 
+            const targetPath = phase.filePath || this.currentPlanFolder;
+            const matchedFolder = this.resolveTargetWorkspaceFolder(targetPath);
+            const activeWorkspaceFolder = matchedFolder || (typeof vscode !== 'undefined' && vscode?.workspace?.workspaceFolders?.[0]) || undefined;
+            const activeWsName = this.workspaceName || (matchedFolder ? matchedFolder.name : undefined) || (activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined);
+            const activeWsPath = this.workspacePath || (matchedFolder ? matchedFolder.uri?.fsPath : undefined) || (activeWorkspaceFolder ? activeWorkspaceFolder.uri?.fsPath : undefined) || this.currentPlanFolder || undefined;
+            const activeWsFolders = this.workspaceFolders.length > 0
+              ? this.workspaceFolders
+              : (typeof vscode !== 'undefined' && vscode?.workspace?.workspaceFolders?.map((f: any) => f.name) || []);
+            const activeWsTitle = this.workspaceTitle || (typeof vscode !== 'undefined' && vscode?.workspace?.name) || undefined;
+            const { head: expectedPromptHead, tail: expectedPromptTail } = extractPromptFingerprints(renderedPrompt);
+            const ownershipCriteria: ConversationOwnershipCriteria = {
+              expectedPromptSnippet: phase.fileName,
+              ...(expectedPromptHead ? { expectedPromptHead } : {}),
+              ...(expectedPromptTail ? { expectedPromptTail } : {}),
+              workspacePath: activeWsPath,
+              workspaceName: activeWsName,
+              workspaceFolders: activeWsFolders,
+              workspaceTitle: activeWsTitle
+            };
+            const skippedConvIds = new Set<string>();
+            const onSkippedCandidate = (data: { convId?: string }) => {
+              if (data?.convId) {
+                skippedConvIds.add(data.convId);
+              }
+            };
+
             try {
-              const targetPath = phase.filePath || this.currentPlanFolder;
-              const matchedFolder = this.resolveTargetWorkspaceFolder(targetPath);
-              const activeWorkspaceFolder = matchedFolder || (typeof vscode !== 'undefined' && vscode?.workspace?.workspaceFolders?.[0]) || undefined;
-              const activeWsName = this.workspaceName || (matchedFolder ? matchedFolder.name : undefined) || (activeWorkspaceFolder ? activeWorkspaceFolder.name : undefined);
-              const activeWsPath = this.workspacePath || (matchedFolder ? matchedFolder.uri?.fsPath : undefined) || (activeWorkspaceFolder ? activeWorkspaceFolder.uri?.fsPath : undefined) || this.currentPlanFolder || undefined;
-              const activeWsFolders = this.workspaceFolders.length > 0
-                ? this.workspaceFolders
-                : (typeof vscode !== 'undefined' && vscode?.workspace?.workspaceFolders?.map((f: any) => f.name) || []);
-              const activeWsTitle = this.workspaceTitle || (typeof vscode !== 'undefined' && vscode?.workspace?.name) || undefined;
-              const ownershipCriteria: ConversationOwnershipCriteria = {
-                expectedPromptSnippet: phase.fileName,
-                workspacePath: activeWsPath,
-                workspaceName: activeWsName,
-                workspaceFolders: activeWsFolders,
-                workspaceTitle: activeWsTitle
-              };
               const watcherTimeoutMs = (config.timeoutPerLoopMinutes !== undefined && config.timeoutPerLoopMinutes > 0)
                 ? config.timeoutPerLoopMinutes * 60 * 1000
                 : 0;
@@ -1582,15 +1629,20 @@ export class Orchestrator extends EventEmitter {
                 keyword: config.completionKeyword
               });
 
-              convId = await this.waitForNewConversation(
-                phaseStartTime,
-                this.lastConversationId,
-                convTimeoutMs,
-                this.transcriptWatcher.getOptions().pollIntervalMs,
-                dispatchOptions.openNewConversation !== false,
-                { phaseIndex: i, fileName: phase.fileName },
-                ownershipCriteria
-              );
+              this.transcriptWatcher.on('candidateSkipped', onSkippedCandidate);
+              try {
+                convId = await this.waitForNewConversation(
+                  phaseStartTime,
+                  this.lastConversationId,
+                  convTimeoutMs,
+                  this.transcriptWatcher.getOptions().pollIntervalMs,
+                  dispatchOptions.openNewConversation !== false,
+                  { phaseIndex: i, fileName: phase.fileName },
+                  ownershipCriteria
+                );
+              } finally {
+                this.transcriptWatcher.removeListener('candidateSkipped', onSkippedCandidate);
+              }
               phaseRetryCount = 0;
               break; // Conversation detection resolved successfully!
             } catch (err: any) {
@@ -1612,6 +1664,31 @@ export class Orchestrator extends EventEmitter {
               if (this.isAborted) break;
 
               if (err instanceof NewConversationTimeoutError) {
+                const brainDir = this.transcriptWatcher.getOptions().brainDir;
+                const recoveredCandidates = await getCandidateConversationsAsync(
+                  brainDir,
+                  phaseStartTime,
+                  this.lastConversationId,
+                  ownershipCriteria
+                );
+                if (this.isAborted) break;
+
+                if (recoveredCandidates.length > 0) {
+                  convId = recoveredCandidates[0].convId;
+                  phaseRetryCount = 0;
+                  this.debugLogger.info(
+                    'ORCHESTRATOR',
+                    `Recovered conversation ${convId} for ${phase.fileName} during pre-retry check (avoided duplicate dispatch)`,
+                    {
+                      phaseIndex: i,
+                      fileName: phase.fileName,
+                      convId,
+                      skippedConvIds: Array.from(skippedConvIds)
+                    }
+                  );
+                  break;
+                }
+
                 if (phaseRetryCount < maxRetries) {
                   phaseRetryCount++;
                   this.stopStallWatchdog();
@@ -1629,7 +1706,10 @@ export class Orchestrator extends EventEmitter {
                   this.setState('delaying', retryStatusMessage);
                   this.debugLogger.info(
                     'ORCHESTRATOR',
-                    `[ORCHESTRATOR] New conversation timeout for ${phase.fileName}. Auto-retrying (${phaseRetryCount}/${maxRetries}) in ${retryDelaySeconds}s...`
+                    `[ORCHESTRATOR] New conversation timeout for ${phase.fileName}. Auto-retrying (${phaseRetryCount}/${maxRetries}) in ${retryDelaySeconds}s...`,
+                    skippedConvIds.size > 0
+                      ? { skippedConvIds: Array.from(skippedConvIds), phaseRetryCount, maxRetries }
+                      : undefined
                   );
 
                   const notifMessage = `Auto-Plan: Phase ${phase.phaseNumber || i + 1} gặp timeout tạo phiên mới. Đang thử lại sau ${retryDelaySeconds}s... (Lần ${phaseRetryCount}/${maxRetries})`;

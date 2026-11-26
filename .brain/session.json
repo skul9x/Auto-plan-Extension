@@ -1,30 +1,63 @@
 {
-  "updated_at": "2026-11-08T23:48:00+07:00",
-  "active_plan": "plans/261105-2320-high-medium-perf-audit-remediation/plan.md",
+  "updated_at": "2026-11-25T20:08:15+07:00",
+  "active_plan": "plans/261125-1948-transcript-ownership-truncation-and-native-stop-fix/plan.md",
   "working_on": {
-    "feature": "Telegram Workflow to Antigravity Recipe Markdown Link Mapping",
-    "task": "Chuyển đổi các lệnh workflow slash commands từ Telegram (/code, /save_brain, /awf_update...) thành cú pháp native Recipe Mention pill của Antigravity IDE: [<name>](recipe;file:///<encoded_path>) <args>. Đã pass 100% test suites, compile và đóng gói VSIX.",
+    "feature": "Default Structured JSON Prompt Template (Phase 04)",
+    "task": "Hoàn thành Phase 04: Cập nhật DEFAULT_PROMPT_TEMPLATE trong src/config.ts và default values của autoplan.defaultPromptTemplate / autoplan.promptTemplate trong package.json sang 7-step structured JSON workflow specification (/recap -> /save_brain, {xxx}, Done skul9x.), đăng ký test:phase04-default-prompt và pass 3/3 tests trong phase04_default_json_prompt_template.test.ts.",
     "status": "completed",
     "files": [
-      "src/telegramBridge.ts",
       "src/config.ts",
       "package.json",
-      "src/test/phase04_telegram_recipe_workflow_dispatch.test.ts",
-      "src/test/phase04_telegram_rich_formatting_regression.test.ts",
-      "src/test/phase04_workflow_prompt_dispatch_and_args.test.ts",
-      "antigravity-auto-plan-1.7.4.vsix"
+      "src/test/phase04_default_json_prompt_template.test.ts",
+      "plans/261125-1948-transcript-ownership-truncation-and-native-stop-fix/phase-04-default-json-prompt-template.md"
     ],
     "blockers": [],
-    "notes": "Đã bổ sung formatWorkflowRecipeUrl, resolveWorkflowFilePath (hỗ trợ cả local workspace workflows và global workflows, đối chiếu biến thể - và _), formatWorkflowRecipePrompt, và tích hợp vào TelegramBridge pipeline cùng cấu hình autoplan.telegram.formatWorkflowRecipes."
+    "notes": "Toàn bộ 4 phases của plan 261125-1948-transcript-ownership-truncation-and-native-stop-fix đã hoàn thành."
   },
-  "pending_tasks": [
-    {
-      "task": "Test thực tế các lệnh /code, /plan từ Telegram trên máy thật và kiểm tra hiển thị pill trong Antigravity IDE",
-      "priority": "low",
-      "notes": "Xác nhận hiển thị trực quan và khả năng load workflow context tự động"
-    }
-  ],
+  "pending_tasks": [],
   "recent_changes": [
+    {
+      "timestamp": "2026-11-25T20:08:15+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 04: Default Structured JSON Prompt Template. Cập nhật DEFAULT_PROMPT_TEMPLATE trong src/config.ts và autoplan.defaultPromptTemplate / autoplan.promptTemplate defaults trong package.json sang 7-step structured JSON specification, đăng ký test:phase04-default-prompt và pass 3/3 tests trong phase04_default_json_prompt_template.test.ts.",
+      "files": [
+        "src/config.ts",
+        "package.json",
+        "src/test/phase04_default_json_prompt_template.test.ts",
+        "plans/261125-1948-transcript-ownership-truncation-and-native-stop-fix/phase-04-default-json-prompt-template.md"
+      ]
+    },
+    {
+      "timestamp": "2026-11-25T20:05:10+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 03: Native Chat Stop Command Discovery & Release Verification. Thêm commandListProvider, resolveAvailableStopCommands với 30s TTL cache và dynamic regex fallback trong PromptDispatcher, đăng ký test:phase01-truncation, test:phase02-retry-hygiene, test:phase03-stop-discovery, test:fix-ownership-stop trong package.json (v1.7.6). Pass 4/4 scenarios trong phase03_native_chat_stop_command_discovery.test.ts.",
+      "files": [
+        "src/promptDispatcher.ts",
+        "package.json",
+        "src/test/phase03_native_chat_stop_command_discovery.test.ts",
+        "plans/261125-1948-transcript-ownership-truncation-and-native-stop-fix/phase-03-native-chat-stop-command-discovery-and-packaging.md"
+      ]
+    },
+    {
+      "timestamp": "2026-11-25T20:00:35+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 02: Orchestrator Prompt Fingerprinting, Retry Loop Guard & Snapshot Hygiene. Bổ sung extractPromptFingerprints, pre-retry recovery qua getCandidateConversationsAsync tránh duplicate retry dispatch, và suppress DOM snapshot WARN ở Native Dispatch tier khi 0 bridge clients. Pass 3/3 scenarios trong phase02_orchestrator_duplicate_retry_and_snapshot_hygiene.test.ts.",
+      "files": [
+        "src/orchestrator.ts",
+        "src/test/phase02_orchestrator_duplicate_retry_and_snapshot_hygiene.test.ts",
+        "plans/261125-1948-transcript-ownership-truncation-and-native-stop-fix/phase-02-orchestrator-duplicate-retry-and-snapshot-hygiene.md"
+      ]
+    },
+    {
+      "timestamp": "2026-11-25T19:54:00+07:00",
+      "type": "phase_completion",
+      "description": "Hoàn thành Phase 01: Truncated Transcript Ownership Fallback & Safe JSONL Inspection. Thêm readFileHeadUtf8Async, evaluateChunkOwnership, Stage A/B/C fallback (transcript_full.jsonl 64KB, extended 32KB scan, expectedPromptHead/Tail), và Negative Cache Guard. Pass 5/5 tests trong phase01_truncated_transcript_ownership_fallback.test.ts.",
+      "files": [
+        "src/transcriptWatcher.ts",
+        "src/test/phase01_truncated_transcript_ownership_fallback.test.ts",
+        "plans/261125-1948-transcript-ownership-truncation-and-native-stop-fix/phase-01-truncated-transcript-ownership-fallback.md"
+      ]
+    },
     {
       "timestamp": "2026-11-08T23:48:00+07:00",
       "type": "feature_telegram_recipe_mapping",

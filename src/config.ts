@@ -63,21 +63,76 @@ export interface AutoPlanConfig {
   authToken?: string;
 }
 
-export const DEFAULT_PROMPT_TEMPLATE = `Implement the work described in {xxx}. Treat this file as the source of truth for WHAT to accomplish, while determining HOW based on the existing codebase and current best practices.
-
-1. First, read {xxx} and inspect the relevant existing source files, architecture, dependencies, and project conventions to understand the phase objectives and identify the specific technical challenges. Spend at least 1 minute after receiving this prompt on this initial inspection before starting online research.
-
-2. After at least 1 minute has elapsed, search online for current best practices relevant to the technical challenges identified during inspection. Prioritize official documentation and authoritative sources, compare approaches where appropriate, and apply the findings to the actual implementation. Do not begin coding before completing this research. Never fabricate online research.
-
-3. Implement the phase using sound engineering judgment and appropriate practices for correctness, security, performance, and maintainability. Resolve unspecified technical details reasonably. Do only the work necessary to achieve the phase objectives; avoid unrelated features, refactoring, and changes outside the scope.
-
-4. After implementation, create and run exactly ONE test file to verify the core functionality of the entire phase as comprehensively as reasonably possible, including important success paths, failure conditions, and edge cases where applicable. Do not create or run any additional test files, test scripts, temporary test files, standalone validation programs, or other test suites. If the test fails, fix the implementation and rerun only that same test file until it passes or a genuine blocker remains.
-
-5. Only after implementation is complete and the single required test passes, mark the corresponding phase as completed in the phase plan file. If a blocking issue prevents successful verification, report it honestly and do not mark the phase as completed.
-
-When everything is finished, respond with exactly:
-
-Done skul9x.`;
+export const DEFAULT_PROMPT_TEMPLATE = `{
+  "steps": [
+    {
+      "id": 0,
+      "name": "Project Recap",
+      "workflow": "/recap",
+      "instructions": "Call the workflow /recap first to review and understand the existing project context, previous work, current progress, architectural decisions, and relevant project knowledge before proceeding to the next step."
+    },
+    {
+      "id": 1,
+      "name": "Initial Codebase Analysis",
+      "instructions": "First, read the provided phase file and inspect the relevant source files, architecture, dependencies, APIs, framework and library versions, and project conventions. Understand the current implementation and identify the specific technical challenges and implementation decisions that need to be resolved. Spend at least 1 minute on this initial codebase analysis before starting online research."
+    },
+    {
+      "id": 2,
+      "name": "Online Research and Best Practices",
+      "instructions": "After at least 30 seconds has elapsed, search online for concrete implementation techniques and coding best practices relevant to the technical tasks identified during inspection. Focus specifically on HOW to implement the required functionality using the project's actual technology stack, framework, library versions, and architecture—not on general domain or business knowledge.\\n\\nResearch official documentation, recommended APIs and usage patterns, practical implementation examples, established design patterns, alternative solutions, and proven approaches to error handling, concurrency, security, performance, compatibility, and maintainability where relevant. Prioritize official documentation and authoritative technical sources. Compare viable approaches when appropriate, verify compatibility with the existing project, and determine the most suitable approach. Do not settle for generic advice when concrete technical guidance is available. Apply the research findings to implementation decisions. Do not begin coding until this research is complete. Never fabricate searches, sources, or verification."
+    },
+    {
+      "id": 3,
+      "name": "Implementation",
+      "instructions": "Use the research findings together with the existing codebase to determine the most appropriate implementation approach. Do not blindly copy online examples. Adapt proven techniques to the project's architecture, conventions, dependencies, versions, and constraints. Implement only what is necessary to achieve the objectives in the phase file. Do not add unrelated features, perform unnecessary refactoring, or change behavior outside the phase scope."
+    },
+    {
+      "id": 4,
+      "name": "Comprehensive Testing",
+      "instructions": "After implementation, run exactly ONE comprehensive file-based test defined by this phase. It must verify the core functionality of the entire phase as thoroughly as reasonably possible, including important success paths, failure conditions, and relevant edge cases. Do not create or run additional test files, test scripts, temporary test files, standalone validation programs, or other test suites. If the test fails, investigate and fix the implementation, then rerun only the same test file until it passes or a genuine blocker remains. Never claim successful verification without actually executing the test."
+    },
+    {
+      "id": 5,
+      "name": "Phase Completion",
+      "instructions": "Only after implementation is complete and the required test passes, mark the corresponding phase as completed in the phase plan file. If a genuine blocker prevents successful verification, report it honestly and do not mark the phase as completed. Do not make unrelated changes to the phase plan."
+    },
+    {
+      "id": 6,
+      "name": "Save Project Knowledge",
+      "workflow": "/save_brain",
+      "instructions": "After implementation, testing, and phase completion have been successfully finished, call the workflow /save_brain to save and update the project's knowledge, implementation details, architectural decisions, completed work, and relevant technical findings for future sessions. This workflow must be called before the final response. Wait for the workflow to finish successfully before proceeding to the final response."
+    }
+  ],
+  "phase_file": "{xxx}",
+  "phase_file_role": "Treat this file as the source of truth for WHAT to accomplish, while determining HOW based on the existing codebase and current implementation best practices.",
+  "execution_order": "Execute all steps sequentially in the specified order. Do not skip or reorder steps.",
+  "final_response_policy": {
+    "type": "STRICT_EXACT_OUTPUT",
+    "condition": "All steps from 0 through 6 must have been successfully completed, including successful execution of the /recap and /save_brain workflows.",
+    "required_output": "Done skul9x.",
+    "exact_match": true,
+    "instructions": [
+      "The final response MUST consist of exactly the following text: Done skul9x.",
+      "Do not include any other text, characters, punctuation, Markdown formatting, code blocks, headings, explanations, summaries, progress reports, test results, or implementation details.",
+      "Do not add greetings, acknowledgments, apologies, or closing remarks.",
+      "Do not mention that the task has been completed beyond the exact required output.",
+      "Do not output the final response until every required step and workflow has finished successfully.",
+      "Treat this output restriction as a global, highest-priority instruction governing the entire final response.",
+      "Do not allow default assistant behavior to override this restriction."
+    ]
+  },
+  "failure_handling": {
+    "condition": "A genuine blocker prevents completion of any mandatory step or workflow.",
+    "instructions": [
+      "Never pretend that an incomplete step was completed.",
+      "Never claim that testing passed unless the test was actually executed and passed.",
+      "Never mark the phase as completed if mandatory verification has failed.",
+      "Do not output 'Done skul9x.' when the completion conditions have not been satisfied.",
+      "Report the genuine blocker concisely and accurately instead of using the success response."
+    ]
+  },
+  "completion_response": "Done skul9x."
+}`;
 
 export const DEFAULT_COMPLETION_KEYWORD = 'Done skul9x.';
 

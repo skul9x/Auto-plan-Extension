@@ -65,6 +65,7 @@ export interface PromptDispatcherOptions {
   keyboardManager?: KeyboardManager;
   configProvider?: () => AutoPlanConfig;
   commandExecutor?: (command: string, ...args: any[]) => Thenable<any>;
+  commandListProvider?: () => Promise<string[]>;
   warningNotifier?: (message: string) => void;
   actionableNotifier?: (message: string, buttonText: string, onAction: () => Promise<void> | void) => Promise<any> | any;
   actionableErrorNotifier?: (message: string, ...actions: string[]) => Promise<string | undefined>;
@@ -78,10 +79,24 @@ export interface PromptDispatcherOptions {
  * 3. Tier 3 (Fallback): OS Keyboard Simulation (PowerShell SendKeys)
  */
 export class PromptDispatcher {
+  private static readonly STOP_COMMANDS_CACHE_TTL_MS = 30_000;
+  private static readonly STATIC_STOP_CANDIDATES: readonly string[] = [
+    'antigravity.prioritized.chat.stop',
+    'antigravity.chat.stop',
+    'antigravity.agent.stop',
+    'antigravity.cancelGeneration',
+    'workbench.action.chat.stop',
+    'workbench.action.chat.cancel'
+  ];
+  private static readonly DYNAMIC_STOP_COMMAND_REGEX = /^(antigravity|workbench\.action\.chat)\..*(stop|cancel|abort)/i;
+
   private bridgeServer: BridgeServer;
   private keyboardManager: KeyboardManager;
   private configProvider: () => AutoPlanConfig;
   private commandExecutor: (command: string, ...args: any[]) => Thenable<any>;
+  private commandListProvider?: () => Promise<string[]>;
+  private cachedStopCommands: string[] | null = null;
+  private cachedStopCommandsAt = 0;
   private warningNotifier: (message: string) => void;
   private actionableNotifier?: (message: string, buttonText: string, onAction: () => Promise<void> | void) => Promise<any> | any;
   private actionableErrorNotifier?: (message: string, ...actions: string[]) => Promise<string | undefined>;
@@ -95,6 +110,7 @@ export class PromptDispatcher {
     this.logger = options?.logger ?? debugLogger;
     this.actionableNotifier = options?.actionableNotifier;
     this.actionableErrorNotifier = options?.actionableErrorNotifier;
+    this.commandListProvider = options?.commandListProvider;
     this.customCommandExecutorProvided = Boolean(options && 'commandExecutor' in options);
     if (options && 'commandExecutor' in options) {
       this.commandExecutor = options.commandExecutor as any;
@@ -1287,23 +1303,106 @@ export class PromptDispatcher {
   }
 
   /**
+   * Resolves the command list provider if available, or returns undefined in legacy mock mode.
+   */
+  private getCommandListProvider(): (() => Promise<string[]>) | undefined {
+    if (this.commandListProvider) {
+      return this.commandListProvider;
+    }
+    if (typeof vscode?.commands?.getCommands === 'function') {
+      return async () => Promise.resolve(vscode.commands.getCommands(true));
+    }
+    return undefined;
+  }
+
+  /**
+   * Discovers registered stop/cancel commands in priority order with short-TTL caching.
+   * Returns null when no command list provider is available (legacy mock mode).
+   */
+  private async resolveAvailableStopCommands(): Promise<string[] | null> {
+    const provider = this.getCommandListProvider();
+    if (!provider) {
+      return null;
+    }
+
+    if (
+      this.cachedStopCommands !== null &&
+      Date.now() - this.cachedStopCommandsAt < PromptDispatcher.STOP_COMMANDS_CACHE_TTL_MS
+    ) {
+      return this.cachedStopCommands;
+    }
+
+    const registeredCommands = await provider();
+    const registeredSet = new Set(registeredCommands);
+    const orderedCandidates: string[] = [];
+    const seen = new Set<string>();
+
+    for (const candidate of PromptDispatcher.STATIC_STOP_CANDIDATES) {
+      if (registeredSet.has(candidate) && !seen.has(candidate)) {
+        orderedCandidates.push(candidate);
+        seen.add(candidate);
+      }
+    }
+
+    for (const cmd of registeredCommands) {
+      if (PromptDispatcher.DYNAMIC_STOP_COMMAND_REGEX.test(cmd) && !seen.has(cmd)) {
+        orderedCandidates.push(cmd);
+        seen.add(cmd);
+      }
+    }
+
+    this.cachedStopCommands = orderedCandidates;
+    this.cachedStopCommandsAt = Date.now();
+    return orderedCandidates;
+  }
+
+  /**
    * Stops active AI generation across Antigravity native commands.
    */
   public async stopActiveGeneration(_options?: DispatchOptions): Promise<boolean> {
-    try {
-      try {
-        await this.commandExecutor('antigravity.prioritized.chat.stop');
-        this.logger.info('DISPATCHER', 'stopActiveGeneration succeeded via antigravity.prioritized.chat.stop');
-        return true;
-      } catch {
-        await this.commandExecutor('workbench.action.chat.stop');
-        this.logger.info('DISPATCHER', 'stopActiveGeneration succeeded via workbench.action.chat.stop');
-        return true;
+    const availableCommands = await this.resolveAvailableStopCommands();
+
+    if (availableCommands === null) {
+      const legacyCandidates = ['antigravity.prioritized.chat.stop', 'workbench.action.chat.stop'];
+      let lastErr: any;
+      for (const cmd of legacyCandidates) {
+        try {
+          await this.commandExecutor(cmd);
+          this.logger.info('DISPATCHER', `stopActiveGeneration succeeded via ${cmd}`);
+          return true;
+        } catch (err: any) {
+          lastErr = err;
+        }
       }
-    } catch (tier2Err: any) {
-      this.logger.warn('DISPATCHER', `stopActiveGeneration failed: ${tier2Err?.message || tier2Err}`);
+      this.logger.warn('DISPATCHER', `stopActiveGeneration failed: ${lastErr?.message || lastErr}`);
       return false;
     }
+
+    if (availableCommands.length === 0) {
+      this.logger.info(
+        'DISPATCHER',
+        'No host chat stop command registered in Antigravity IDE; local orchestration stopped cleanly'
+      );
+      return false;
+    }
+
+    let lastErr: any;
+    for (const cmd of availableCommands) {
+      try {
+        await this.commandExecutor(cmd);
+        this.logger.info('DISPATCHER', `stopActiveGeneration succeeded via ${cmd}`);
+        return true;
+      } catch (err: any) {
+        lastErr = err;
+        if (/not found|unknown command/i.test(err?.message || '')) {
+          this.cachedStopCommands = null;
+          this.cachedStopCommandsAt = 0;
+        }
+      }
+    }
+
+    this.logger.warn('DISPATCHER', `stopActiveGeneration failed: ${lastErr?.message || lastErr}`);
+    return false;
   }
 }
 

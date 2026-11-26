@@ -2,14 +2,14 @@
   "meta": {
     "schema_version": "1.1.0",
     "awf_version": "4.0.2",
-    "updated_at": "2026-11-08T23:48:00+07:00"
+    "updated_at": "2026-11-25T20:08:15+07:00"
   },
   "project": {
     "name": "Auto-Plan_Extension",
     "description": "Extension cho Antigravity IDE: tự động hóa điều phối quy trình chạy theo file plan với 100% Native Antigravity Chat API Architecture (antigravity.addContext, antigravity.triggerSend, antigravity.startNewConversation, antigravity.prioritized.chat.stop), hoàn toàn focus-free, loại bỏ 100% DOM Bridge injection vào workbench.html và OS keyboard simulations. Tích hợp Telegram Rich HTML Formatting Engine (parse_mode: 'HTML'), Tag-Aware Chunk Splitter và Safe Plain-Text Fallback trên Telegram HTTP 400 cam kết zero-message-drop. Hệ thống tối ưu hóa hiệu năng cao: bất đồng bộ hóa 100% disk I/O & process execution, adaptive RPC polling backoff, payload fingerprint cache, persistent FileHandle transcript tailing, và IPC batching webview.",
-    "version": "1.7.5",
+    "version": "1.7.6",
     "created_at": "2026-08-27T23:51:00+07:00",
-    "active_plan": "plans/261105-2320-high-medium-perf-audit-remediation/plan.md"
+    "active_plan": "plans/261125-1948-transcript-ownership-truncation-and-native-stop-fix/plan.md"
   },
   "tech_stack": {
     "language": "TypeScript 5.3 / JavaScript (Node.js 20+)",
@@ -182,7 +182,11 @@
       "Telegram HTML chỉ hỗ trợ tập thẻ hạn chế (<b>, <i>, <s>, <u>, <blockquote>, <pre>, <code>, <a>, <tg-spoiler>); các thẻ không hỗ trợ như <div>, <p>, <br> sẽ khiến Telegram ném lỗi HTTP 400 Bad Request: can't parse entities.",
       "Trong code block của Telegram HTML, các ký tự &, <, > bắt buộc phải được escape thành &amp;, &lt;, &gt;. Thẻ <code> bên trong <pre> mang thuộc tính class=\"language-xxx\" để client tự highlight cú pháp.",
       "Khi chia nhỏ chunk HTML, bắt buộc phải duyệt theo cây thẻ và đóng các thẻ còn mở ở cuối chunk theo thứ tự LIFO, sau đó mở lại y hệt ở đầu chunk tiếp theo.",
-      "Cú pháp Recipe Mention trong Antigravity IDE yêu cầu URI scheme recipe;file:///, ký tự ổ đĩa Windows viết thường kèm %3A (ví dụ c%3A/), và dấu gạch chéo xuôi /. Nếu thiếu định dạng này, IDE sẽ coi là text thường và không render thành Pill."
+      "Cú pháp Recipe Mention trong Antigravity IDE yêu cầu URI scheme recipe;file:///, ký tự ổ đĩa Windows viết thường kèm %3A (ví dụ c%3A/), và dấu gạch chéo xuôi /. Nếu thiếu định dạng này, IDE sẽ coi là text thường và không render thành Pill.",
+      "Antigravity IDE nén step_index: 0 trong transcript.jsonl khi prompt dài (>~4KB) bằng \"truncated_fields\":[\"content\"], cắt bỏ phần giữa chứa tên file phase. verifyConversationOwnershipAsync cần fallback sang sibling transcript_full.jsonl (tối đa 64KB), quét mở rộng 32KB transcript.jsonl, hoặc đối chiếu expectedPromptHead + expectedPromptTail (>=24 chars) kèm guard không cache kết quả false khi transcript_full.jsonl chưa flush.",
+      "Orchestrator phải trích xuất expectedPromptHead/expectedPromptTail (extractPromptFingerprints), tái kiểm tra getCandidateConversationsAsync trước khi retry NewConversationTimeoutError để tránh spawn duplicate conversations, và kiểm tra BridgeServer.getConnectedClients().length === 0 ở Native Dispatch mode trong saveWorkbenchSnapshot để không spam [WARN] Failed to capture DOM snapshot.",
+      "Antigravity IDE phiên bản 1.107.0+ không đăng ký workbench.action.chat.stop; PromptDispatcher.stopActiveGeneration() dùng commandListProvider (mặc định vscode.commands.getCommands(true) với 30s TTL cache + tự invalidate khi gặp 'not found'/'unknown command') để lọc STATIC_STOP_CANDIDATES và DYNAMIC_STOP_COMMAND_REGEX trước khi execute, trả về false kèm INFO log nếu IDE không có stop command nào, đồng thời giữ legacy direct-execution mode khi không có commandListProvider/getCommands.",
+      "DEFAULT_PROMPT_TEMPLATE (7-step structured JSON workflow với {xxx} và Done skul9x.) trong src/config.ts dùng \\n trong template literal để JSON.parse() giữ nguyên \\n\\n, và phải đồng bộ từng ký tự với autoplan.defaultPromptTemplate / autoplan.promptTemplate trong package.json; renderPromptTemplate() chuẩn hóa backslash thành forward slash qua normalizePath() nên đường dẫn Windows sau khi nội suy vẫn là JSON hợp lệ."
     ]
   }
 }
